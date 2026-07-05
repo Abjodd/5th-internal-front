@@ -29,7 +29,7 @@ export const SECTIONS = [
     shortLabel: "Summary",
     icon: "◈",
     color: T.purple,
-    roles: ["founder"],
+    roles: ["founder", "pcm", "cm", "am", "ea", "accounts_head", "accounts_exec"],
   },
   {
     id: "im",

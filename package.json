@@ -1,0 +1,23 @@
+{
+  "name": "5th-avenue-internal-frontend",
+  "version": "2.0.0",
+  "description": "5th Avenue — Internal Operations Platform (frontend)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2",
+    "recharts": "^2.12.7"
+  },
+  "devDependencies": {
+    "@babel/parser": "^8.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.0"
+  }
+}

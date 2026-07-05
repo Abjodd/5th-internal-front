@@ -1,0 +1,76 @@
+/**
+ * 5th Avenue — Internal OS · Global styles
+ * Previously duplicated inline <style> tags inside PlatformApp.jsx and
+ * InternalBilling_V2.jsx — moved to one real stylesheet, loaded once.
+ */
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap');
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  background: #F7F6F2;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-family: 'Sora', sans-serif;
+}
+
+::selection {
+  background: rgba(47, 62, 107, 0.16);
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(28, 24, 16, 0.14);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(28, 24, 16, 0.22);
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+input::placeholder, textarea::placeholder {
+  color: #948E7C;
+}
+
+textarea {
+  resize: vertical;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* Subtle keyboard-focus ring instead of the browser default, kept on
+   inputs/buttons/links for accessibility without looking generic. */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid #2F3E6B;
+  outline-offset: 1px;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

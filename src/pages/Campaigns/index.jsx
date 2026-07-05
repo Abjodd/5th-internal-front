@@ -398,7 +398,55 @@ function AddCreatorModal({onAdd,onClose}){
           <Btn variant="ghost" onClick={handleFetch} disabled={fetching||!f.igUrl.trim()}>{fetching?"Fetching…":"Fetch"}</Btn>
         </div>
         {fetchErr&&<div style={{fontSize:10.5,color:T.red,marginBottom:10}}>{fetchErr}</div>}
-        {igFetched&&!fetchErr&&<div style={{fontSize:10.5,color:T.green,marginBottom:10}}>Fetched @{igFetched.username} — followers, avg likes & ER filled below. Review before saving.</div>}
+        {igFetched&&!fetchErr&&(
+          <div style={{marginBottom:14,padding:"14px",borderRadius:10,background:T.raised,border:`1px solid ${T.green}25`}}>
+            <div style={{display:"flex",alignItems:"center",gap:12}}>
+              <div style={{position:"relative",flexShrink:0}}>
+                {igFetched.profilePic
+                  ? <img src={igFetched.profilePic} alt={igFetched.username} referrerPolicy="no-referrer" style={{width:52,height:52,borderRadius:"50%",objectFit:"cover",border:`1px solid ${T.border}`,display:"block"}}/>
+                  : <div style={{width:52,height:52,borderRadius:"50%",background:T.mute}}/>}
+                {igFetched.isVerified&&<div title="Verified" style={{position:"absolute",bottom:-2,right:-2,width:16,height:16,borderRadius:"50%",background:T.accent,border:`2px solid ${T.raised}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:"#FFF"}}>✓</div>}
+              </div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"flex",alignItems:"center",gap:5}}>
+                  <span style={{fontSize:13,fontWeight:600,color:T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{igFetched.fullName||igFetched.username}</span>
+                </div>
+                <div style={{fontSize:10.5,color:T.sub}}>@{igFetched.username}</div>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:0,marginTop:12,borderTop:`1px solid ${T.border}`,paddingTop:10}}>
+              {[
+                ["Followers",fmtNum(igFetched.followers)],
+                ["Avg Likes",fmtNum(igFetched.avgLikes)],
+                ["Avg Comments",fmtNum(igFetched.avgComments)],
+                ["Posts",fmtNum(igFetched.posts)],
+              ].map(([l,v],i)=>(
+                <div key={l} style={{flex:1,textAlign:"center",borderLeft:i>0?`1px solid ${T.border}`:"none"}}>
+                  <div style={{fontSize:13.5,fontWeight:700,color:T.text,letterSpacing:"-0.02em"}}>{v}</div>
+                  <div style={{fontSize:8,color:T.label,textTransform:"uppercase",letterSpacing:"0.06em",marginTop:2}}>{l}</div>
+                </div>
+              ))}
+            </div>
+            {Array.isArray(igFetched.recentPosts)&&igFetched.recentPosts.length>0&&(
+              <div style={{marginTop:12,paddingTop:10,borderTop:`1px solid ${T.border}`}}>
+                <div style={{fontSize:8.5,color:T.label,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Recent posts</div>
+                <div style={{display:"flex",gap:6,overflowX:"auto",paddingBottom:2}}>
+                  {igFetched.recentPosts.slice(0,6).map((p,i)=>(
+                    <a key={p.id||i} href={p.permalink||undefined} target="_blank" rel="noreferrer" style={{position:"relative",flexShrink:0,width:64,height:64,borderRadius:7,overflow:"hidden",display:"block",border:`1px solid ${T.border}`,textDecoration:"none"}}>
+                      <img src={p.thumbnailUrl} alt="" referrerPolicy="no-referrer" style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>
+                      {p.likeCount!=null&&(
+                        <div style={{position:"absolute",bottom:0,left:0,right:0,padding:"2px 4px",background:"linear-gradient(transparent,rgba(0,0,0,0.75))",fontSize:8,color:"#FFF",fontWeight:600,display:"flex",alignItems:"center",gap:2}}>
+                          ♥ {fmtNum(p.likeCount)}
+                        </div>
+                      )}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div style={{fontSize:9.5,color:T.green,marginTop:10}}>Followers, avg likes & ER filled below — review before saving.</div>
+          </div>
+        )}
         <Hr style={{margin:"10px 0 14px"}}/>
         <Lbl style={{display:"block",marginBottom:10}}>Required</Lbl>
         <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Name <span style={{color:T.red}}>*</span></Lbl><input value={f.name} onChange={e=>u("name",e.target.value)} placeholder="e.g. Anjali Kitchen" style={{...INP,resize:"none"}}/></div>

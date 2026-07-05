@@ -14,7 +14,7 @@
  */
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
-import { CampaignsAPI, InstagramAPI } from "../../lib/api";
+import { CampaignsAPI, InstagramAPI, InvoicesAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
@@ -827,19 +827,42 @@ export default function InternalCampaigns(){
     const amId  = (role==="am"||role==="founder") ? currentUser.teamId : null;
     const cmId  = (role==="cm"||role==="pcm")     ? currentUser.teamId : null;
     const eaId  = role==="ea"                      ? currentUser.teamId : null;
+    // Stable slug ID — readable, collision-resistant, matches billing references
+    const slug = f.name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,24);
+    const campId = `camp_${slug}_${Date.now().toString(36)}`;
+    const budget = parseInt(f.budget)||0;
     const c={
-      id:`c${Date.now()}`,name:f.name,client:f.client,service:f.service,
-      region:f.region||"TBD",stage:"draft",progress:0,
-      budget:parseInt(f.budget)||0,creatorBudget:parseInt(f.budget)*0.6||0,
-      numReq:parseInt(f.numCreators)||5,start:today(),end:"TBD",
-      createdBy:currentUser.teamId,   // ← primary ownership key
+      id:campId, name:f.name, client:f.client, service:f.service,
+      region:f.region||"TBD", stage:"draft", progress:0,
+      budget, creatorBudget:Math.round(budget*0.6),
+      numReq:parseInt(f.numCreators)||5, start:today(), end:"TBD",
+      createdBy:currentUser.teamId,
       amId, cmId, eaId,
-      brief:{objective:f.objective,audience:f.audience,messages:f.messages,deliverables:f.deliverables,budget:fmtINR(parseInt(f.budget)||0),timeline:f.timeline},
-      briefStatus:"draft",amNote:"",cmNote:"",creators:[],genRounds:0,
-      sentToClient:false,internalNotes:f.internalNotes,
+      brief:{objective:f.objective,audience:f.audience,messages:f.messages,deliverables:f.deliverables,budget:fmtINR(budget),timeline:f.timeline},
+      briefStatus:"draft", amNote:"", cmNote:"", creators:[], genRounds:0,
+      sentToClient:false, internalNotes:f.internalNotes,
       timeline:[{date:today(),event:"Campaign created",actor:currentUser.name||role.toUpperCase()}],
     };
+    // Save campaign
     CampaignsAPI.create(c).catch(()=>showToast("Save failed — check connection"));
+    // Auto-create a draft invoice stub in billing so the campaign appears in billing immediately
+    if(budget > 0){
+      const invId = `INV-AUTO-${campId}`;
+      InvoicesAPI.create({
+        id: invId, client: f.client, clientId: null, campaign: campId,
+        type:"campaign", label:`${f.name} — Campaign Invoice`,
+        amount: budget, gstRate:18,
+        raisedDate: today(), dueDate:"TBD", status:"pending",
+        isRetainerClient:false, clientPO:null,
+        schedule:{ type:"advance_final",
+          advance:{ pct:50, amount:Math.round(budget*0.5), status:"pending" },
+          final:{ pct:50, amount:Math.round(budget*0.5), status:"pending" },
+        },
+        gstin:"", sac:"998361", placeOfSupply:"",
+        confirmedByAccounts:false, confirmedByFounder:false,
+        autoCreated:true,
+      }).catch(()=>{}); // silent — billing stub creation is best-effort
+    }
     setCampaigns(p=>[c,...p]);setSelId(c.id);setCreate(false);showToast("Campaign created");
   },[showToast,role,currentUser]);
   const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(stageFilter!=="all"){const g={intake:["draft","creator_shortlist","po_raised"],planning:["advance_received","execution","brief_sent"],execution:["concept_submitted","concept_approved","production"],delivery:["video_submitted","internal_review","client_approved","live","creator_paid","reporting","completed"]};if(!g[stageFilter]?.includes(c.stage))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search]);

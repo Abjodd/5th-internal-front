@@ -14,7 +14,7 @@
  */
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
-import { CampaignsAPI, InstagramAPI, InvoicesAPI } from "../../lib/api";
+import { CampaignsAPI, InstagramAPI, InvoicesAPI, ClientsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
@@ -134,6 +134,10 @@ const REMOVE_REASONS = [
 ];
 const PAYMENT_TYPES = [{id:"",label:"— Select —"},{id:"vendor",label:"To Vendor"},{id:"net_banking",label:"Net Banking"}];
 const PAYMENT_HINT = { vendor:"Vendor code / ID", net_banking:"Account No. or UPI ID" };
+// ── AGENCY ENTITY (for invoice generation) ───────────────────────────────────
+const AGENCY = {
+  name:    "5th Avenue",
+};
 const PLATFORMS = ["Instagram","YouTube","Twitter / X","LinkedIn","Moj","Josh","Snapchat","Other"];
 const CREATOR_COLS = [
   {key:"name",label:"Creator",cv:true,w:190},{key:"platform",label:"Platform",cv:true,w:90},
@@ -200,6 +204,15 @@ const mkCreator = (src={}, fee) => ({
   demo:     {status:"yet_to_receive",fileLink:null},
   live:     {postUrl:null,postedDate:null},
   tracking: {views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null},
+  personalDetails: {
+    pan:         src.personalDetails?.pan         || src.pan         || null,
+    email:       src.personalDetails?.email       || src.email       || null,
+    address:     src.personalDetails?.address     || src.address     || null,
+    bankName:    src.personalDetails?.bankName    || src.bankName    || null,
+    bankAccount: src.personalDetails?.bankAccount || src.bankAccount || null,
+    bankBranch:  src.personalDetails?.bankBranch  || src.bankBranch  || null,
+    ifsc:        src.personalDetails?.ifsc        || src.ifsc        || null,
+  },
 });
 
 // ── SEED DATA ────────────────────────────────────────────────────────────────
@@ -278,6 +291,110 @@ const fmtNum  = n => n==null?"—":n>=1000000?`${(n/1000000).toFixed(1)}M`:n>=10
 const getM    = id => TEAM.find(t=>t.id===id)||null;
 const getR    = id => ROLES.find(r=>r.id===id)||ROLES[0];
 const plIdx   = id => PL_IDS.indexOf(id);
+
+function amtInWords(n) {
+  const ones = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
+    "Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen","Seventeen","Eighteen","Nineteen"];
+  const tens = ["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"];
+  const convert = (num) => {
+    if (num === 0) return "";
+    if (num < 20)  return ones[num] + " ";
+    if (num < 100) return tens[Math.floor(num/10)] + " " + ones[num%10] + " ";
+    return ones[Math.floor(num/100)] + " Hundred " + convert(num%100);
+  };
+  const lakh = Math.floor(n / 100000), rest = n % 100000;
+  const thou = Math.floor(rest / 1000),  rem = rest % 1000;
+  let result = "";
+  if (lakh) result += convert(lakh) + "Lakh ";
+  if (thou)  result += convert(thou)  + "Thousand ";
+  result += convert(rem);
+  return ("INR " + result.trim() + " Only").replace(/\s+/g, " ");
+}
+
+function generateInvoiceHTML(creator, camp, invoiceNo, dated) {
+  const fee  = creator.fee || 0;
+  const pd   = creator.personalDetails || {};
+  const fmt  = n => "₹" + (n || 0).toLocaleString("en-IN");  // full format, e.g. ₹74,000
+  const rows = Array(8).fill('<tr><td></td><td></td><td></td><td class="rt"></td><td class="rt"></td></tr>').join("");
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>Invoice — ${creator.name}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Times New Roman",Times,serif;font-size:11pt;line-height:1.45;padding:24px;color:#000}
+  table.inv{width:100%;border-collapse:collapse;border:2px solid #000}
+  table.inv td{border:1px solid #000;padding:6px 10px;vertical-align:top}
+  .title td{text-align:center;font-weight:bold;font-size:14pt;padding:8px 10px}
+  .noborder{border:none!important;padding:0!important}
+  table.meta{width:100%;height:100%;border-collapse:collapse}
+  table.meta td{border:1px solid #000;padding:5px 10px}
+  table.meta td:first-child{width:36%}
+  p{margin:0 0 2px}
+  .cen{text-align:center}.rt{text-align:right}
+  .bg{display:grid;grid-template-columns:110px 1fr;gap:3px 8px;margin-top:6px}
+  .sig{text-align:right;padding-top:26px}
+  @media print{body{padding:0}}
+</style></head><body>
+<table class="inv">
+  <tr class="title"><td colspan="5">INVOICE</td></tr>
+  <tr>
+    <td colspan="3">
+      <p><strong>NAME: ${creator.name || ""}</strong></p>
+      ${pd.address  ? `<p>ADDRESS: ${pd.address}</p>`        : ""}
+      ${pd.pan      ? `<p><strong>PAN: ${pd.pan}</strong></p>` : ""}
+      ${creator.phone    ? `<p>CONTACT NO.: ${creator.phone}</p>`      : ""}
+      ${pd.email    ? `<p>EMAIL ID: ${pd.email}</p>`         : ""}
+    </td>
+    <td colspan="2" class="noborder">
+      <table class="meta">
+        <tr><td>Invoice No.</td><td>${invoiceNo}</td></tr>
+        <tr><td>Dated</td><td>${dated}</td></tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="5">
+      <p>Buyer:-</p><br/>
+      <p><strong>${AGENCY.name}</strong></p>
+    </td>
+  </tr>
+  <tr>
+    <td style="width:40px;font-weight:bold;text-align:center">Sl No.</td>
+    <td style="font-weight:bold;background:#f0f0f0">Particulars of Service</td>
+    <td style="width:50px;font-weight:bold;text-align:center;background:#f0f0f0">Qty</td>
+    <td style="width:100px;font-weight:bold;text-align:center;background:#f0f0f0">Rate</td>
+    <td style="width:100px;font-weight:bold;text-align:center;background:#f0f0f0">Amount</td>
+  </tr>
+  <tr>
+    <td class="cen">1</td>
+    <td>Influencer Marketing Services — ${camp.name}</td>
+    <td class="cen">1</td>
+    <td class="rt">${fmt(fee)}</td>
+    <td class="rt">${fmt(fee)}</td>
+  </tr>
+  ${rows}
+  <tr>
+    <td colspan="4" style="text-align:right;font-weight:bold">Total</td>
+    <td class="rt" style="font-weight:bold">${fmt(fee)}</td>
+  </tr>
+  <tr><td colspan="5">Tax Amount (in words): ${amtInWords(fee)}</td></tr>
+  ${pd.bankName || pd.bankAccount ? `<tr><td colspan="5">
+    <p><strong>Bank Details</strong></p>
+    <div class="bg">
+      ${pd.bankName    ? `<span>Bank Name</span><span>: ${pd.bankName}</span>`       : ""}
+      ${pd.bankAccount ? `<span>A/c No.</span><span>: ${pd.bankAccount}</span>`      : ""}
+      ${pd.bankBranch  ? `<span>Branch</span><span>: ${pd.bankBranch}</span>`        : ""}
+      ${pd.ifsc        ? `<span>IFS Code</span><span>: ${pd.ifsc}</span>`            : ""}
+    </div>
+  </td></tr>` : ""}
+  <tr><td colspan="5" class="sig">
+    <p>for NAME</p><br/><br/>
+    <p><strong>${(creator.name || "").toUpperCase()}</strong></p>
+    <p>Authorised Signatory</p>
+  </td></tr>
+</table>
+<script>window.onload = () => window.print();</script>
+</body></html>`;
+}
 // ── RBAC helpers ──────────────────────────────────────────────────────────────
 // Per spec: AM sees execution budget but NOT revenue/margins in billing.
 // In campaigns: AM sees campaign budget (needed for execution). CM/EA: no financials.
@@ -342,7 +459,10 @@ function RemoveModal({creator,onConfirm,onCancel}){const [reason,setReason]=useS
 
 // ── ADD CREATOR MODAL ─────────────────────────────────────────────────────────
 function AddCreatorModal({onAdd,onClose}){
-  const [f,setF]=useState({name:"",platform:"Instagram",handle:"",igUrl:"",phone:"",niche:"",followers:"",avgLikes:"",avgER:""});
+  const [f,setF]=useState({
+    name:"",platform:"Instagram",handle:"",igUrl:"",phone:"",niche:"",followers:"",avgLikes:"",avgER:"",
+    pan:"",email:"",address:"",bankName:"",bankAccount:"",bankBranch:"",ifsc:""
+  });
   const [askingPrice,setAskingPrice]=useState("");
   const [fee,setFee]=useState(""); // negotiated cost
   const [fetching,setFetching]=useState(false);
@@ -380,6 +500,15 @@ function AddCreatorModal({onAdd,onClose}){
       askingPrice:parseInt(askingPrice)||null,
       negotiatedCost:parseInt(fee)||0,
       igFetched,
+      personalDetails: {
+        pan: f.pan || null,
+        email: f.email || null,
+        address: f.address || null,
+        bankName: f.bankName || null,
+        bankAccount: f.bankAccount || null,
+        bankBranch: f.bankBranch || null,
+        ifsc: f.ifsc || null,
+      }
     },parseInt(fee)||0));
     onClose();
   };
@@ -467,10 +596,186 @@ function AddCreatorModal({onAdd,onClose}){
           <div><Lbl style={{display:"block",marginBottom:4}}>Asking Price (₹)</Lbl><input type="number" step={100} value={askingPrice} onChange={e=>setAskingPrice(e.target.value)} placeholder="e.g. 90000" style={{...INP,resize:"none"}}/></div>
           <div><Lbl style={{display:"block",marginBottom:4}}>Negotiated Cost (₹)</Lbl><input type="number" step={100} value={fee} onChange={e=>setFee(e.target.value)} placeholder="e.g. 75000" style={{...INP,resize:"none"}}/></div>
         </div>
+        <Hr style={{margin:"14px 0"}}/>
+        <Lbl style={{display:"block",marginBottom:10}}>Invoice Details <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— for invoice generation 🧾</span></Lbl>
+        <div style={{marginBottom:12}}>
+          <Lbl style={{display:"block",marginBottom:4}}>PAN</Lbl>
+          <input value={f.pan} onChange={e=>u("pan",e.target.value)} placeholder="ABCDE1234F" style={{...INP,resize:"none"}}/>
+        </div>
+        <div style={{marginBottom:12}}>
+          <Lbl style={{display:"block",marginBottom:4}}>Email</Lbl>
+          <input value={f.email} onChange={e=>u("email",e.target.value)} placeholder="creator@email.com" style={{...INP,resize:"none"}}/>
+        </div>
+        <div style={{marginBottom:12}}>
+          <Lbl style={{display:"block",marginBottom:4}}>Address (for invoice)</Lbl>
+          <textarea value={f.address} onChange={e=>u("address",e.target.value)} rows={2}
+            placeholder="Full address" style={{...INP}}/>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+          {[
+            ["Bank Name",   "bankName",    "e.g. Canara Bank"],
+            ["Account No.", "bankAccount", "e.g. 110074028985"],
+            ["Branch",      "bankBranch",  "e.g. Basavangudi"],
+            ["IFS Code",    "ifsc",        "e.g. CNRB0000684"],
+          ].map(([l,k,ph]) => (
+            <div key={k}>
+              <Lbl style={{display:"block",marginBottom:4}}>{l}</Lbl>
+              <input value={f[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none"}}/>
+            </div>
+          ))}
+        </div>
       </div>
       <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}><Btn variant="ghost" onClick={onClose}>Cancel</Btn><div style={{flex:1}}/><Btn variant="primary" onClick={handleAdd} disabled={!valid}>Add to list</Btn></div>
     </div>
   </div>);
+}
+
+// ── INVOICE SELECT MODAL ──────────────────────────────────────────────────────
+const INVOICE_FIELDS = [
+  ["Phone",       "phone",       "+91 98765 43210"],
+  ["PAN",         "pan",         "ABCDE1234F"],
+  ["Email",       "email",       "creator@email.com"],
+  ["Bank Name",   "bankName",    "e.g. Canara Bank"],
+  ["Account No.", "bankAccount", "e.g. 110074028985"],
+  ["Branch",      "bankBranch",  "e.g. Basavangudi"],
+  ["IFS Code",    "ifsc",        "e.g. CNRB0000684"],
+];
+
+function InvoiceSelectModal({ camp, creators, onClose, onUpdateCreators }) {
+  const [selected, setSelected] = useState(
+    creators.find(c => c.status === "locked")?._id || creators[0]?._id || null
+  );
+  const [step, setStep] = useState("select"); // "select" | "details"
+  const [form, setForm] = useState(null);
+  const u = (k, v) => setForm(p => ({ ...p, [k]: v }));
+
+  const openDetails = () => {
+    const cr = creators.find(c => c._id === selected);
+    if (!cr) return;
+    const pd = cr.personalDetails || {};
+    setForm({
+      phone: cr.phone || "", pan: pd.pan || "", email: pd.email || "", address: pd.address || "",
+      bankName: pd.bankName || "", bankAccount: pd.bankAccount || "", bankBranch: pd.bankBranch || "", ifsc: pd.ifsc || "",
+    });
+    setStep("details");
+  };
+
+  const generate = () => {
+    const cr = creators.find(c => c._id === selected);
+    if (!cr || !form) return;
+    const updatedCr = {
+      ...cr,
+      phone: form.phone || null,
+      personalDetails: {
+        ...cr.personalDetails,
+        pan: form.pan || null, email: form.email || null, address: form.address || null,
+        bankName: form.bankName || null, bankAccount: form.bankAccount || null,
+        bankBranch: form.bankBranch || null, ifsc: form.ifsc || null,
+      },
+    };
+    onUpdateCreators(creators.map(c => c._id === selected ? updatedCr : c));
+
+    const idx       = creators.indexOf(cr) + 1;
+    const invoiceNo = `INV-CR-${camp.id.slice(-6).toUpperCase()}-${String(idx).padStart(2,"0")}`;
+    const dated     = new Date().toLocaleDateString("en-IN", { day:"numeric", month:"long", year:"numeric" });
+    const blob = new Blob([generateInvoiceHTML(updatedCr, camp, invoiceNo, dated)], { type: "text/html" });
+    const url  = URL.createObjectURL(blob);
+    const w = window.open(url, "_blank");
+    if (!w) {
+      alert("Pop-up blocked — please allow pop-ups for this site to generate the invoice.");
+      URL.revokeObjectURL(url);
+      return;
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    onClose();
+  };
+
+  const selectedCr = creators.find(c => c._id === selected);
+
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
+      <div onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(5px)"}}/>
+      <div style={{position:"relative",width:"min(460px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
+        <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{fontFamily:"'Newsreader',serif",fontSize:17,color:T.text,fontStyle:"italic"}}>
+            {step === "select" ? "Generate Invoice" : `Invoice Details — ${selectedCr?.name || ""}`}
+          </div>
+          <button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button>
+        </div>
+
+        {step === "select" && (
+          <div style={{padding:"16px 20px",overflowY:"auto",maxHeight:"60vh"}}>
+            <Lbl style={{display:"block",marginBottom:10}}>Select creator</Lbl>
+            {creators.length === 0 && (
+              <div style={{fontSize:11,color:T.label,fontStyle:"italic"}}>No creators in this campaign yet.</div>
+            )}
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {creators.map(cr => {
+                const pd = cr.personalDetails || {};
+                const missing = [
+                  !pd.pan && "PAN",
+                  !pd.bankAccount && "Bank Account",
+                  !pd.address && "Address",
+                ].filter(Boolean);
+                return (
+                  <label key={cr._id} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 12px",borderRadius:6,cursor:"pointer",background:selected===cr._id?`${T.accent}10`:T.raised,border:`1px solid ${selected===cr._id?`${T.accent}30`:T.border}`,transition:"all 0.1s"}}>
+                    <input type="radio" checked={selected===cr._id} onChange={()=>setSelected(cr._id)}
+                      style={{marginTop:3,accentColor:T.accent}}/>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:12,fontWeight:500,color:T.text}}>{cr.name}</div>
+                      <div style={{fontSize:9.5,color:T.sub}}>{cr.handle} · {cr.platform} · {fmtINR(cr.fee)}</div>
+                      {selected===cr._id && missing.length>0 && (
+                        <div style={{fontSize:9,color:T.amber,marginTop:4}}>
+                          Missing: {missing.join(", ")} — you'll be asked for these next
+                        </div>
+                      )}
+                    </div>
+                    <span style={{fontSize:9,color:CR_COLOR[cr.status]||T.sub,fontWeight:600,flexShrink:0}}>
+                      {CR_JOURNEY.find(s=>s.id===cr.status)?.label||cr.status}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {step === "details" && form && (
+          <div style={{padding:"16px 20px",overflowY:"auto",flex:1}}>
+            <div style={{fontSize:10.5,color:T.sub,marginBottom:14}}>Review and fill in the billing details for this creator. Saved to the campaign before the invoice is generated.</div>
+            <div style={{marginBottom:12}}>
+              <Lbl style={{display:"block",marginBottom:4}}>Address (for invoice)</Lbl>
+              <textarea value={form.address} onChange={e=>u("address",e.target.value)} rows={2}
+                placeholder="Full address" style={{...INP}}/>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+              {INVOICE_FIELDS.map(([l,k,ph]) => (
+                <div key={k}>
+                  <Lbl style={{display:"block",marginBottom:4}}>{l}</Lbl>
+                  <input value={form[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none"}}/>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>
+          {step === "select"
+            ? <>
+                <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+                <div style={{flex:1}}/>
+                <Btn variant="primary" onClick={openDetails} disabled={!selected}>Continue</Btn>
+              </>
+            : <>
+                <Btn variant="ghost" onClick={()=>setStep("select")}>Back</Btn>
+                <div style={{flex:1}}/>
+                <Btn variant="primary" onClick={generate}>Save & Generate</Btn>
+              </>
+          }
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── CREATORS TABLE ────────────────────────────────────────────────────────────
@@ -481,6 +786,7 @@ function TabCreators({camp,role,onUpdateCreators}){
   const [genRounds,setGenRounds]=useState(camp.genRounds||0);
   const [removeTarget,setRemoveTarget]=useState(null);
   const [showAdd,setShowAdd]=useState(false);
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const required=camp.numReq||5,flagged=genRounds>=4;
   const cb=camp.creatorBudget||camp.budget*0.6;
   const totalFee=creators.reduce((s,c)=>s+(c.fee||0),0);
@@ -497,7 +803,17 @@ function TabCreators({camp,role,onUpdateCreators}){
     {canFin(role)&&<div style={{marginBottom:18}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}><Lbl>Creator Budget</Lbl><span style={{fontSize:10.5,color:over?T.red:T.sub}}>{fmtINR(totalFee)} of {fmtINR(cb)}</span></div><div style={{height:2,background:T.mute,borderRadius:1}}><div style={{height:2,borderRadius:1,background:over?T.red:T.green,width:`${Math.min((totalFee/cb)*100,100)}%`,transition:"width 0.3s"}}/></div>{over&&<div style={{fontSize:9.5,color:T.red,marginTop:3}}>{fmtINR(totalFee-cb)} over budget</div>}</div>}
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
       <div><Lbl>Creators</Lbl><span style={{fontSize:9,color:T.sub,marginLeft:8}}>{creators.length} of {required} required</span>{camp.sentToClient&&<span style={{fontSize:9,color:T.green,marginLeft:8}}>&middot; sent to client</span>}</div>
-      {canEdit&&<div style={{display:"flex",gap:6}}><Btn variant="ghost" onClick={()=>setShowAdd(true)} style={{fontSize:9.5,padding:"4px 10px"}}>+ Add Creator</Btn><Btn variant="ghost" onClick={generate} disabled={flagged||generating} style={{fontSize:9.5,padding:"4px 10px",color:flagged?T.red:generating?T.sub:T.text,borderColor:flagged?`${T.red}22`:T.border}}>{generating?"Generating…":flagged?`Flagged (${genRounds}×)`:"Generate"}</Btn></div>}
+      <div style={{display:"flex",gap:6,alignItems:"center"}}>
+        {canEdit&&<>
+          <Btn variant="ghost" onClick={()=>setShowAdd(true)} style={{fontSize:9.5,padding:"4px 10px"}}>+ Add Creator</Btn>
+          <Btn variant="ghost" onClick={generate} disabled={flagged||generating} style={{fontSize:9.5,padding:"4px 10px",color:flagged?T.red:generating?T.sub:T.text,borderColor:flagged?`${T.red}22`:T.border}}>{generating?"Generating…":flagged?`Flagged (${genRounds}×)`:"Generate"}</Btn>
+        </>}
+        {canFin(role)&&(
+          <Btn variant="ghost" onClick={()=>setShowInvoiceModal(true)} style={{fontSize:9.5,padding:"4px 10px"}}>
+            🧾 Generate Invoice
+          </Btn>
+        )}
+      </div>
     </div>
     {flagged&&<div style={{padding:"8px 10px",borderRadius:5,border:`1px solid ${T.red}22`,fontSize:10,color:T.red,marginBottom:12,background:T.raised}}>{genRounds}× the required count generated. Founder approval required to continue.</div>}
     <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}>
@@ -537,6 +853,9 @@ function TabCreators({camp,role,onUpdateCreators}){
     </div>}
     {removeTarget&&<RemoveModal creator={removeTarget} onConfirm={confirmRemove} onCancel={()=>setRemoveTarget(null)}/>}
     {showAdd&&<AddCreatorModal onAdd={cr=>sync([...creators,cr])} onClose={()=>setShowAdd(false)}/>}
+    {showInvoiceModal && (
+      <InvoiceSelectModal camp={camp} creators={creators} onClose={()=>setShowInvoiceModal(false)} onUpdateCreators={sync}/>
+    )}
   </div>);
 }
 
@@ -782,35 +1101,93 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators}){
 }
 
 // ── CREATE MODAL ─────────────────────────────────────────────────────────────
-function CreateModal({onClose,onSubmit}){
+function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
   const [step,setStep]=useState(0);
-  const [f,setF]=useState({name:"",client:"FreshBite Foods",service:"Influencer Marketing",region:"",budget:"",numCreators:5,objective:"",audience:"",messages:"",deliverables:[],timeline:"",internalNotes:""});
+  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",budget:"",numCreators:5,objective:"",audience:"",messages:"",deliverables:[],timeline:"",internalNotes:""});
+  const [newBrandName,setNewBrandName]=useState("");
+  // Staged only — nothing is written to the backend until the campaign is
+  // actually submitted, so abandoning this modal never leaves an orphan brand.
+  const [pendingBrandName,setPendingBrandName]=useState(null);
+  const [submitting,setSubmitting]=useState(false);
+  const [brandErr,setBrandErr]=useState(null);
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
-  const ok=step===0?!!(f.name&&f.service):true;
+  const ok=step===0?!!(f.name&&f.service&&f.brandId):true;
   const STEPS=["Basics","Brief","Commercial","Internal"];
+  const handleStageBrand=()=>{
+    const name=newBrandName.trim();
+    if(!name)return;
+    setBrandErr(null);
+    const existing=brands.find(b=>b.name.toLowerCase()===name.toLowerCase());
+    if(existing){
+      u("brandId",existing.id);
+      setPendingBrandName(null);
+    }else{
+      setPendingBrandName(name);
+      u("brandId","__new__");
+    }
+    setNewBrandName("");
+  };
+  const handleSubmit=async()=>{
+    if(f.brandId!=="__new__"){ onSubmit(f); return; }
+    setSubmitting(true);setBrandErr(null);
+    try{
+      const created=await onCreateBrand(pendingBrandName);
+      onSubmit({...f,brandId:created.id});
+    }catch(err){
+      setBrandErr(err.message||"Could not create brand — campaign not created");
+      setSubmitting(false);
+    }
+  };
   return(<div style={{position:"fixed",inset:0,zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}><div onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(6px)"}}/>
     <div style={{position:"relative",width:"min(500px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
       <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}><div><div style={{fontFamily:"'Newsreader',serif",fontSize:18,color:T.text,fontStyle:"italic",marginBottom:2}}>New Campaign</div><Lbl>{STEPS[step]} — {step+1} of {STEPS.length}</Lbl></div><button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button></div>
       <div style={{height:1.5,background:T.mute}}><div style={{height:1.5,background:T.accent,width:`${((step+1)/STEPS.length)*100}%`,transition:"width 0.25s"}}/></div>
       <div style={{padding:"18px 20px",overflowY:"auto",flex:1}}>
-        {step===0&&<>{[["Campaign name *","name","text","e.g. Summer Launch Teaser"],["Client","client","text",""]].map(([l,k,t,ph])=><div key={k} style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>{l}</Lbl><input value={f[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none"}}/></div>)}<div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Service *</Lbl><select value={f.service} onChange={e=>u("service",e.target.value)} style={{...INP,resize:"none"}}>{["Influencer Marketing","IM — Mass","IM — Sales"].map(s=><option key={s}>{s}</option>)}</select></div><div><Lbl style={{display:"block",marginBottom:5}}>Region</Lbl><input value={f.region} onChange={e=>u("region",e.target.value)} placeholder="e.g. South India" style={{...INP,resize:"none"}}/></div></>}
+        {step===0&&<>
+          <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Campaign name *</Lbl><input value={f.name} onChange={e=>u("name",e.target.value)} placeholder="e.g. Summer Launch Teaser" style={{...INP,resize:"none"}}/></div>
+          <div style={{marginBottom:6}}>
+            <Lbl style={{display:"block",marginBottom:5}}>Brand *</Lbl>
+            <select value={f.brandId} onChange={e=>{u("brandId",e.target.value);if(e.target.value!=="__new__")setPendingBrandName(null);}} style={{...INP,resize:"none"}}>
+              <option value="">— Select brand —</option>
+              {brands.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(b=><option key={b.id} value={b.id}>{b.name}</option>)}
+              {pendingBrandName&&<option value="__new__">{pendingBrandName} (new)</option>}
+            </select>
+          </div>
+          <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"center"}}>
+            <input value={newBrandName} onChange={e=>setNewBrandName(e.target.value)} placeholder="+ Add new brand…" style={{...INP,resize:"none",flex:1}}/>
+            <Btn variant="ghost" onClick={handleStageBrand} disabled={!newBrandName.trim()}>Add</Btn>
+          </div>
+          {pendingBrandName&&f.brandId==="__new__"&&<div style={{fontSize:9.5,color:T.amber,marginBottom:10}}>"{pendingBrandName}" will be created when you submit this campaign.</div>}
+          {brandErr&&<div style={{fontSize:10.5,color:T.red,marginBottom:10}}>{brandErr}</div>}
+          <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Service *</Lbl><select value={f.service} onChange={e=>u("service",e.target.value)} style={{...INP,resize:"none"}}>{["Influencer Marketing","IM — Mass","IM — Sales"].map(s=><option key={s}>{s}</option>)}</select></div><div><Lbl style={{display:"block",marginBottom:5}}>Region</Lbl><input value={f.region} onChange={e=>u("region",e.target.value)} placeholder="e.g. South India" style={{...INP,resize:"none"}}/></div></>}
         {step===1&&<>{[["Objective","objective",60],["Target audience","audience",50],["Key Messages","messages",50]].map(([l,k,h])=><div key={k} style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>{l}</Lbl><textarea value={f[k]} onChange={e=>u(k,e.target.value)} style={{...INP,minHeight:h}}/></div>)}<div><Lbl style={{display:"block",marginBottom:6}}>Deliverables</Lbl><DelvSelect value={f.deliverables} onChange={v=>u("deliverables",v)}/></div></>}
         {step===2&&<>{[["Total budget (₹)","budget","number","e.g. 1250000"],["Creators required","numCreators","number","5"],["Timeline","timeline","text","Apr 1 – Jun 30"]].map(([l,k,t,ph])=><div key={k} style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>{l}</Lbl><input type={t} value={f[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none"}}/></div>)}</>}
         {step===3&&<div><Lbl color={T.amber} style={{display:"block",marginBottom:5}}>Internal notes — never visible to client</Lbl><textarea value={f.internalNotes} onChange={e=>u("internalNotes",e.target.value)} placeholder="Margin targets, context…" style={{...INP,minHeight:100,borderColor:`${T.amber}30`}}/></div>}
       </div>
-      <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>{step>0&&<Btn variant="ghost" onClick={()=>setStep(s=>s-1)}>← Back</Btn>}<div style={{flex:1}}/>{step<STEPS.length-1?<Btn variant="primary" onClick={()=>setStep(s=>s+1)} disabled={!ok}>Next</Btn>:<Btn variant="primary" onClick={()=>onSubmit(f)}>Create campaign</Btn>}</div>
+      <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>{step>0&&<Btn variant="ghost" onClick={()=>setStep(s=>s-1)}>← Back</Btn>}<div style={{flex:1}}/>{step<STEPS.length-1?<Btn variant="primary" onClick={()=>setStep(s=>s+1)} disabled={!ok}>Next</Btn>:<Btn variant="primary" onClick={handleSubmit} disabled={submitting}>{submitting?"Creating…":"Create campaign"}</Btn>}</div>
     </div>
   </div>);
 }
 
 // ── ROOT ─────────────────────────────────────────────────────────────────────
 export default function InternalCampaigns(){
-  const { user } = useOutletContext() || {};
+  const { user, brandFilter, brands: ctxBrands, refreshBrands } = useOutletContext() || {};
   const currentUser = user || { role:"am", teamId:"t7", name:"Demo" };
   const role = ["accounts_head","accounts_exec"].includes(currentUser.role) ? "accounts" : currentUser.role;
   const [campaigns,setCampaigns]=useState([]);
   const [loading,setLoading]=useState(true);
   const [loadError,setLoadError]=useState(null);
+  const [brands,setBrands]=useState([]);
+  useEffect(()=>{ setBrands(ctxBrands||[]); },[ctxBrands]);
+  const brandName = useCallback(id=>brands.find(b=>b.id===id)?.name||null,[brands]);
+  const onCreateBrand = useCallback(async(name)=>{
+    const id = name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
+    const created = await ClientsAPI.create({ id, name });
+    const entry = { id: created.id, name: created.name };
+    setBrands(prev=>[...prev,entry]);
+    refreshBrands?.();
+    return entry;
+  },[refreshBrands]);
   useEffect(()=>{
     let cancelled=false;
     CampaignsAPI.list()
@@ -880,7 +1257,7 @@ export default function InternalCampaigns(){
     const campId = `camp_${slug}_${Date.now().toString(36)}`;
     const budget = parseInt(f.budget)||0;
     const c={
-      id:campId, name:f.name, client:f.client, service:f.service,
+      id:campId, name:f.name, client:brandName(f.brandId)||"", brandId:f.brandId, service:f.service,
       region:f.region||"TBD", stage:"draft", progress:0,
       budget, creatorBudget:Math.round(budget*0.6),
       numReq:parseInt(f.numCreators)||5, start:today(), end:"TBD",
@@ -897,7 +1274,7 @@ export default function InternalCampaigns(){
     if(budget > 0){
       const invId = `INV-AUTO-${campId}`;
       InvoicesAPI.create({
-        id: invId, client: f.client, clientId: null, campaign: campId,
+        id: invId, client: brandName(f.brandId)||"", clientId: f.brandId, campaign: campId,
         type:"campaign", label:`${f.name} — Campaign Invoice`,
         amount: budget, gstRate:18,
         raisedDate: today(), dueDate:"TBD", status:"pending",
@@ -912,8 +1289,8 @@ export default function InternalCampaigns(){
       }).catch(()=>{}); // silent — billing stub creation is best-effort
     }
     setCampaigns(p=>[c,...p]);setSelId(c.id);setCreate(false);showToast("Campaign created");
-  },[showToast,role,currentUser]);
-  const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(stageFilter!=="all"){const g={intake:["draft","creator_shortlist","po_raised"],planning:["advance_received","execution","brief_sent"],execution:["concept_submitted","concept_approved","production"],delivery:["video_submitted","internal_review","client_approved","live","creator_paid","reporting","completed"]};if(!g[stageFilter]?.includes(c.stage))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search]);
+  },[showToast,role,currentUser,brandName]);
+  const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(brandFilter&&c.brandId!==brandFilter)return false;if(stageFilter!=="all"){const g={intake:["draft","creator_shortlist","po_raised"],planning:["advance_received","execution","brief_sent"],execution:["concept_submitted","concept_approved","production"],delivery:["video_submitted","internal_review","client_approved","live","creator_paid","reporting","completed"]};if(!g[stageFilter]?.includes(c.stage))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search,brandFilter]);
   const selected=campaigns.find(c=>c.id===selectedId)||null;
   const needsAttn=visible.filter(c=>["draft","po_raised","concept_submitted","video_submitted"].includes(c.stage)).length;
   if(loading)return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",background:"#F5F5F7",fontFamily:SF,fontSize:13,color:"#6E6E73"}}>Loading campaigns…</div>);
@@ -959,7 +1336,25 @@ export default function InternalCampaigns(){
       <div style={{width:290,flexShrink:0,borderRight:"1px solid rgba(0,0,0,0.07)",overflowY:"auto",padding:"8px 8px",background:"#FAFAFA"}}>
         {visible.length===0
           ? <div style={{padding:"48px 16px",textAlign:"center",color:"#86868B",fontSize:12,fontFamily:SF}}>No campaigns match</div>
-          : visible.map(c=><CampCard key={c.id} camp={c} selected={selectedId===c.id} onClick={()=>setSelId(c.id)} role={role}/>)
+          : (() => {
+              const groups = {};
+              visible.forEach(c => {
+                const label = brandName(c.brandId) || "Unassigned";
+                (groups[label] = groups[label] || []).push(c);
+              });
+              const labels = Object.keys(groups).sort((a,b) =>
+                a==="Unassigned" ? 1 : b==="Unassigned" ? -1 : a.localeCompare(b));
+              return labels.map(label => (
+                <div key={label} style={{marginBottom:10}}>
+                  <div style={{padding:"6px 8px 4px",fontSize:9.5,fontWeight:700,color:"#86868B",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:SF}}>
+                    {label} · {groups[label].length}
+                  </div>
+                  {groups[label].map(c => (
+                    <CampCard key={c.id} camp={c} selected={selectedId===c.id} onClick={()=>setSelId(c.id)} role={role}/>
+                  ))}
+                </div>
+              ));
+            })()
         }
       </div>
       {/* Detail panel */}
@@ -976,6 +1371,6 @@ export default function InternalCampaigns(){
         }
       </div>
     </div>
-    {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate}/>}
+    {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand}/>}
   </div>);
 }

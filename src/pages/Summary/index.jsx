@@ -108,8 +108,9 @@ const PLANNED = [
 ];
 
 export default function FounderSummary() {
-  const { user } = useOutletContext() || {};
+  const { user, brandFilter, brands } = useOutletContext() || {};
   const role = user?.role || "founder";
+  const brandName = brands?.find(b => b.id === brandFilter)?.name || null;
   const [noted, setNoted] = useState(false);
 
   return (
@@ -140,6 +141,18 @@ export default function FounderSummary() {
               Full content to be confirmed and built; the layout below shows
               what's planned.
             </div>
+            {brandName && (
+              <div style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                marginTop: 10, padding: "4px 14px",
+                background: F.navyTint, borderRadius: 20,
+                fontSize: 10.5, color: F.navy, fontWeight: 600,
+                fontFamily: "'Sora', sans-serif",
+              }}>
+                <span style={{ opacity: 0.7 }}>◈</span>
+                <span>Filtered to: {brandName}</span>
+              </div>
+            )}
           </div>
           <div style={{
             padding:"6px 13px", borderRadius:20,

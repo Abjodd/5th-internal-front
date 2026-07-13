@@ -8,10 +8,11 @@
  * Newsreader for display type, Sora for UI. Soft elevation instead of
  * ornament. Styling only; logic below is unchanged from the original.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { SECTIONS, canAccess, getRole } from "../routes/sections";
 import { useAuth } from "../context/AuthContext";
+import { ClientsAPI } from "../lib/api";
 
 const F = {
   paper:     "#FAFAF9",
@@ -176,12 +177,86 @@ function ReadOnlyBanner() {
   );
 }
 
+function BrandSelect({ brands, value, onChange }) {
+  if (brands.length === 0) return null;
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 6,
+      paddingLeft: 16, paddingRight: 12,
+      borderRight: `1px solid ${F.hairline}`,
+      height: "100%", flexShrink: 0,
+    }}>
+      <span style={{
+        fontSize: 9, fontWeight: 600, color: F.label,
+        textTransform: "uppercase", letterSpacing: "0.07em",
+        fontFamily: "'Sora', sans-serif", whiteSpace: "nowrap",
+      }}>Brand</span>
+      <select
+        id="brand-filter"
+        value={value || ""}
+        onChange={e => onChange(e.target.value || null)}
+        style={{
+          fontFamily: "'Sora', sans-serif", fontSize: 11,
+          color: value ? F.ink : F.inkSoft,
+          fontWeight: value ? 600 : 400,
+          background: value ? F.navyTint : "transparent",
+          border: `1px solid ${value ? F.navy + "40" : F.hairline}`,
+          borderRadius: 6, padding: "4px 8px",
+          cursor: "pointer", outline: "none", maxWidth: 160,
+          transition: "all 0.15s",
+        }}
+      >
+        <option value="">All Brands</option>
+        {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+      </select>
+      {value && (
+        <button onClick={() => onChange(null)} title="Clear filter"
+          style={{
+            background: "none", border: "none", cursor: "pointer",
+            color: F.label, fontSize: 14, padding: "2px 3px",
+            borderRadius: 4, lineHeight: 1,
+          }}
+        >✕</button>
+      )}
+    </div>
+  );
+}
+
 export default function AppShell() {
   const { user, logout } = useAuth();
   const location = useLocation();
   const navigate  = useNavigate();
 
+  // ── Brand filter ──────────────────────────────────────────────────────────
+  const [brandFilter, setBrandFilter] = useState(() => {
+    try { return sessionStorage.getItem("5av_brandFilter") || null; } catch { return null; }
+  });
+  const [brands, setBrands] = useState([]);
+
+  const handleBrandChange = (val) => {
+    setBrandFilter(val);
+    try {
+      if (val) sessionStorage.setItem("5av_brandFilter", val);
+      else sessionStorage.removeItem("5av_brandFilter");
+    } catch {}
+  };
+
+  const loadBrands = () => {
+    ClientsAPI.list()
+      .then(list => {
+        const brandsList = list.map(c => ({ id: c.id, name: c.name })).filter(b => b.name);
+        setBrands(brandsList);
+        setBrandFilter(prev => (prev && !brandsList.some(b => b.id === prev) ? null : prev));
+      })
+      .catch(() => {}); // non-critical — silent fail
+  };
+
+  useEffect(() => {
+    loadBrands();
+  }, []);
+
   const handleLogout = () => {
+    handleBrandChange(null); // clear brand filter on logout
     logout();
     navigate("/login", { replace: true });
   };
@@ -212,7 +287,7 @@ export default function AppShell() {
         {/* Wordmark */}
         <div style={{
           display: "flex", alignItems: "center",
-          paddingRight: 22, marginRight: 6,
+          paddingRight: 22, marginRight: 0,
           borderRight: `1px solid ${F.hairline}`,
         }}>
           <span style={{
@@ -223,6 +298,9 @@ export default function AppShell() {
             5th Avenue
           </span>
         </div>
+
+        {/* Brand Filter */}
+        <BrandSelect brands={brands} value={brandFilter} onChange={handleBrandChange} />
 
         {/* Nav tabs */}
         <div style={{ display: "flex", alignItems: "stretch", flex: 1, overflowX: "auto" }}>
@@ -242,7 +320,7 @@ export default function AppShell() {
       {/* ── PAGE CONTENT ── */}
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {hasAccess
-          ? <Outlet context={{ user, role: user.role }} />
+          ? <Outlet context={{ user, role: user.role, brandFilter, setBrandFilter, brands, refreshBrands: loadBrands }} />
           : <AccessDenied section={activeSec} />
         }
       </div>

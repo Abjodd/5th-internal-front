@@ -74,3 +74,49 @@ a:focus-visible {
   from { opacity: 0; transform: translateY(3px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+@keyframes popIn {
+  from { opacity: 0; transform: scale(0.97) translateY(4px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* Soft focus glow on form fields (box-shadow so it composes with the
+   inline border each page sets). */
+input:focus, select:focus, textarea:focus {
+  box-shadow: 0 0 0 3px rgba(47, 62, 107, 0.10);
+}
+input, select, textarea {
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+/* Hide native number-input steppers — amounts get comma grouping via
+   MoneyInput; the spinners just add noise. */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* Tactile press feedback on every enabled button. */
+button {
+  transition: transform 0.1s ease, opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+button:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+/* DateInput popover hovers */
+.dp-day:hover { background: rgba(47, 62, 107, 0.10) !important; }
+.dp-nav:not(:disabled):hover { background: rgba(28, 24, 16, 0.06); color: #1C1A15; }
+
+/* Pipeline (FullPipe) — current-stage heartbeat + node hover lift */
+@keyframes pipePulse {
+  0%   { box-shadow: 0 0 0 0 var(--pulse-col, rgba(47, 62, 107, 0.35)); }
+  70%  { box-shadow: 0 0 0 6px rgba(0, 0, 0, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0); }
+}
+.pipe-node { transition: transform 0.15s ease; cursor: default; }
+.pipe-node:hover { transform: translateY(-2px); }

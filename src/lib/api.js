@@ -58,5 +58,6 @@ export const CampaignsAPI = {
     request("/api/campaigns", { method: "POST", body: JSON.stringify(campaign) }),
   update: (id, patch) =>
     request(`/api/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
-  remove: (id) => request(`/api/campaigns/${id}`, { method: "DELETE" }),
+  // actor lands on the campaign's timeline ("Campaign deleted" audit entry)
+  remove: (id, actor) => request(`/api/campaigns/${id}${actor ? `?actor=${encodeURIComponent(actor)}` : ""}`, { method: "DELETE" }),
 };

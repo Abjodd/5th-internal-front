@@ -14,8 +14,12 @@
  */
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
-import { CampaignsAPI, InstagramAPI, InvoicesAPI, ClientsAPI } from "../../lib/api";
+import { CampaignsAPI, InstagramAPI, InvoicesAPI, ClientPOsAPI, ClientsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
+import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
+import { fmtCompact, prettyDate } from "../../lib/format";
+import MoneyInput from "../../components/MoneyInput";
+import DateInput from "../../components/DateInput";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
 import { T as BASE_T } from "../../theme/tokens";
@@ -132,8 +136,17 @@ const REMOVE_REASONS = [
   {id:"brand_reject",label:"Brand Reject",desc:"Informally communicated by the brand"},
   {id:"backed_off",label:"Backed Off",desc:"Creator declined or unresponsive"},
 ];
-const PAYMENT_TYPES = [{id:"",label:"— Select —"},{id:"vendor",label:"To Vendor"},{id:"net_banking",label:"Net Banking"}];
-const PAYMENT_HINT = { vendor:"Vendor code / ID", net_banking:"Account No. or UPI ID" };
+const PAYMENT_TYPES = [{id:"",label:"— Select —"},{id:"vendor",label:"To Vendor"},{id:"net_banking",label:"Net Banking"},{id:"upi",label:"UPI"}];
+// Full names — stored as-is on creator.state and matched by name in the
+// client portal's STATES_META (5th-client-front/src/lib/geo.js).
+const INDIAN_STATES = [
+  "Andaman & Nicobar","Andhra Pradesh","Arunachal Pradesh","Assam","Bihar",
+  "Chandigarh","Chhattisgarh","Dadra & Nagar Haveli","Daman & Diu","Delhi",
+  "Goa","Gujarat","Haryana","Himachal Pradesh","Jammu & Kashmir","Jharkhand",
+  "Karnataka","Kerala","Lakshadweep","Madhya Pradesh","Maharashtra","Manipur",
+  "Meghalaya","Mizoram","Nagaland","Odisha","Puducherry","Punjab","Rajasthan",
+  "Sikkim","Tamil Nadu","Tripura","Uttar Pradesh","Uttarakhand","West Bengal",
+];
 // ── AGENCY ENTITY (for invoice generation) ───────────────────────────────────
 const AGENCY = {
   name:    "5th Avenue",
@@ -142,11 +155,13 @@ const PLATFORMS = ["Instagram","YouTube","Twitter / X","LinkedIn","Moj","Josh","
 const CREATOR_COLS = [
   {key:"name",label:"Creator",cv:true,w:190},{key:"platform",label:"Platform",cv:true,w:90},
   {key:"followers",label:"Followers",cv:true,w:78},{key:"avgER",label:"Avg ER%",cv:true,w:65},
-  {key:"niche",label:"Niche",cv:true,w:85},{key:"status",label:"Status",cv:true,w:120},
+  {key:"niche",label:"Niche",cv:true,w:85},{key:"state",label:"State",cv:true,w:100},
+  {key:"status",label:"Status",cv:true,w:120},
   {key:"concept",label:"Concept",cv:true,w:105},{key:"demo",label:"Demo",cv:true,w:105},
   {key:"fee",label:"Fee",cv:false,w:90},{key:"payType",label:"Pay Type",cv:false,w:110},
-  {key:"payId",label:"Pay ID",cv:false,w:120},
 ];
+// Maps form field names -> validator kinds, for live per-keystroke checks.
+const FIELD_SANITIZE = { phone:"phone", email:"email", pan:"pan", ifsc:"ifsc", bankAccount:"account", upiId:"upi" };
 
 // ── TEAM ─────────────────────────────────────────────────────────────────────
 const TEAM = [
@@ -198,8 +213,9 @@ const mkCreator = (src={}, fee) => ({
   fee:      fee ?? src.fee ?? (src.negotiatedCost || 0),
   igFetched: src.igFetched || null, // raw auto-fetched snapshot (bio, posts, fetchedAt, etc.)
   status:   "shortlisted",
-  payType:  null,
-  payId:    null,
+  state:    src.state   || null,
+  payType:  src.payType || null,
+  payId:    src.payId   || null,
   concept:  {status:"yet_to_receive",fileLink:null},
   demo:     {status:"yet_to_receive",fileLink:null},
   live:     {postUrl:null,postedDate:null},
@@ -212,6 +228,7 @@ const mkCreator = (src={}, fee) => ({
     bankAccount: src.personalDetails?.bankAccount || src.bankAccount || null,
     bankBranch:  src.personalDetails?.bankBranch  || src.bankBranch  || null,
     ifsc:        src.personalDetails?.ifsc        || src.ifsc        || null,
+    upiId:       src.personalDetails?.upiId       || src.upiId       || null,
   },
 });
 
@@ -287,7 +304,7 @@ const INIT_CAMPS = [
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 const fmtINR  = n => !n&&n!==0?"—":n>=100000?`₹${(n/100000).toFixed(1)}L`:`₹${(n/1000).toFixed(0)}K`;
-const fmtNum  = n => n==null?"—":n>=1000000?`${(n/1000000).toFixed(1)}M`:n>=1000?`${(n/1000).toFixed(1)}K`:`${n}`;
+const fmtNum  = fmtCompact; // shared compact formatter — lib/format.js
 const getM    = id => TEAM.find(t=>t.id===id)||null;
 const getR    = id => ROLES.find(r=>r.id===id)||ROLES[0];
 const plIdx   = id => PL_IDS.indexOf(id);
@@ -377,7 +394,12 @@ function generateInvoiceHTML(creator, camp, invoiceNo, dated) {
     <td class="rt" style="font-weight:bold">${fmt(fee)}</td>
   </tr>
   <tr><td colspan="5">Tax Amount (in words): ${amtInWords(fee)}</td></tr>
-  ${pd.bankName || pd.bankAccount ? `<tr><td colspan="5">
+  ${creator.payType === "upi" && pd.upiId ? `<tr><td colspan="5">
+    <p><strong>Payment Details</strong></p>
+    <div class="bg">
+      <span>UPI ID</span><span>: ${pd.upiId}</span>
+    </div>
+  </td></tr>` : pd.bankName || pd.bankAccount ? `<tr><td colspan="5">
     <p><strong>Bank Details</strong></p>
     <div class="bg">
       ${pd.bankName    ? `<span>Bank Name</span><span>: ${pd.bankName}</span>`       : ""}
@@ -426,7 +448,30 @@ const INP={width:"100%",padding:"9px 12px",borderRadius:9,background:"rgba(0,0,0
 
 // ── PIPELINE WIDGETS ─────────────────────────────────────────────────────────
 const MiniPipe=({stage})=>{const pct=Math.round((plIdx(stage)/(PIPELINE.length-1))*100),col=T.sc[stage]||T.sub;return <div style={{height:2,background:"rgba(0,0,0,0.07)",borderRadius:1,marginTop:9}}><div style={{height:2,borderRadius:1,background:col,width:`${pct}%`,transition:"width 0.5s ease"}}/></div>;};
-function FullPipe({stage}){const idx=plIdx(stage),col=T.sc[stage]||T.sub;return(<div style={{overflowX:"auto",paddingBottom:4}}><div style={{display:"flex",alignItems:"flex-start",minWidth:"max-content",gap:0}}>{PIPELINE.map((p,i)=>{const done=i<idx,cur=i===idx;return(<div key={p.id} style={{display:"flex",alignItems:"center"}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:5,minWidth:64}}><div style={{width:cur?8:5,height:cur?8:5,borderRadius:"50%",flexShrink:0,background:cur?col:done?"#34C759":"rgba(0,0,0,0.12)",boxShadow:cur?`0 0 0 3px ${col}28`:done?"0 0 0 2px #34C75928":"none",transition:"all 0.3s"}}/><span style={{fontSize:7,textAlign:"center",whiteSpace:"nowrap",color:cur?col:done?"#34C759":"rgba(0,0,0,0.28)",fontWeight:cur?700:400,fontFamily:SF}}>{p.label}</span></div>{i<PIPELINE.length-1&&<div style={{width:14,height:"0.5px",background:i<idx?"#34C759":"rgba(0,0,0,0.1)",marginBottom:20,flexShrink:0,transition:"background 0.3s"}}/>}</div>);})} </div></div>);}
+function FullPipe({stage}){
+  const idx=plIdx(stage),col=T.sc[stage]||T.sub,GREEN="#34C759";
+  // Top/bottom padding keeps the pulse ring and hover lift inside the
+  // overflow-x scroll container instead of getting clipped.
+  return(<div style={{overflowX:"auto",padding:"8px 0 6px"}}><div style={{display:"flex",alignItems:"flex-start",minWidth:"max-content"}}>{PIPELINE.map((p,i)=>{
+    const done=i<idx,cur=i===idx;
+    return(<div key={p.id} style={{display:"flex",alignItems:"flex-start"}}>
+      <div className="pipe-node" title={`Stage ${i+1} of ${PIPELINE.length} — ${p.label}${done?" · complete":cur?" · current":""}`} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,minWidth:72}}>
+        <div style={{width:14,height:14,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",
+          background:cur?col:done?GREEN:"#FFFFFF",
+          border:done||cur?"none":"1.5px solid rgba(0,0,0,0.14)",
+          animation:cur?"pipePulse 2s ease-out infinite":"none",
+          "--pulse-col":`${col}50`,
+          transition:"background 0.3s"}}>
+          {done&&<span style={{color:"#FFF",fontSize:8,fontWeight:700,lineHeight:1}}>✓</span>}
+          {cur&&<span style={{width:4,height:4,borderRadius:"50%",background:"#FFF"}}/>}
+        </div>
+        <span style={{fontSize:7.5,textAlign:"center",whiteSpace:"nowrap",color:cur?col:done?"#1D1D1F":"rgba(0,0,0,0.30)",fontWeight:cur?700:done?500:400,fontFamily:SF,letterSpacing:"0.01em"}}>{p.label}</span>
+        {cur&&<span style={{fontSize:6.5,fontWeight:700,color:col,background:`${col}14`,borderRadius:4,padding:"1px 5px",textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:SF,marginTop:-2}}>Now</span>}
+      </div>
+      {i<PIPELINE.length-1&&<div style={{width:18,height:2,borderRadius:1,background:i<idx?GREEN:"rgba(0,0,0,0.08)",marginTop:6,flexShrink:0,transition:"background 0.3s"}}/>}
+    </div>);
+  })}</div></div>);
+}
 
 // ── DELIVERABLE MULTISELECT ───────────────────────────────────────────────────
 function DelvSelect({value=[],onChange}){const t=d=>onChange(value.includes(d)?value.filter(x=>x!==d):[...value,d]);return(<div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:2}}>{IM_DELIVERABLES.map(d=>{const on=value.includes(d);return <button key={d} onClick={()=>t(d)} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{d}</button>;})}</div>);}
@@ -457,19 +502,48 @@ function CampCard({camp,selected,onClick,role}){
 // ── REMOVE MODAL ─────────────────────────────────────────────────────────────
 function RemoveModal({creator,onConfirm,onCancel}){const [reason,setReason]=useState("");const [note,setNote]=useState("");return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}><div onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/><div style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}><div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Remove Creator</div><div style={{fontSize:11,color:T.sub,marginBottom:16}}>{creator?.name} {creator?.handle} — select a reason</div><div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>{REMOVE_REASONS.map(r=><label key={r.id} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 12px",borderRadius:6,cursor:"pointer",background:reason===r.id?`${T.accent}10`:T.raised,border:`1px solid ${reason===r.id?`${T.accent}30`:T.border}`,transition:"all 0.1s"}}><input type="radio" value={r.id} checked={reason===r.id} onChange={()=>setReason(r.id)} style={{marginTop:2,accentColor:T.accent}}/><div><div style={{fontSize:11.5,color:T.text,fontWeight:500,marginBottom:2}}>{r.label}</div><div style={{fontSize:10,color:T.sub}}>{r.desc}</div></div></label>)}</div><textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} placeholder="Additional note (optional)…" style={{...INP,fontSize:11,marginBottom:12}}/><div style={{display:"flex",gap:8}}><Btn variant="ghost" onClick={onCancel}>Cancel</Btn><Btn variant="danger" onClick={()=>reason&&onConfirm(reason,note)} disabled={!reason}>Remove creator</Btn></div></div></div>);}
 
+// ── DELETE CAMPAIGN MODAL ────────────────────────────────────────────────────
+// Founder-only confirm step. The backend soft-deletes (deleted:true), so the
+// campaign disappears from every list but stays recoverable in the DB.
+function DeleteCampaignModal({camp,onConfirm,onCancel}){
+  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
+    <div style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
+      <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Delete Campaign</div>
+      <div style={{fontSize:11,color:T.sub,marginBottom:16}}>
+        Delete <strong style={{color:T.text}}>{camp?.name}</strong> ({camp?.client})? It will be removed from all views. Recovery requires a database restore.
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
+        <div style={{flex:1}}/>
+        <Btn variant="danger" onClick={onConfirm}>Delete campaign</Btn>
+      </div>
+    </div>
+  </div>);
+}
+
 // ── ADD CREATOR MODAL ─────────────────────────────────────────────────────────
 function AddCreatorModal({onAdd,onClose}){
   const [f,setF]=useState({
-    name:"",platform:"Instagram",handle:"",igUrl:"",phone:"",niche:"",followers:"",avgLikes:"",avgER:"",
-    pan:"",email:"",address:"",bankName:"",bankAccount:"",bankBranch:"",ifsc:""
+    name:"",platform:"Instagram",handle:"",igUrl:"",phone:"",niche:"",state:"",followers:"",avgLikes:"",avgER:"",
+    pan:"",email:"",address:"",bankName:"",bankAccount:"",bankBranch:"",ifsc:"",
+    payType:"",upiId:"",vendorCode:""
   });
   const [askingPrice,setAskingPrice]=useState("");
   const [fee,setFee]=useState(""); // negotiated cost
   const [fetching,setFetching]=useState(false);
   const [fetchErr,setFetchErr]=useState(null);
   const [igFetched,setIgFetched]=useState(null);
-  const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  const [errors,setErrors]=useState({});
+  const u=(k,v)=>{
+    const clean=FIELD_SANITIZE[k]?sanitizeField(FIELD_SANITIZE[k],v):v;
+    setF(p=>({...p,[k]:clean}));
+    setErrors(p=>({...p,[k]:FIELD_SANITIZE[k]?validateField(FIELD_SANITIZE[k],clean):null}));
+  };
   const valid=f.name.trim()&&f.handle.trim();
+  const req=requiredForPayType(f.payType);
+  const Err=({k})=>errors[k]?<div style={{fontSize:9.5,color:T.red,marginTop:3}}>{errors[k]}</div>:null;
+  const Req=({on=true})=>on?<span style={{color:T.red}}> *</span>:null;
 
   const handleFetch=async()=>{
     if(!f.igUrl.trim())return;
@@ -494,12 +568,20 @@ function AddCreatorModal({onAdd,onClose}){
 
   const handleAdd=()=>{
     if(!valid)return;
+    const errs=validateCreatorDetails(f,req);
+    setErrors(errs);
+    if(Object.keys(errs).length)return;
+    // payId mirrors the payType-specific identifier for the payment column
+    const payId=f.payType==="vendor"?f.vendorCode:f.payType==="net_banking"?f.bankAccount:f.payType==="upi"?f.upiId:null;
     onAdd(mkCreator({
       ...f,
       avgER:parseFloat(f.avgER)||null,
       askingPrice:parseInt(askingPrice)||null,
       negotiatedCost:parseInt(fee)||0,
       igFetched,
+      state:f.state||null,
+      payType:f.payType||null,
+      payId:payId||null,
       personalDetails: {
         pan: f.pan || null,
         email: f.email || null,
@@ -508,6 +590,7 @@ function AddCreatorModal({onAdd,onClose}){
         bankAccount: f.bankAccount || null,
         bankBranch: f.bankBranch || null,
         ifsc: f.ifsc || null,
+        upiId: f.upiId || null,
       }
     },parseInt(fee)||0));
     onClose();
@@ -583,8 +666,11 @@ function AddCreatorModal({onAdd,onClose}){
         <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Handle / Tag <span style={{color:T.red}}>*</span></Lbl><input value={f.handle} onChange={e=>u("handle",e.target.value)} placeholder="@username" style={{...INP,resize:"none"}}/></div>
         <Hr style={{margin:"14px 0"}}/>
         <Lbl style={{display:"block",marginBottom:10}}>Profile stats <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— auto-filled by Fetch, editable</span></Lbl>
-        <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Phone <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— internal only 🔒</span></Lbl><input value={f.phone} onChange={e=>u("phone",e.target.value)} placeholder="+91 98765 43210" style={{...INP,resize:"none",borderColor:`${T.amber}30`}}/></div>
-        <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Niche</Lbl><input value={f.niche} onChange={e=>u("niche",e.target.value)} placeholder="e.g. Food, Fitness, Lifestyle" style={{...INP,resize:"none"}}/></div>
+        <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Phone <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— internal only</span></Lbl><input value={f.phone} onChange={e=>u("phone",e.target.value)} placeholder="+91 98765 43210" style={{...INP,resize:"none",borderColor:errors.phone?T.red:`${T.amber}30`}}/><Err k="phone"/></div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+          <div><Lbl style={{display:"block",marginBottom:4}}>Niche</Lbl><input value={f.niche} onChange={e=>u("niche",e.target.value)} placeholder="e.g. Food, Fitness, Lifestyle" style={{...INP,resize:"none"}}/></div>
+          <div><Lbl style={{display:"block",marginBottom:4}}>State</Lbl><select value={f.state} onChange={e=>u("state",e.target.value)} style={{...INP,resize:"none"}}><option value="">— Select —</option>{INDIAN_STATES.map(s=><option key={s}>{s}</option>)}</select></div>
+        </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:14}}>
           {[["Followers","followers","e.g. 820K"],["Avg Likes","avgLikes","e.g. 32K"],["Avg ER%","avgER","e.g. 4.2"]].map(([l,k,ph])=>(
             <div key={k}><Lbl style={{display:"block",marginBottom:4}}>{l}</Lbl><input value={f[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none"}}/></div>
@@ -593,25 +679,24 @@ function AddCreatorModal({onAdd,onClose}){
         <Hr style={{margin:"14px 0"}}/>
         <Lbl style={{display:"block",marginBottom:10}}>Commercials</Lbl>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-          <div><Lbl style={{display:"block",marginBottom:4}}>Asking Price (₹)</Lbl><input type="number" step={100} value={askingPrice} onChange={e=>setAskingPrice(e.target.value)} placeholder="e.g. 90000" style={{...INP,resize:"none"}}/></div>
-          <div><Lbl style={{display:"block",marginBottom:4}}>Negotiated Cost (₹)</Lbl><input type="number" step={100} value={fee} onChange={e=>setFee(e.target.value)} placeholder="e.g. 75000" style={{...INP,resize:"none"}}/></div>
+          <div><Lbl style={{display:"block",marginBottom:4}}>Asking Price (₹)</Lbl><MoneyInput value={askingPrice} onChange={setAskingPrice} placeholder="e.g. 90,000" style={{...INP,resize:"none"}}/></div>
+          <div><Lbl style={{display:"block",marginBottom:4}}>Negotiated Cost (₹)</Lbl><MoneyInput value={fee} onChange={setFee} placeholder="e.g. 75,000" style={{...INP,resize:"none"}}/></div>
         </div>
         <Hr style={{margin:"14px 0"}}/>
-        <Lbl style={{display:"block",marginBottom:10}}>Invoice Details <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— for invoice generation 🧾</span></Lbl>
+        <Lbl style={{display:"block",marginBottom:10}}>Payment</Lbl>
         <div style={{marginBottom:12}}>
-          <Lbl style={{display:"block",marginBottom:4}}>PAN</Lbl>
-          <input value={f.pan} onChange={e=>u("pan",e.target.value)} placeholder="ABCDE1234F" style={{...INP,resize:"none"}}/>
+          <Lbl style={{display:"block",marginBottom:4}}>Pay Type</Lbl>
+          <select value={f.payType} onChange={e=>u("payType",e.target.value)} style={{...INP,resize:"none"}}>{PAYMENT_TYPES.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select>
         </div>
-        <div style={{marginBottom:12}}>
-          <Lbl style={{display:"block",marginBottom:4}}>Email</Lbl>
-          <input value={f.email} onChange={e=>u("email",e.target.value)} placeholder="creator@email.com" style={{...INP,resize:"none"}}/>
-        </div>
-        <div style={{marginBottom:12}}>
-          <Lbl style={{display:"block",marginBottom:4}}>Address (for invoice)</Lbl>
-          <textarea value={f.address} onChange={e=>u("address",e.target.value)} rows={2}
-            placeholder="Full address" style={{...INP}}/>
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+        {f.payType==="upi"&&<div style={{marginBottom:12}}>
+          <Lbl style={{display:"block",marginBottom:4}}>UPI ID<Req/></Lbl>
+          <input value={f.upiId} onChange={e=>u("upiId",e.target.value)} placeholder="name@okhdfcbank" style={{...INP,resize:"none",borderColor:errors.upiId?T.red:undefined}}/><Err k="upiId"/>
+        </div>}
+        {f.payType==="vendor"&&<div style={{marginBottom:12}}>
+          <Lbl style={{display:"block",marginBottom:4}}>Vendor Code / ID<Req/></Lbl>
+          <input value={f.vendorCode} onChange={e=>u("vendorCode",e.target.value)} placeholder="e.g. VND-1042" style={{...INP,resize:"none",borderColor:errors.vendorCode?T.red:undefined}}/><Err k="vendorCode"/>
+        </div>}
+        {f.payType==="net_banking"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
           {[
             ["Bank Name",   "bankName",    "e.g. Canara Bank"],
             ["Account No.", "bankAccount", "e.g. 110074028985"],
@@ -619,10 +704,25 @@ function AddCreatorModal({onAdd,onClose}){
             ["IFS Code",    "ifsc",        "e.g. CNRB0000684"],
           ].map(([l,k,ph]) => (
             <div key={k}>
-              <Lbl style={{display:"block",marginBottom:4}}>{l}</Lbl>
-              <input value={f[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none"}}/>
+              <Lbl style={{display:"block",marginBottom:4}}>{l}<Req on={req.includes(k)}/></Lbl>
+              <input value={f[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none",borderColor:errors[k]?T.red:undefined}}/><Err k={k}/>
             </div>
           ))}
+        </div>}
+        <Hr style={{margin:"14px 0"}}/>
+        <Lbl style={{display:"block",marginBottom:10}}>Invoice Details <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— for invoice generation 🧾</span></Lbl>
+        <div style={{marginBottom:12}}>
+          <Lbl style={{display:"block",marginBottom:4}}>PAN</Lbl>
+          <input value={f.pan} onChange={e=>u("pan",e.target.value)} placeholder="ABCDE1234F" style={{...INP,resize:"none",borderColor:errors.pan?T.red:undefined}}/><Err k="pan"/>
+        </div>
+        <div style={{marginBottom:12}}>
+          <Lbl style={{display:"block",marginBottom:4}}>Email</Lbl>
+          <input value={f.email} onChange={e=>u("email",e.target.value)} placeholder="creator@email.com" style={{...INP,resize:"none",borderColor:errors.email?T.red:undefined}}/><Err k="email"/>
+        </div>
+        <div style={{marginBottom:12}}>
+          <Lbl style={{display:"block",marginBottom:4}}>Address (for invoice)</Lbl>
+          <textarea value={f.address} onChange={e=>u("address",e.target.value)} rows={2}
+            placeholder="Full address" style={{...INP}}/>
         </div>
       </div>
       <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}><Btn variant="ghost" onClick={onClose}>Cancel</Btn><div style={{flex:1}}/><Btn variant="primary" onClick={handleAdd} disabled={!valid}>Add to list</Btn></div>
@@ -630,52 +730,64 @@ function AddCreatorModal({onAdd,onClose}){
   </div>);
 }
 
-// ── INVOICE SELECT MODAL ──────────────────────────────────────────────────────
-const INVOICE_FIELDS = [
-  ["Phone",       "phone",       "+91 98765 43210"],
-  ["PAN",         "pan",         "ABCDE1234F"],
-  ["Email",       "email",       "creator@email.com"],
-  ["Bank Name",   "bankName",    "e.g. Canara Bank"],
-  ["Account No.", "bankAccount", "e.g. 110074028985"],
-  ["Branch",      "bankBranch",  "e.g. Basavangudi"],
-  ["IFS Code",    "ifsc",        "e.g. CNRB0000684"],
+// ── INVOICE DETAILS MODAL ─────────────────────────────────────────────────────
+// Opened per creator from the table's Invoice button (enabled once a pay type
+// is chosen). Shows only the fields that pay type needs — a UPI creator never
+// sees IFSC/branch/account — validates as you type, saves the details to the
+// campaign, then opens the printable invoice.
+const INVOICE_BASE_FIELDS = [
+  ["Phone", "phone", "9876543210"],
+  ["PAN",   "pan",   "ABCDE1234F"],
+  ["Email", "email", "creator@email.com"],
 ];
+const PAYTYPE_FIELDS = {
+  upi:    [["UPI ID","upiId","name@okhdfcbank"]],
+  vendor: [["Vendor Code / ID","vendorCode","e.g. VND-1042"]],
+  net_banking: [
+    ["Bank Name",   "bankName",    "e.g. Canara Bank"],
+    ["Account No.", "bankAccount", "e.g. 110074028985"],
+    ["Branch",      "bankBranch",  "e.g. Basavangudi"],
+    ["IFS Code",    "ifsc",        "e.g. CNRB0000684"],
+  ],
+};
 
-function InvoiceSelectModal({ camp, creators, onClose, onUpdateCreators }) {
-  const [selected, setSelected] = useState(
-    creators.find(c => c.status === "locked")?._id || creators[0]?._id || null
-  );
-  const [step, setStep] = useState("select"); // "select" | "details"
-  const [form, setForm] = useState(null);
-  const u = (k, v) => setForm(p => ({ ...p, [k]: v }));
-
-  const openDetails = () => {
-    const cr = creators.find(c => c._id === selected);
-    if (!cr) return;
-    const pd = cr.personalDetails || {};
-    setForm({
-      phone: cr.phone || "", pan: pd.pan || "", email: pd.email || "", address: pd.address || "",
-      bankName: pd.bankName || "", bankAccount: pd.bankAccount || "", bankBranch: pd.bankBranch || "", ifsc: pd.ifsc || "",
-    });
-    setStep("details");
+function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreators, onLogTimeline }) {
+  const pd0 = creator.personalDetails || {};
+  const [form, setForm] = useState({
+    phone: creator.phone || "", pan: pd0.pan || "", email: pd0.email || "", address: pd0.address || "",
+    bankName: pd0.bankName || "", bankAccount: pd0.bankAccount || "", bankBranch: pd0.bankBranch || "", ifsc: pd0.ifsc || "",
+    upiId: pd0.upiId || "", vendorCode: creator.payType === "vendor" ? (creator.payId || "") : "",
+  });
+  const [errors, setErrors] = useState({});
+  const required = requiredForPayType(creator.payType);
+  const fields = [...INVOICE_BASE_FIELDS, ...(PAYTYPE_FIELDS[creator.payType] || [])];
+  const u = (k, v) => {
+    const clean = FIELD_SANITIZE[k] ? sanitizeField(FIELD_SANITIZE[k], v) : v;
+    setForm(p => ({ ...p, [k]: clean }));
+    setErrors(p => ({ ...p, [k]: FIELD_SANITIZE[k] ? validateField(FIELD_SANITIZE[k], clean) : null }));
   };
 
   const generate = () => {
-    const cr = creators.find(c => c._id === selected);
-    if (!cr || !form) return;
+    const errs = validateCreatorDetails(form, required);
+    setErrors(errs);
+    if (Object.keys(errs).length) return;
+    const payId = creator.payType === "vendor" ? form.vendorCode
+                : creator.payType === "net_banking" ? form.bankAccount
+                : creator.payType === "upi" ? form.upiId : creator.payId;
     const updatedCr = {
-      ...cr,
+      ...creator,
       phone: form.phone || null,
+      payId: payId || null,
       personalDetails: {
-        ...cr.personalDetails,
+        ...creator.personalDetails,
         pan: form.pan || null, email: form.email || null, address: form.address || null,
         bankName: form.bankName || null, bankAccount: form.bankAccount || null,
-        bankBranch: form.bankBranch || null, ifsc: form.ifsc || null,
+        bankBranch: form.bankBranch || null, ifsc: form.ifsc || null, upiId: form.upiId || null,
       },
     };
-    onUpdateCreators(creators.map(c => c._id === selected ? updatedCr : c));
+    onUpdateCreators(creators.map(c => c._id === creator._id ? updatedCr : c));
 
-    const idx       = creators.indexOf(cr) + 1;
+    const idx       = creators.findIndex(c => c._id === creator._id) + 1;
     const invoiceNo = `INV-CR-${camp.id.slice(-6).toUpperCase()}-${String(idx).padStart(2,"0")}`;
     const dated     = new Date().toLocaleDateString("en-IN", { day:"numeric", month:"long", year:"numeric" });
     const blob = new Blob([generateInvoiceHTML(updatedCr, camp, invoiceNo, dated)], { type: "text/html" });
@@ -687,91 +799,42 @@ function InvoiceSelectModal({ camp, creators, onClose, onUpdateCreators }) {
       return;
     }
     setTimeout(() => URL.revokeObjectURL(url), 10000);
+    onLogTimeline?.(`Invoice ${invoiceNo} generated for ${creator.name}`);
     onClose();
   };
-
-  const selectedCr = creators.find(c => c._id === selected);
 
   return (
     <div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(5px)"}}/>
       <div style={{position:"relative",width:"min(460px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
         <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div style={{fontFamily:"'Newsreader',serif",fontSize:17,color:T.text,fontStyle:"italic"}}>
-            {step === "select" ? "Generate Invoice" : `Invoice Details — ${selectedCr?.name || ""}`}
+          <div>
+            <div style={{fontFamily:"'Newsreader',serif",fontSize:17,color:T.text,fontStyle:"italic"}}>Invoice Details — {creator.name}</div>
+            <div style={{fontSize:9.5,color:T.sub,marginTop:2}}>{PAYMENT_TYPES.find(p=>p.id===creator.payType)?.label||"—"} · {creator.handle} · {fmtINR(creator.fee)}</div>
           </div>
           <button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button>
         </div>
-
-        {step === "select" && (
-          <div style={{padding:"16px 20px",overflowY:"auto",maxHeight:"60vh"}}>
-            <Lbl style={{display:"block",marginBottom:10}}>Select creator</Lbl>
-            {creators.length === 0 && (
-              <div style={{fontSize:11,color:T.label,fontStyle:"italic"}}>No creators in this campaign yet.</div>
-            )}
-            <div style={{display:"flex",flexDirection:"column",gap:6}}>
-              {creators.map(cr => {
-                const pd = cr.personalDetails || {};
-                const missing = [
-                  !pd.pan && "PAN",
-                  !pd.bankAccount && "Bank Account",
-                  !pd.address && "Address",
-                ].filter(Boolean);
-                return (
-                  <label key={cr._id} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 12px",borderRadius:6,cursor:"pointer",background:selected===cr._id?`${T.accent}10`:T.raised,border:`1px solid ${selected===cr._id?`${T.accent}30`:T.border}`,transition:"all 0.1s"}}>
-                    <input type="radio" checked={selected===cr._id} onChange={()=>setSelected(cr._id)}
-                      style={{marginTop:3,accentColor:T.accent}}/>
-                    <div style={{flex:1}}>
-                      <div style={{fontSize:12,fontWeight:500,color:T.text}}>{cr.name}</div>
-                      <div style={{fontSize:9.5,color:T.sub}}>{cr.handle} · {cr.platform} · {fmtINR(cr.fee)}</div>
-                      {selected===cr._id && missing.length>0 && (
-                        <div style={{fontSize:9,color:T.amber,marginTop:4}}>
-                          Missing: {missing.join(", ")} — you'll be asked for these next
-                        </div>
-                      )}
-                    </div>
-                    <span style={{fontSize:9,color:CR_COLOR[cr.status]||T.sub,fontWeight:600,flexShrink:0}}>
-                      {CR_JOURNEY.find(s=>s.id===cr.status)?.label||cr.status}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
+        <div style={{padding:"16px 20px",overflowY:"auto",flex:1}}>
+          <div style={{fontSize:10.5,color:T.sub,marginBottom:14}}>Fill in the billing details for this creator. Saved to the campaign before the invoice is generated.</div>
+          <div style={{marginBottom:12}}>
+            <Lbl style={{display:"block",marginBottom:4}}>Address (for invoice)</Lbl>
+            <textarea value={form.address} onChange={e=>u("address",e.target.value)} rows={2}
+              placeholder="Full address" style={{...INP}}/>
           </div>
-        )}
-
-        {step === "details" && form && (
-          <div style={{padding:"16px 20px",overflowY:"auto",flex:1}}>
-            <div style={{fontSize:10.5,color:T.sub,marginBottom:14}}>Review and fill in the billing details for this creator. Saved to the campaign before the invoice is generated.</div>
-            <div style={{marginBottom:12}}>
-              <Lbl style={{display:"block",marginBottom:4}}>Address (for invoice)</Lbl>
-              <textarea value={form.address} onChange={e=>u("address",e.target.value)} rows={2}
-                placeholder="Full address" style={{...INP}}/>
-            </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
-              {INVOICE_FIELDS.map(([l,k,ph]) => (
-                <div key={k}>
-                  <Lbl style={{display:"block",marginBottom:4}}>{l}</Lbl>
-                  <input value={form[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none"}}/>
-                </div>
-              ))}
-            </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+            {fields.map(([l,k,ph]) => (
+              <div key={k}>
+                <Lbl style={{display:"block",marginBottom:4}}>{l}{required.includes(k)&&<span style={{color:T.red}}> *</span>}</Lbl>
+                <input value={form[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none",borderColor:errors[k]?T.red:undefined}}/>
+                {errors[k]&&<div style={{fontSize:9.5,color:T.red,marginTop:3}}>{errors[k]}</div>}
+              </div>
+            ))}
           </div>
-        )}
-
+        </div>
         <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>
-          {step === "select"
-            ? <>
-                <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
-                <div style={{flex:1}}/>
-                <Btn variant="primary" onClick={openDetails} disabled={!selected}>Continue</Btn>
-              </>
-            : <>
-                <Btn variant="ghost" onClick={()=>setStep("select")}>Back</Btn>
-                <div style={{flex:1}}/>
-                <Btn variant="primary" onClick={generate}>Save & Generate</Btn>
-              </>
-          }
+          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+          <div style={{flex:1}}/>
+          <Btn variant="primary" onClick={generate}>Save & Generate</Btn>
         </div>
       </div>
     </div>
@@ -779,14 +842,14 @@ function InvoiceSelectModal({ camp, creators, onClose, onUpdateCreators }) {
 }
 
 // ── CREATORS TABLE ────────────────────────────────────────────────────────────
-function TabCreators({camp,role,onUpdateCreators}){
+function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const [creators,setCreators]=useState(camp.creators||[]);
   const [suggested,setSuggested]=useState([]);
   const [generating,setGenerating]=useState(false);
   const [genRounds,setGenRounds]=useState(camp.genRounds||0);
   const [removeTarget,setRemoveTarget]=useState(null);
   const [showAdd,setShowAdd]=useState(false);
-  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [invoiceTarget,setInvoiceTarget]=useState(null); // creator to invoice
   const required=camp.numReq||5,flagged=genRounds>=4;
   const cb=camp.creatorBudget||camp.budget*0.6;
   const totalFee=creators.reduce((s,c)=>s+(c.fee||0),0);
@@ -808,40 +871,38 @@ function TabCreators({camp,role,onUpdateCreators}){
           <Btn variant="ghost" onClick={()=>setShowAdd(true)} style={{fontSize:9.5,padding:"4px 10px"}}>+ Add Creator</Btn>
           <Btn variant="ghost" onClick={generate} disabled={flagged||generating} style={{fontSize:9.5,padding:"4px 10px",color:flagged?T.red:generating?T.sub:T.text,borderColor:flagged?`${T.red}22`:T.border}}>{generating?"Generating…":flagged?`Flagged (${genRounds}×)`:"Generate"}</Btn>
         </>}
-        {canFin(role)&&(
-          <Btn variant="ghost" onClick={()=>setShowInvoiceModal(true)} style={{fontSize:9.5,padding:"4px 10px"}}>
-            🧾 Generate Invoice
-          </Btn>
-        )}
       </div>
     </div>
     {flagged&&<div style={{padding:"8px 10px",borderRadius:5,border:`1px solid ${T.red}22`,fontSize:10,color:T.red,marginBottom:12,background:T.raised}}>{genRounds}× the required count generated. Founder approval required to continue.</div>}
     <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}>
-      <table style={{width:"100%",borderCollapse:"collapse",minWidth:980}}>
+      <table style={{width:"100%",borderCollapse:"collapse",minWidth:1080}}>
         <thead><tr>
           {CREATOR_COLS.filter(c=>c.key!=="fee"||canFin(role)).filter(c=>!["payType","payId"].includes(c.key)||canFin(role)).map(col=>(
-            <th key={col.key} style={{...thS,width:col.w,minWidth:col.w}}>{col.label}{!col.cv&&<span title="Internal only" style={{marginLeft:3,opacity:0.4,fontSize:8}}>🔒</span>}</th>
+            <th key={col.key} title={col.cv?undefined:"Internal only"} style={{...thS,width:col.w,minWidth:col.w}}>{col.label}</th>
           ))}
-          {canEdit&&<th style={{...thS,width:70}}></th>}
+          {(canEdit||canFin(role))&&<th style={{...thS,width:130}}></th>}
         </tr></thead>
         <tbody>
-          {creators.length===0&&<tr><td colSpan={14} style={{...tdS,textAlign:"center",color:T.label,padding:"24px"}}>No creators yet. Generate or add manually.</td></tr>}
+          {creators.length===0&&<tr><td colSpan={12} style={{...tdS,textAlign:"center",color:T.label,padding:"24px"}}>No creators yet. Generate or add manually.</td></tr>}
           {creators.map((cr,i)=>{
             const stCol=CR_COLOR[cr.status]||T.sub;
             const cSt=cr.concept?.status||"yet_to_receive",dSt=cr.demo?.status||"yet_to_receive";
             return(<tr key={cr._id} style={{background:i%2===0?"transparent":T.hover}}>
               <td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={22}/><div><div style={{fontSize:11,fontWeight:500,color:T.text}}>{cr.name}</div><div style={{fontSize:9,color:T.label}}>{cr.handle}</div></div></div></td>
               <td style={tdS}>{cr.platform}</td>
-              <td style={tdS}>{cr.followers||"—"}</td>
+              <td style={tdS}>{fmtNum(cr.followers)}</td>
               <td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td>
               <td style={tdS}>{cr.niche||"—"}</td>
+              <td style={tdS}>{cr.state||"—"}</td>
               <td style={tdS}>{canEdit?<select value={cr.status} onChange={e=>patch(cr._id,{status:e.target.value})} style={{background:"transparent",border:"none",color:stCol,fontSize:10.5,fontFamily:"'Sora'",outline:"none",cursor:"pointer",appearance:"none",WebkitAppearance:"none",padding:"2px 4px"}}>{CR_JOURNEY.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>:<span style={{fontSize:10.5,color:stCol}}>{CR_JOURNEY.find(s=>s.id===cr.status)?.label}</span>}</td>
               <td style={tdS}><span style={{fontSize:10,color:ASSET_COLOR[cSt],fontWeight:500}}>{ASSET_STATUSES.find(s=>s.id===cSt)?.label}</span></td>
               <td style={tdS}><span style={{fontSize:10,color:ASSET_COLOR[dSt],fontWeight:500}}>{ASSET_STATUSES.find(s=>s.id===dSt)?.label}</span></td>
-              {canFin(role)&&<td style={tdS}>{canEdit?<input type="number" step={100} value={cr.fee||0} onChange={e=>patch(cr._id,{fee:parseInt(e.target.value)||0})} style={{width:76,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}/>:fmtINR(cr.fee)}</td>}
+              {canFin(role)&&<td style={tdS}>{canEdit?<MoneyInput value={cr.fee||0} onChange={v=>patch(cr._id,{fee:parseInt(v)||0})} style={{width:76,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}/>:fmtINR(cr.fee)}</td>}
               {canFin(role)&&<td style={tdS}>{canEdit?<select value={cr.payType||""} onChange={e=>patch(cr._id,{payType:e.target.value||null,payId:null})} style={{background:"transparent",border:`1px solid ${T.border}`,color:cr.payType?T.text:T.label,fontSize:10,fontFamily:"'Sora'",outline:"none",cursor:"pointer",borderRadius:4,padding:"3px 5px"}}>{PAYMENT_TYPES.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select>:<span style={{fontSize:10,color:T.text}}>{PAYMENT_TYPES.find(p=>p.id===cr.payType)?.label||"—"}</span>}</td>}
-              {canFin(role)&&<td style={tdS}>{canEdit&&cr.payType?<input value={cr.payId||""} onChange={e=>patch(cr._id,{payId:e.target.value})} placeholder={PAYMENT_HINT[cr.payType]||"ID"} style={{background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:10.5,fontFamily:"'Sora'",outline:"none",padding:"2px 0",width:110}}/>:<span style={{fontSize:10.5,color:T.sub}}>{cr.payId||"—"}</span>}</td>}
-              {canEdit&&<td style={{...tdS,textAlign:"right"}}><button onClick={()=>setRemoveTarget(cr)} style={{fontSize:9,color:T.red,background:"transparent",border:`1px solid ${T.red}22`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Remove</button></td>}
+              {(canEdit||canFin(role))&&<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}>
+                {canFin(role)&&<button onClick={()=>cr.payType&&setInvoiceTarget(cr)} disabled={!cr.payType} title={cr.payType?"Generate invoice":"Select a pay type first"} style={{fontSize:9,color:cr.payType?T.accent:T.label,background:"transparent",border:`1px solid ${cr.payType?`${T.accent}30`:T.border}`,borderRadius:4,padding:"3px 8px",cursor:cr.payType?"pointer":"not-allowed",opacity:cr.payType?1:0.5,fontFamily:"'Sora'"}}>Invoice</button>}
+                {canEdit&&<button onClick={()=>setRemoveTarget(cr)} style={{fontSize:9,color:T.red,background:"transparent",border:`1px solid ${T.red}22`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Remove</button>}
+              </div></td>}
             </tr>);
           })}
         </tbody>
@@ -849,12 +910,12 @@ function TabCreators({camp,role,onUpdateCreators}){
     </div>
     {canEdit&&creators.length>=required&&!camp.sentToClient&&<div style={{marginTop:14}}><Hr style={{marginBottom:12}}/><Btn variant="primary" onClick={()=>onUpdateCreators(creators,"send_to_client")}>Send creator list to client</Btn></div>}
     {suggested.length>0&&<div style={{marginTop:20}}><Hr style={{marginBottom:14}}/><div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}><Lbl>Suggested — Round {genRounds}</Lbl><span style={{fontSize:9,color:T.sub}}>{required-creators.length} spots remaining</span></div>
-      <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:500}}><thead><tr>{["Creator","Platform","Followers","Avg ER%","Niche","Est. Fee",""].map(h=><th key={h} style={{...thS}}>{h}</th>)}</tr></thead><tbody>{suggested.map((cr,i)=><tr key={cr._id} style={{opacity:creators.length>=required?0.35:1}}><td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={20}/><div><div style={{fontSize:11,fontWeight:500}}>{cr.name}</div><div style={{fontSize:9,color:T.label}}>{cr.handle}</div></div></div></td><td style={tdS}>{cr.platform}</td><td style={tdS}>{cr.followers||"—"}</td><td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td><td style={tdS}>{cr.niche||"—"}</td>{canFin(role)&&<td style={tdS}>{fmtINR(cr.fee)}</td>}<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}><Btn variant="ghost" onClick={()=>addFromSugg(cr)} disabled={creators.length>=required} style={{fontSize:9,padding:"3px 9px"}}>Add</Btn><Btn variant="subtle" onClick={()=>setSuggested(p=>p.filter(c=>c._id!==cr._id))} style={{fontSize:9,padding:"3px 9px"}}>Skip</Btn></div></td></tr>)}</tbody></table></div>
+      <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:500}}><thead><tr>{["Creator","Platform","Followers","Avg ER%","Niche","Est. Fee",""].map(h=><th key={h} style={{...thS}}>{h}</th>)}</tr></thead><tbody>{suggested.map((cr,i)=><tr key={cr._id} style={{opacity:creators.length>=required?0.35:1}}><td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={20}/><div><div style={{fontSize:11,fontWeight:500}}>{cr.name}</div><div style={{fontSize:9,color:T.label}}>{cr.handle}</div></div></div></td><td style={tdS}>{cr.platform}</td><td style={tdS}>{fmtNum(cr.followers)}</td><td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td><td style={tdS}>{cr.niche||"—"}</td>{canFin(role)&&<td style={tdS}>{fmtINR(cr.fee)}</td>}<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}><Btn variant="ghost" onClick={()=>addFromSugg(cr)} disabled={creators.length>=required} style={{fontSize:9,padding:"3px 9px"}}>Add</Btn><Btn variant="subtle" onClick={()=>setSuggested(p=>p.filter(c=>c._id!==cr._id))} style={{fontSize:9,padding:"3px 9px"}}>Skip</Btn></div></td></tr>)}</tbody></table></div>
     </div>}
     {removeTarget&&<RemoveModal creator={removeTarget} onConfirm={confirmRemove} onCancel={()=>setRemoveTarget(null)}/>}
     {showAdd&&<AddCreatorModal onAdd={cr=>sync([...creators,cr])} onClose={()=>setShowAdd(false)}/>}
-    {showInvoiceModal && (
-      <InvoiceSelectModal camp={camp} creators={creators} onClose={()=>setShowInvoiceModal(false)} onUpdateCreators={sync}/>
+    {invoiceTarget && (
+      <InvoiceDetailsModal camp={camp} creator={creators.find(c=>c._id===invoiceTarget._id)||invoiceTarget} creators={creators} onClose={()=>setInvoiceTarget(null)} onUpdateCreators={sync} onLogTimeline={onLogTimeline}/>
     )}
   </div>);
 }
@@ -908,7 +969,7 @@ function TabDeliverables({camp,role,onUpdateCreators}){
         return(<div key={cr._id} style={{background:T.raised,borderRadius:8,border:`1px solid ${T.border}`,overflow:"hidden"}}>
           <div style={{padding:"11px 16px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
             <Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={26}/>
-            <div style={{flex:1}}><div style={{fontSize:12,fontWeight:500,color:T.text}}>{cr.name} <span style={{fontSize:9.5,color:T.label}}>{cr.handle}</span></div><div style={{fontSize:9.5,color:T.sub}}>{cr.platform}{cr.followers?` · ${cr.followers}`:""}{ cr.avgER!=null?` · ${cr.avgER}% ER`:""}</div></div>
+            <div style={{flex:1}}><div style={{fontSize:12,fontWeight:500,color:T.text}}>{cr.name} <span style={{fontSize:9.5,color:T.label}}>{cr.handle}</span></div><div style={{fontSize:9.5,color:T.sub}}>{cr.platform}{cr.followers?` · ${fmtNum(cr.followers)}`:""}{ cr.avgER!=null?` · ${cr.avgER}% ER`:""}</div></div>
             <span style={{fontSize:9.5,color:CR_COLOR[cr.status]||T.sub,fontWeight:500}}>{CR_JOURNEY.find(s=>s.id===cr.status)?.label||cr.status}</span>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr"}}>
@@ -1061,8 +1122,12 @@ function WorkflowActions({camp, role, onAction}) {
 }
 
 // ── DETAIL ───────────────────────────────────────────────────────────────────
-function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators}){
+function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogTimeline}){
   const [tab,setTab]=useState("brief");
+  const [confirmDelete,setConfirmDelete]=useState(false);
+  // Selecting a different campaign resets the panel to Brief — the tab chosen
+  // on one campaign shouldn't leak onto the next.
+  useEffect(()=>{setTab("brief");setConfirmDelete(false);},[camp.id]);
   const stCol=T.sc[camp.stage]||T.sub,pl=PIPELINE.find(p=>p.id===camp.stage)||PIPELINE[0];
   const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},{id:"timeline",label:"Timeline"},...(canFin(role)?[{id:"financials",label:"Financials"}]:[])];
   return(<div style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7"}}>
@@ -1077,8 +1142,10 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators}){
         <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,marginLeft:16}}>
           <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:`${stCol}14`,border:`1px solid ${stCol}28`,fontSize:10.5,fontWeight:600,color:stCol,fontFamily:SF}}>{pl.label}</span>
           <span style={{fontSize:10,color:"#6E6E73",fontFamily:SF}}>{camp.progress}% complete</span>
+          {can(role,"deleteCampaign")&&<Btn variant="danger" onClick={()=>setConfirmDelete(true)} style={{fontSize:10,padding:"4px 10px"}}>Delete</Btn>}
         </div>
       </div>
+      {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
       <div style={{fontSize:10.5,color:"#6E6E73",marginBottom:12,fontFamily:SF,fontStyle:"italic"}}>{STAGE_HINT[camp.stage]}</div>
       <WorkflowActions camp={camp} role={role} onAction={onAction}/>
       <FullPipe stage={camp.stage}/>
@@ -1092,7 +1159,7 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators}){
     <div style={{flex:1,overflowY:"auto",padding:"24px 28px",background:"#F5F5F7"}}>
       {tab==="brief"        &&<TabBrief        camp={camp} role={role} onAction={onAction} onSaveBrief={onSaveBrief}/>}
       {tab==="team"         &&<TabTeam         camp={camp} role={role} onAction={onAction}/>}
-      {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators}/>}
+      {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
       {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} onUpdateCreators={onUpdateCreators}/>}
       {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
       {tab==="financials"   &&canFin(role)&&<TabFinancials camp={camp} role={role}/>}
@@ -1103,7 +1170,7 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators}){
 // ── CREATE MODAL ─────────────────────────────────────────────────────────────
 function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
   const [step,setStep]=useState(0);
-  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",budget:"",numCreators:5,objective:"",audience:"",messages:"",deliverables:[],timeline:"",internalNotes:""});
+  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",budget:"",numCreators:5,objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
   const [newBrandName,setNewBrandName]=useState("");
   // Staged only — nothing is written to the backend until the campaign is
   // actually submitted, so abandoning this modal never leaves an orphan brand.
@@ -1111,8 +1178,18 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
   const [submitting,setSubmitting]=useState(false);
   const [brandErr,setBrandErr]=useState(null);
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
-  const ok=step===0?!!(f.name&&f.service&&f.brandId):true;
   const STEPS=["Basics","Brief","Commercial","Internal"];
+  // Per-step required fields — Next/Create stay disabled until the current
+  // step's required inputs are filled (Brief + Internal have none).
+  const stepOk=[
+    !!(f.name.trim()&&f.service&&f.brandId),
+    true,
+    parseInt(f.budget)>0&&parseInt(f.numCreators)>0&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
+    true,
+  ];
+  const ok=stepOk[step];
+  const allOk=stepOk.every(Boolean);
+  const timelineLabel=f.timelineStart&&f.timelineEnd?`${prettyDate(f.timelineStart)} – ${prettyDate(f.timelineEnd)}`:"";
   const handleStageBrand=()=>{
     const name=newBrandName.trim();
     if(!name)return;
@@ -1128,17 +1205,20 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
     setNewBrandName("");
   };
   const handleSubmit=async()=>{
-    if(f.brandId!=="__new__"){ onSubmit(f); return; }
+    if(!allOk)return;
+    const payload={...f,timeline:timelineLabel};
+    if(f.brandId!=="__new__"){ onSubmit(payload); return; }
     setSubmitting(true);setBrandErr(null);
     try{
       const created=await onCreateBrand(pendingBrandName);
-      onSubmit({...f,brandId:created.id});
+      onSubmit({...payload,brandId:created.id});
     }catch(err){
       setBrandErr(err.message||"Could not create brand — campaign not created");
       setSubmitting(false);
     }
   };
-  return(<div style={{position:"fixed",inset:0,zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}><div onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(6px)"}}/>
+  // Backdrop is intentionally not clickable — the modal only closes via ✕
+  return(<div style={{position:"fixed",inset:0,zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(6px)"}}/>
     <div style={{position:"relative",width:"min(500px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
       <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}><div><div style={{fontFamily:"'Newsreader',serif",fontSize:18,color:T.text,fontStyle:"italic",marginBottom:2}}>New Campaign</div><Lbl>{STEPS[step]} — {step+1} of {STEPS.length}</Lbl></div><button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button></div>
       <div style={{height:1.5,background:T.mute}}><div style={{height:1.5,background:T.accent,width:`${((step+1)/STEPS.length)*100}%`,transition:"width 0.25s"}}/></div>
@@ -1161,10 +1241,22 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
           {brandErr&&<div style={{fontSize:10.5,color:T.red,marginBottom:10}}>{brandErr}</div>}
           <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Service *</Lbl><select value={f.service} onChange={e=>u("service",e.target.value)} style={{...INP,resize:"none"}}>{["Influencer Marketing","IM — Mass","IM — Sales"].map(s=><option key={s}>{s}</option>)}</select></div><div><Lbl style={{display:"block",marginBottom:5}}>Region</Lbl><input value={f.region} onChange={e=>u("region",e.target.value)} placeholder="e.g. South India" style={{...INP,resize:"none"}}/></div></>}
         {step===1&&<>{[["Objective","objective",60],["Target audience","audience",50],["Key Messages","messages",50]].map(([l,k,h])=><div key={k} style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>{l}</Lbl><textarea value={f[k]} onChange={e=>u(k,e.target.value)} style={{...INP,minHeight:h}}/></div>)}<div><Lbl style={{display:"block",marginBottom:6}}>Deliverables</Lbl><DelvSelect value={f.deliverables} onChange={v=>u("deliverables",v)}/></div></>}
-        {step===2&&<>{[["Total budget (₹)","budget","number","e.g. 1250000"],["Creators required","numCreators","number","5"],["Timeline","timeline","text","Apr 1 – Jun 30"]].map(([l,k,t,ph])=><div key={k} style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>{l}</Lbl><input type={t} value={f[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none"}}/></div>)}</>}
+        {step===2&&<>
+          <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Total budget (₹) *</Lbl><MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="e.g. 12,50,000" style={{...INP,resize:"none"}}/></div>
+          <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Creators required *</Lbl><input type="number" min={1} value={f.numCreators} onChange={e=>u("numCreators",e.target.value)} placeholder="5" style={{...INP,resize:"none"}}/></div>
+          <div style={{marginBottom:14}}>
+            <Lbl style={{display:"block",marginBottom:5}}>Timeline *</Lbl>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <div><Lbl style={{display:"block",marginBottom:4,fontSize:8.5}}>Start</Lbl><DateInput value={f.timelineStart} onChange={v=>u("timelineStart",v)} max={f.timelineEnd||undefined} placeholder="Start date" style={{...INP,resize:"none"}}/></div>
+              <div><Lbl style={{display:"block",marginBottom:4,fontSize:8.5}}>End</Lbl><DateInput value={f.timelineEnd} onChange={v=>u("timelineEnd",v)} min={f.timelineStart||undefined} placeholder="End date" style={{...INP,resize:"none"}}/></div>
+            </div>
+            {f.timelineStart&&f.timelineEnd&&f.timelineEnd<f.timelineStart&&<div style={{fontSize:9.5,color:T.red,marginTop:5}}>End date must be after the start date.</div>}
+            {timelineLabel&&f.timelineEnd>=f.timelineStart&&<div style={{fontSize:9.5,color:T.sub,marginTop:5}}>{timelineLabel}</div>}
+          </div>
+        </>}
         {step===3&&<div><Lbl color={T.amber} style={{display:"block",marginBottom:5}}>Internal notes — never visible to client</Lbl><textarea value={f.internalNotes} onChange={e=>u("internalNotes",e.target.value)} placeholder="Margin targets, context…" style={{...INP,minHeight:100,borderColor:`${T.amber}30`}}/></div>}
       </div>
-      <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>{step>0&&<Btn variant="ghost" onClick={()=>setStep(s=>s-1)}>← Back</Btn>}<div style={{flex:1}}/>{step<STEPS.length-1?<Btn variant="primary" onClick={()=>setStep(s=>s+1)} disabled={!ok}>Next</Btn>:<Btn variant="primary" onClick={handleSubmit} disabled={submitting}>{submitting?"Creating…":"Create campaign"}</Btn>}</div>
+      <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>{step>0&&<Btn variant="ghost" onClick={()=>setStep(s=>s-1)}>← Back</Btn>}<div style={{flex:1}}/>{step<STEPS.length-1?<Btn variant="primary" onClick={()=>setStep(s=>s+1)} disabled={!ok}>Next</Btn>:<Btn variant="primary" onClick={handleSubmit} disabled={submitting||!allOk}>{submitting?"Creating…":"Create campaign"}</Btn>}</div>
     </div>
   </div>);
 }
@@ -1246,6 +1338,38 @@ export default function InternalCampaigns(){
   },[selectedId,showToast,role]);
   const onSaveBrief=useCallback(patch=>{setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,brief:{...c.brief,...patch}}));CampaignsAPI.update(selectedId,{brief:{...(campaigns.find(c=>c.id===selectedId)?.brief||{}),...patch}}).catch(()=>showToast("Save failed — check connection"));showToast("Brief updated");},[selectedId,showToast,campaigns]);
   const onUpdateCreators=useCallback((next,extra)=>{setCampaigns(prev=>prev.map(c=>{if(c.id!==selectedId)return c;return{...c,creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}}));CampaignsAPI.update(selectedId,{creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}).catch(()=>showToast("Save failed — check connection"));if(extra==="send_to_client")showToast("Creator list sent to client");},[selectedId,showToast]);
+  // Appends an audit entry to the selected campaign's timeline and persists it.
+  const onLogTimeline=useCallback(event=>{
+    const entry={date:today(),event,actor:currentUser.name||role};
+    let nextTimeline=null;
+    setCampaigns(prev=>prev.map(c=>{
+      if(c.id!==selectedId)return c;
+      nextTimeline=[...(c.timeline||[]),entry];
+      return{...c,timeline:nextTimeline};
+    }));
+    if(nextTimeline)CampaignsAPI.update(selectedId,{timeline:nextTimeline}).catch(()=>showToast("Save failed — check connection"));
+  },[selectedId,currentUser,role,showToast]);
+  const onDeleteCampaign=useCallback(async(id)=>{
+    if(!can(role,"deleteCampaign"))return;
+    try{
+      // backend soft-deletes (deleted:true) and logs the actor on the timeline
+      await CampaignsAPI.remove(id,currentUser.name||role);
+      setCampaigns(prev=>prev.filter(c=>c.id!==id));
+      setSelId(null);
+      showToast("Campaign deleted");
+      // Cascade: purge billing docs that reference this campaign (auto-invoice
+      // stub, client POs) so Billing stops showing the deleted campaign.
+      try{
+        const [invs,cpos]=await Promise.all([InvoicesAPI.list(),ClientPOsAPI.list()]);
+        await Promise.all([
+          ...invs.filter(x=>x.campaign===id).map(x=>InvoicesAPI.remove(x.id)),
+          ...cpos.filter(x=>x.campaign===id).map(x=>ClientPOsAPI.remove(x.id)),
+        ]);
+      }catch{/* best-effort — Billing also hides docs whose campaign is gone */}
+    }catch{
+      showToast("Delete failed — check connection");
+    }
+  },[role,showToast,currentUser]);
   const onCreate=useCallback(f=>{
     if(!canCreate(role))return;
     // Stamp the correct role slot with the logged-in user's teamId
@@ -1260,7 +1384,7 @@ export default function InternalCampaigns(){
       id:campId, name:f.name, client:brandName(f.brandId)||"", brandId:f.brandId, service:f.service,
       region:f.region||"TBD", stage:"draft", progress:0,
       budget, creatorBudget:Math.round(budget*0.6),
-      numReq:parseInt(f.numCreators)||5, start:today(), end:"TBD",
+      numReq:parseInt(f.numCreators)||5, start:f.timelineStart||today(), end:f.timelineEnd||"TBD",
       createdBy:currentUser.teamId,
       amId, cmId, eaId,
       brief:{objective:f.objective,audience:f.audience,messages:f.messages,deliverables:f.deliverables,budget:fmtINR(budget),timeline:f.timeline},
@@ -1274,7 +1398,7 @@ export default function InternalCampaigns(){
     if(budget > 0){
       const invId = `INV-AUTO-${campId}`;
       InvoicesAPI.create({
-        id: invId, client: brandName(f.brandId)||"", clientId: f.brandId, campaign: campId,
+        id: invId, client: brandName(f.brandId)||"", clientId: f.brandId, brandId: f.brandId, campaign: campId,
         type:"campaign", label:`${f.name} — Campaign Invoice`,
         amount: budget, gstRate:18,
         raisedDate: today(), dueDate:"TBD", status:"pending",
@@ -1360,7 +1484,7 @@ export default function InternalCampaigns(){
       {/* Detail panel */}
       <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
         {selected
-          ? <Detail camp={selected} role={role} onAction={onAction} onSaveBrief={onSaveBrief} onUpdateCreators={onUpdateCreators}/>
+          ? <Detail camp={selected} role={role} onAction={onAction} onSaveBrief={onSaveBrief} onUpdateCreators={onUpdateCreators} onDelete={onDeleteCampaign} onLogTimeline={onLogTimeline}/>
           : <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12,background:"#F5F5F7"}}>
               <div style={{width:48,height:48,borderRadius:16,background:"rgba(0,0,0,0.05)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#86868B"}}>◎</div>
               <div style={{fontSize:14,fontWeight:600,color:"#1D1D1F",fontFamily:SF,letterSpacing:"-0.02em"}}>Select a campaign</div>

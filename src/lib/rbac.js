@@ -47,6 +47,10 @@ export const PERMS = {
   sendQuote:         ["founder", "pcm"],
   seeRegistry:       ["founder", "pcm", "accounts_head", "accounts_exec"],
   seeCampaignPL:     ["founder", "pcm"],
+
+  // ── Founder-only pages ──────────────────────────────────────────────────────
+  seeInfluencers:    ["founder"],   // Influencers directory (all creators + invoices)
+  manageAuth:        ["founder"],   // Auth page: view/add/edit/soft-delete credentials
 };
 
 /**

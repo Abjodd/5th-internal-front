@@ -14,7 +14,7 @@
  */
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
-import { CampaignsAPI, InstagramAPI, InvoicesAPI, ClientPOsAPI, ClientsAPI } from "../../lib/api";
+import { CampaignsAPI, InstagramAPI, InvoicesAPI, ClientPOsAPI, ClientsAPI, InvoicePdfAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
 import { fmtCompact, prettyDate } from "../../lib/format";
@@ -428,7 +428,12 @@ const canSee = (c, r, teamId) => {
   if (r === "founder") return true;
   return c.createdBy === teamId || c.amId === teamId || c.cmId === teamId || c.eaId === teamId;
 };
-const today   = () => new Date().toLocaleDateString("en-IN",{day:"numeric",month:"short"});
+// ISO ("YYYY-MM-DD") so a campaign's start/end always matches the format
+// DateInput writes when staff do pick a date — one consistent shape in the DB.
+const today   = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+};
 const needsLnk= s => ["received","rework"].includes(s);
 
 // ── DESIGN CONSTANTS ─────────────────────────────────────────────────────────
@@ -752,6 +757,7 @@ const PAYTYPE_FIELDS = {
 };
 
 function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreators, onLogTimeline }) {
+  const { user } = useOutletContext() || {};
   const pd0 = creator.personalDetails || {};
   const [form, setForm] = useState({
     phone: creator.phone || "", pan: pd0.pan || "", email: pd0.email || "", address: pd0.address || "",
@@ -759,6 +765,7 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
     upiId: pd0.upiId || "", vendorCode: creator.payType === "vendor" ? (creator.payId || "") : "",
   });
   const [errors, setErrors] = useState({});
+  const [busy, setBusy] = useState(false);    // backend PDF generation in flight
   const required = requiredForPayType(creator.payType);
   const fields = [...INVOICE_BASE_FIELDS, ...(PAYTYPE_FIELDS[creator.payType] || [])];
   const u = (k, v) => {
@@ -767,7 +774,8 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
     setErrors(p => ({ ...p, [k]: FIELD_SANITIZE[k] ? validateField(FIELD_SANITIZE[k], clean) : null }));
   };
 
-  const generate = () => {
+  const generate = async () => {
+    if (busy) return;
     const errs = validateCreatorDetails(form, required);
     setErrors(errs);
     if (Object.keys(errs).length) return;
@@ -790,6 +798,28 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
     const idx       = creators.findIndex(c => c._id === creator._id) + 1;
     const invoiceNo = `INV-CR-${camp.id.slice(-6).toUpperCase()}-${String(idx).padStart(2,"0")}`;
     const dated     = new Date().toLocaleDateString("en-IN", { day:"numeric", month:"long", year:"numeric" });
+
+    // Backend renders + persists the PDF (GridFS) so every generated invoice
+    // is saved server-side; we then open the stored PDF in a new tab.
+    setBusy(true);
+    try {
+      await InvoicePdfAPI.generate(invoiceNo, {
+        campaignId: camp.id, campaignName: camp.name, brandId: camp.brandId || null,
+        creator: updatedCr, dated, actor: user?.name,
+      });
+      setBusy(false);
+      if (!window.open(InvoicePdfAPI.url(invoiceNo), "_blank")) {
+        alert("Pop-up blocked — please allow pop-ups for this site to view the invoice.");
+        return;
+      }
+      onLogTimeline?.(`Invoice ${invoiceNo} generated for ${creator.name} (PDF saved)`);
+      onClose();
+      return;
+    } catch {
+      // Backend unreachable — fall back to the old client-side printable HTML
+      // (the PDF is NOT saved in this case).
+      setBusy(false);
+    }
     const blob = new Blob([generateInvoiceHTML(updatedCr, camp, invoiceNo, dated)], { type: "text/html" });
     const url  = URL.createObjectURL(blob);
     const w = window.open(url, "_blank");
@@ -834,7 +864,7 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
         <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>
           <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
           <div style={{flex:1}}/>
-          <Btn variant="primary" onClick={generate}>Save & Generate</Btn>
+          <Btn variant="primary" onClick={generate} disabled={busy}>{busy ? "Generating…" : "Save & Generate"}</Btn>
         </div>
       </div>
     </div>
@@ -1137,7 +1167,7 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8}}>
         <div style={{flex:1,minWidth:0}}>
           <h2 style={{fontFamily:"'Newsreader',serif",fontSize:24,fontWeight:600,color:"#1D1D1F",margin:"0 0 4px",fontStyle:"italic",letterSpacing:"-0.02em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{camp.name}</h2>
-          <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF}}>{camp.client} · {camp.service} · {camp.region} · {camp.start}–{camp.end}{canFin(role)&&<span style={{marginLeft:8,fontWeight:600,color:"#1D1D1F"}}>{fmtINR(camp.budget)}</span>}</div>
+          <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF}}>{camp.client} · {camp.service} · {camp.region} · {prettyDate(camp.start)}–{prettyDate(camp.end)}{canFin(role)&&<span style={{marginLeft:8,fontWeight:600,color:"#1D1D1F"}}>{fmtINR(camp.budget)}</span>}</div>
         </div>
         <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,marginLeft:16}}>
           <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:`${stCol}14`,border:`1px solid ${stCol}28`,fontSize:10.5,fontWeight:600,color:stCol,fontFamily:SF}}>{pl.label}</span>
@@ -1415,7 +1445,13 @@ export default function InternalCampaigns(){
     setCampaigns(p=>[c,...p]);setSelId(c.id);setCreate(false);showToast("Campaign created");
   },[showToast,role,currentUser,brandName]);
   const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(brandFilter&&c.brandId!==brandFilter)return false;if(stageFilter!=="all"){const g={intake:["draft","creator_shortlist","po_raised"],planning:["advance_received","execution","brief_sent"],execution:["concept_submitted","concept_approved","production"],delivery:["video_submitted","internal_review","client_approved","live","creator_paid","reporting","completed"]};if(!g[stageFilter]?.includes(c.stage))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search,brandFilter]);
-  const selected=campaigns.find(c=>c.id===selectedId)||null;
+  // Selection must respect the active filters — resolve against `visible`, not
+  // `campaigns`, or the detail panel (and its Creators tab) keeps showing a
+  // campaign from another brand after the brand filter changes.
+  const selected=visible.find(c=>c.id===selectedId)||null;
+  useEffect(()=>{
+    if(!loading&&!visible.some(c=>c.id===selectedId)) setSelId(visible[0]?.id??null);
+  },[loading,visible,selectedId]);
   const needsAttn=visible.filter(c=>["draft","po_raised","concept_submitted","video_submitted"].includes(c.stage)).length;
   if(loading)return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",background:"#F5F5F7",fontFamily:SF,fontSize:13,color:"#6E6E73"}}>Loading campaigns…</div>);
   if(loadError)return(<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",background:"#F5F5F7",fontFamily:SF,fontSize:13,gap:8,color:"#6E6E73"}}><div>Couldn't reach the campaigns API.</div><div style={{fontSize:11,color:"#86868B"}}>{loadError}</div></div>);

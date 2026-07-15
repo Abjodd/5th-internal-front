@@ -1,12 +1,18 @@
 /**
  * 5th Avenue — AuthContext
- * Holds the logged-in user. No real JWT yet — password check happens
- * client-side against USERS (replace with backend /api/auth/login later).
+ * Holds the logged-in user. Login goes through the backend
+ * (POST /api/auth/login — sha256 hashKey check against the users collection,
+ * managed from the founder-only Auth page). If the backend is unreachable
+ * (local dev without the API running), we fall back to the USERS directory
+ * below so the app stays usable offline.
  * Every component that needs the current user imports useAuth().
  */
 import { createContext, useContext, useState, useCallback } from "react";
+import { AuthAPI } from "../lib/api";
 
-// ── USER DIRECTORY ────────────────────────────────────────────────────────────
+// ── FALLBACK USER DIRECTORY ──────────────────────────────────────────────────
+// Mirrors seed_users.js in 5th-internal-back — the DB is the source of truth;
+// this list is only consulted when the backend can't be reached.
 // Each user maps to a TEAM member id (teamId) so campaigns can be filtered
 // by "does this user own this campaign's amId / cmId / eaId?"
 export const USERS = [
@@ -32,15 +38,30 @@ export function AuthProvider({ children }) {
     } catch { return null; }
   });
 
-  const login = useCallback((email, password) => {
+  const persist = (safe) => {
+    setUser(safe);
+    sessionStorage.setItem("5av_user", JSON.stringify(safe));
+    return { ok: true, user: safe };
+  };
+
+  const login = useCallback(async (email, password) => {
+    // Backend first — users collection is the source of truth.
+    try {
+      const res = await AuthAPI.login(email, password);
+      if (res?.ok && res.user) return persist(res.user);
+      return { ok: false, error: "Invalid email or password." };
+    } catch (err) {
+      // 401 = wrong credentials, everything else = backend unreachable.
+      if (String(err?.message).includes(" 401 "))
+        return { ok: false, error: "Invalid email or password." };
+    }
+    // Offline fallback: check against the local directory.
     const found = USERS.find(
       u => u.email.toLowerCase() === email.toLowerCase().trim() && u.password === password
     );
     if (!found) return { ok: false, error: "Invalid email or password." };
     const { password: _, ...safe } = found;
-    setUser(safe);
-    sessionStorage.setItem("5av_user", JSON.stringify(safe));
-    return { ok: true, user: safe };
+    return persist(safe);
   }, []);
 
   const logout = useCallback(() => {

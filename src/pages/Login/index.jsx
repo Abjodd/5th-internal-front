@@ -22,7 +22,7 @@ export default function LoginPage() {
     setLoading(true);
     // Small delay so it doesn't feel instant-fake
     await new Promise(r => setTimeout(r, 320));
-    const result = login(email, password);
+    const result = await login(email, password);
     setLoading(false);
     if (result.ok) {
       navigate("/campaigns", { replace: true });

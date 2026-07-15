@@ -49,6 +49,24 @@ export const SECTIONS = [
     color: T.green,
     roles: ["founder", "accounts_head", "accounts_exec", "pcm"],
   },
+  {
+    id: "influencers",
+    path: "/influencers",
+    label: "Influencers",
+    shortLabel: "Influencers",
+    icon: "✦",
+    color: T.pink,
+    roles: ["founder"],
+  },
+  {
+    id: "auth",
+    path: "/auth",
+    label: "Access & Credentials",
+    shortLabel: "Auth",
+    icon: "⬡",
+    color: T.gold,
+    roles: ["founder"],
+  },
   // ── AEO / AI Visibility — temporarily hidden from the nav & routes,
   // matching the original app's state. The page code lives at
   // src/pages/AEO and is fully migrated/restructured; re-enable by

@@ -11,6 +11,8 @@ import LoginPage from "./pages/Login";
 import Campaigns from "./pages/Campaigns";
 import Billing from "./pages/Billing";
 import Summary from "./pages/Summary";
+import Influencers from "./pages/Influencers";
+import Auth from "./pages/Auth";
 
 export default function App() {
   return (
@@ -29,6 +31,9 @@ export default function App() {
             <Route path="/summary"   element={<Summary />} />
             <Route path="/campaigns" element={<Campaigns />} />
             <Route path="/billing"   element={<Billing />} />
+            {/* Founder-only — AppShell blocks other roles via sections.js */}
+            <Route path="/influencers" element={<Influencers />} />
+            <Route path="/auth"        element={<Auth />} />
             <Route path="/"          element={<Navigate to="/campaigns" replace />} />
             <Route path="*"          element={<Navigate to="/campaigns" replace />} />
           </Route>

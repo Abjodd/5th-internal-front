@@ -52,11 +52,50 @@ export const InstagramAPI = {
   lookup: (handle) => request(`/api/instagram?handle=${encodeURIComponent(handle)}`),
 };
 
+// ── Auth ─────────────────────────────────────────────────────────────────────
+// Real backend login (sha256 hashKey check server-side). AuthContext calls
+// this first and only falls back to its local USERS directory if the backend
+// is unreachable.
+export const AuthAPI = {
+  login: (email, password) =>
+    request("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+};
+
+// Founder-only credential management (Auth page). Both clients share the
+// backend's registerAuthCrudRoutes shape: password → hashKey server-side,
+// DELETE is a soft delete with ?actor= for the audit trail.
+function authCrud(basePath) {
+  return {
+    list: (includeDeleted) => request(`${basePath}${includeDeleted ? "?includeDeleted=1" : ""}`),
+    create: (item) => request(basePath, { method: "POST", body: JSON.stringify(item) }),
+    update: (id, patch) => request(`${basePath}/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+    remove: (id, actor) => request(`${basePath}/${id}${actor ? `?actor=${encodeURIComponent(actor)}` : ""}`, { method: "DELETE" }),
+  };
+}
+
+export const UsersAPI = authCrud("/api/users");
+export const BrandCredentialsAPI = authCrud("/api/brand-credentials");
+
+// ── Influencers (founder directory) ──────────────────────────────────────────
+export const InfluencersAPI = {
+  list: (brandId) => request(`/api/influencers${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ""}`),
+};
+
+// ── Invoice PDFs ─────────────────────────────────────────────────────────────
+// The backend renders the PDF (pdfkit) and stores it in GridFS; the returned
+// pdfUrl streams it back. BASE-prefixed absolute URL so window.open works.
+export const InvoicePdfAPI = {
+  generate: (invoiceNo, payload) =>
+    request(`/api/invoices/${encodeURIComponent(invoiceNo)}/pdf`, { method: "POST", body: JSON.stringify(payload) }),
+  url: (invoiceNo) => `${BASE}/api/invoices/${encodeURIComponent(invoiceNo)}/pdf`,
+};
+
 export const CampaignsAPI = {
   list: () => request("/api/campaigns"),
   create: (campaign) =>
     request("/api/campaigns", { method: "POST", body: JSON.stringify(campaign) }),
   update: (id, patch) =>
     request(`/api/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
-  remove: (id) => request(`/api/campaigns/${id}`, { method: "DELETE" }),
+  // actor lands on the campaign's timeline ("Campaign deleted" audit entry)
+  remove: (id, actor) => request(`/api/campaigns/${id}${actor ? `?actor=${encodeURIComponent(actor)}` : ""}`, { method: "DELETE" }),
 };

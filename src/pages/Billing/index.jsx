@@ -6,6 +6,9 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
 import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, RegistryAPI, CampaignsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
+import { fmtCompact, prettyDate } from "../../lib/format";
+import MoneyInput from "../../components/MoneyInput";
+import DateInput from "../../components/DateInput";
 
 // ── TOKENS ────────────────────────────────────────────────────────────────────
 import { T } from "../../theme/tokens";
@@ -600,7 +603,7 @@ function ExpDetail({ exp, role, pos, anomalies, onApprove, onMarkPaid, onEAConfi
           <div style={{ fontSize:10, color:col, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.08em" }}>{CAT_LABEL[exp.cat] || exp.cat}</div>
           {exp.vendorForCreator && (
             <div style={{ fontSize:11, color:T.pink, marginTop:3 }}>
-              MCN payment for <strong>{exp.vendorForCreator.creatorName}</strong> ({exp.vendorForCreator.creatorHandle}) · {((exp.vendorForCreator.followers || 0) / 1000).toFixed(0)}K followers · {exp.vendorForCreator.platform}
+              MCN payment for <strong>{exp.vendorForCreator.creatorName}</strong> ({exp.vendorForCreator.creatorHandle}) · {fmtCompact(exp.vendorForCreator.followers)} followers · {exp.vendorForCreator.platform}
             </div>
           )}
         </div>
@@ -990,10 +993,11 @@ function TabIncome({ role, invoices, setInvoices, clientPOs, setClientPOs, camps
   const handleUploadPO      = useCallback(id => {
     const poNum = window.prompt("Enter Client PO number:");
     if (!poNum) return;
+    const inv = invoices.find(i => i.id === id);
     const newPO = { id:`CPO-${Date.now()}`, poNumber:poNum, amount:0, receivedDate:todayStr(), document:"uploaded", status:"received" };
     setInvoices(p => p.map(i => i.id !== id ? i : { ...i, clientPO:newPO }));
-    setClientPOs(p => [...p, { ...newPO, client:"FreshBite Foods", campaign:null, invoicedAmount:0, campaignName:"" }]);
-  }, [setInvoices, setClientPOs]);
+    setClientPOs(p => [...p, { ...newPO, client:inv?.client || "", brandId:inv?.brandId || null, campaign:inv?.campaign || null, invoicedAmount:0, campaignName:"" }]);
+  }, [invoices, setInvoices, setClientPOs]);
 
   return (
     <div style={{ display:"flex", flexDirection:"column", height:"100%" }}>
@@ -1203,7 +1207,7 @@ function TabPurchaseOrders({ role, pos, setPos, campsRef }) {
 
   const submitNew = () => {
     const camp = campsRef.find(c => c.id === draft.campaign) || {};
-    const n = { ...draft, id:`PO-${Date.now().toString().slice(-5)}`, raisedBy:role, raisedByName:ROLES.find(r => r.id === role).label, campaignName:camp.name || "", status:"pending_approval", poDocument:null, approvedBy:null, approvedAt:null, deliveryConfirmed:false, deliveryConfirmedBy:null, createdAt:todayStr(), amount:parseFloat(draft.amount) || 0 };
+    const n = { ...draft, id:`PO-${Date.now().toString().slice(-5)}`, raisedBy:role, raisedByName:ROLES.find(r => r.id === role).label, campaignName:camp.name || "", brandId:camp.brandId || null, status:"pending_approval", poDocument:null, approvedBy:null, approvedAt:null, deliveryConfirmed:false, deliveryConfirmedBy:null, createdAt:todayStr(), amount:parseFloat(draft.amount) || 0, deliveryDate:prettyDate(draft.deliveryDate) };
     setPos(p => [n, ...p]);
     setSelId(n.id);
     setNew(false);
@@ -1250,13 +1254,13 @@ function TabPurchaseOrders({ role, pos, setPos, campsRef }) {
               <div><Lbl style={{ display:"block", marginBottom:4 }}>Vendor / MCN name *</Lbl><input value={draft.vendor} onChange={e => ud("vendor", e.target.value)} placeholder="e.g. StarTalent MCN" style={{ ...INP }} /></div>
               <div><Lbl style={{ display:"block", marginBottom:4 }}>Type</Lbl><select value={draft.vendorType} onChange={e => ud("vendorType", e.target.value)} style={{ ...INP }}><option value="creator_mcn">Creator MCN</option><option value="vendor">Production Vendor</option></select></div>
               <div><Lbl style={{ display:"block", marginBottom:4 }}>Campaign</Lbl><select value={draft.campaign} onChange={e => ud("campaign", e.target.value)} style={{ ...INP }}>{campsRef.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
-              <div><Lbl style={{ display:"block", marginBottom:4 }}>Expected delivery</Lbl><input value={draft.deliveryDate} onChange={e => ud("deliveryDate", e.target.value)} placeholder="May 30, 2026" style={{ ...INP }} /></div>
+              <div><Lbl style={{ display:"block", marginBottom:4 }}>Expected delivery</Lbl><DateInput value={draft.deliveryDate} onChange={v => ud("deliveryDate", v)} placeholder="Pick a date" style={{ ...INP }} /></div>
             </div>
             <div style={{ marginBottom:12 }}><Lbl style={{ display:"block", marginBottom:4 }}>Scope of work *</Lbl><textarea value={draft.scope} onChange={e => ud("scope", e.target.value)} rows={3} placeholder="Describe deliverables…" style={{ ...INP, resize:"vertical" }} /></div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:12 }}>
               <div>
                 <Lbl style={{ display:"block", marginBottom:4 }}>Amount (₹) *</Lbl>
-                <input type="number" value={draft.amount} onChange={e => ud("amount", e.target.value)} placeholder="e.g. 85000" style={{ ...INP }} />
+                <MoneyInput value={draft.amount} onChange={v => ud("amount", v)} placeholder="e.g. 85,000" style={{ ...INP }} />
                 {parseFloat(draft.amount || 0) > 0 && parseFloat(draft.amount || 0) < (draft.vendorType === "creator_mcn" ? 10000 : 25000) && (
                   <div style={{ fontSize:9, color:T.amber, marginTop:3 }}>Below threshold — PO optional</div>
                 )}
@@ -1323,13 +1327,14 @@ function TabQuotations({ role, quotes, setQuotes, campsRef }) {
   const simulateBriefLock = () => {
     const camp = campsRef[1] || campsRef[0];
     if (!camp) return;
-    const newQ = { id:`QT-AUTO-${Date.now().toString().slice(-5)}`, client:camp.client, label:`${camp.name} — Auto-Generated Quote`, status:"pending_review", isAutoGenerated:true, campaignId:camp.id, createdDate:todayStr(), validTill:"", isRetainerClient:true, marginPct:35, agencyFeePct:0, agencyFeeType:"baked_in", lines:[{ desc:`Influencer Marketing — ${camp.name}`, sac:"998361", qty:1, rate:camp.budget, gstRate:18 }], notes:"Auto-generated on brief lock. Review and edit before sending." };
+    const newQ = { id:`QT-AUTO-${Date.now().toString().slice(-5)}`, client:camp.client, brandId:camp.brandId || null, label:`${camp.name} — Auto-Generated Quote`, status:"pending_review", isAutoGenerated:true, campaignId:camp.id, createdDate:todayStr(), validTill:"", isRetainerClient:true, marginPct:35, agencyFeePct:0, agencyFeeType:"baked_in", lines:[{ desc:`Influencer Marketing — ${camp.name}`, sac:"998361", qty:1, rate:camp.budget, gstRate:18 }], notes:"Auto-generated on brief lock. Review and edit before sending." };
     setQuotes(p => [newQ, ...p]);
     setSelId(newQ.id);
   };
 
   const saveQuote = () => {
-    const newQ = { ...draft, id:`QT-${Date.now().toString().slice(-5)}`, status:"draft", createdDate:todayStr(), isAutoGenerated:false, campaignId:null };
+    const brandId = campsRef.find(c => c.client === draft.client)?.brandId || null;
+    const newQ = { ...draft, id:`QT-${Date.now().toString().slice(-5)}`, brandId, status:"draft", createdDate:todayStr(), isAutoGenerated:false, campaignId:null };
     setQuotes(p => [newQ, ...p]);
     setSelId(newQ.id);
     setShowBuild(false);
@@ -1405,7 +1410,7 @@ function TabQuotations({ role, quotes, setQuotes, campsRef }) {
               <div key={i} style={{ display:"grid", gridTemplateColumns:"1fr 70px 90px 75px 28px", gap:6, marginBottom:6, alignItems:"center" }}>
                 <input value={ln.desc} onChange={e => updateLine(i, "desc", e.target.value)} placeholder="Service description…" style={{ ...INP, fontSize:11 }} />
                 <input value={ln.sac} onChange={e => updateLine(i, "sac", e.target.value)} placeholder="SAC" style={{ ...INP, fontSize:11 }} />
-                <input type="number" value={ln.rate} onChange={e => updateLine(i, "rate", parseFloat(e.target.value)||0)} placeholder="Rate" style={{ ...INP, fontSize:11 }} />
+                <MoneyInput value={ln.rate} onChange={v => updateLine(i, "rate", parseFloat(v)||0)} placeholder="Rate" style={{ ...INP, fontSize:11 }} />
                 <select value={ln.gstRate} onChange={e => updateLine(i, "gstRate", parseInt(e.target.value))} style={{ ...INP, fontSize:11 }}>
                   {[0,5,12,18,28].map(r => <option key={r} value={r}>{r}% GST</option>)}
                 </select>
@@ -1522,7 +1527,7 @@ function TabRegistry({ role }) {
               <div style={{ display:"flex", gap:4 }}>
                 {x.panCollected ? <span style={{ fontSize:8, color:T.green, border:`1px solid ${T.green}25`, borderRadius:3, padding:"1px 4px" }}>PAN ✓</span> : <span style={{ fontSize:8, color:T.red, border:`1px solid ${T.red}25`, borderRadius:3, padding:"1px 4px" }}>PAN ✗</span>}
                 {x.tdsSection   && <span style={{ fontSize:8, color:T.amber, border:`1px solid ${T.amber}25`, borderRadius:3, padding:"1px 4px" }}>{x.tdsSection}</span>}
-                {x.followers    && <span style={{ fontSize:8, color:T.sub, border:`1px solid ${T.border}`, borderRadius:3, padding:"1px 4px" }}>{((x.followers||0)/1000).toFixed(0)}K</span>}
+                {x.followers    && <span style={{ fontSize:8, color:T.sub, border:`1px solid ${T.border}`, borderRadius:3, padding:"1px 4px" }}>{fmtCompact(x.followers)}</span>}
               </div>
             </div>
           ))}
@@ -1539,7 +1544,7 @@ function TabRegistry({ role }) {
               <div>
                 <div style={{ fontFamily:"'Newsreader',serif", fontSize:20, fontWeight:600, color:T.text, fontStyle:"italic" }}>{r.name}</div>
                 {r.mcnVendor && <div style={{ fontSize:11, color:T.teal, marginTop:2 }}>MCN: {r.mcnVendor}</div>}
-                <div style={{ fontSize:10, color:T.sub, marginTop:2 }}>{r.handle || ""}{r.platform ? ` · ${r.platform}` : ""}{r.followers ? ` · ${((r.followers||0)/1000).toFixed(0)}K followers` : ""}</div>
+                <div style={{ fontSize:10, color:T.sub, marginTop:2 }}>{r.handle || ""}{r.platform ? ` · ${r.platform}` : ""}{r.followers ? ` · ${fmtCompact(r.followers)} followers` : ""}</div>
               </div>
             </div>
             <Hr style={{ marginBottom:14 }} />
@@ -1847,16 +1852,24 @@ export default function InternalBilling() {
   // ── Brand-filtered display slices ──────────────────────────────────────────
   // Read-only views. Setters (setInvoices, setExpenses…) still write to the
   // full arrays so DB sync is unaffected by the filter.
-  // Invoice/Expense/PO/Quote have no brandId FK, so brandFilter (a Client _id)
-  // is resolved to its display name here and matched against their `client` string.
+  // Docs are matched on their brandId FK when they have one, falling back to
+  // the resolved `client` display name for legacy docs created before the
+  // brandId backfill (scrap/migrate_billing_brands.js).
   const brandName        = brands?.find(b => b.id === brandFilter)?.name || null;
-  const displayCampsRef  = brandName ? campsRef.filter(c => c.client === brandName) : campsRef;
+  const matchesBrand     = d => d.brandId ? d.brandId === brandFilter : d.client === brandName;
+  const displayCampsRef  = brandFilter ? campsRef.filter(matchesBrand) : campsRef;
   const brandCampIds     = new Set(displayCampsRef.map(c => c.id));
-  const displayInvoices  = brandName ? invoices.filter(i => i.client === brandName) : invoices;
-  const displayExpenses  = brandName ? expenses.filter(e => !e.campaign || brandCampIds.has(e.campaign)) : expenses;
-  const displayPos       = brandName ? pos.filter(p => !p.campaign || brandCampIds.has(p.campaign)) : pos;
-  const displayClientPOs = brandName ? clientPOs.filter(cpo => cpo.client === brandName) : clientPOs;
-  const displayQuotes    = brandName ? quotes.filter(q => q.client === brandName) : quotes;
+  // Deleted campaigns are excluded from CampaignsAPI.list(), so any
+  // campaign-linked invoice/client PO whose campaign is missing from campsRef
+  // belongs to a deleted campaign — hide it (covers orphans left in the DB
+  // before the delete-cascade in Campaigns existed).
+  const liveCampIds      = new Set(campsRef.map(c => c.id));
+  const hasLiveCampaign  = d => loading || !d.campaign || liveCampIds.has(d.campaign);
+  const displayInvoices  = (brandFilter ? invoices.filter(matchesBrand) : invoices).filter(hasLiveCampaign);
+  const displayExpenses  = brandFilter ? expenses.filter(e => e.brandId ? e.brandId === brandFilter : (!e.campaign || brandCampIds.has(e.campaign))) : expenses;
+  const displayPos       = brandFilter ? pos.filter(p => p.brandId ? p.brandId === brandFilter : (!p.campaign || brandCampIds.has(p.campaign))) : pos;
+  const displayClientPOs = (brandFilter ? clientPOs.filter(matchesBrand) : clientPOs).filter(hasLiveCampaign);
+  const displayQuotes    = brandFilter ? quotes.filter(matchesBrand) : quotes;
 
   const showToast = useCallback(msg => { setToast(msg); setTimeout(() => setToast(null), 2500); }, []);
 
@@ -1899,6 +1912,7 @@ export default function InternalBilling() {
           id: c.id,
           name: c.name,
           client: c.client,
+          brandId: c.brandId || null,
           budget: c.budget || 0,
           creatorBudget: c.creatorBudget || Math.round((c.budget || 0) * 0.6),
           stage: c.stage,
@@ -1923,7 +1937,7 @@ export default function InternalBilling() {
     if (!camp) return;
     const already = quotes.some(q => q.campaignId === campId && q.isAutoGenerated);
     if (already) return;
-    const newQ = { id:`QT-AUTO-${campId}`, client:camp.client, label:`${camp.name} — Auto-Generated Quote`, status:"pending_review", isAutoGenerated:true, campaignId:campId, createdDate:todayStr(), validTill:"", isRetainerClient:true, marginPct:35, agencyFeePct:0, agencyFeeType:"baked_in", lines:[{ desc:`Influencer Marketing — ${camp.name}`, sac:"998361", qty:1, rate:camp.budget, gstRate:18 }], notes:"Auto-generated on brief lock. Review and edit before sending." };
+    const newQ = { id:`QT-AUTO-${campId}`, client:camp.client, brandId:camp.brandId || null, label:`${camp.name} — Auto-Generated Quote`, status:"pending_review", isAutoGenerated:true, campaignId:campId, createdDate:todayStr(), validTill:"", isRetainerClient:true, marginPct:35, agencyFeePct:0, agencyFeeType:"baked_in", lines:[{ desc:`Influencer Marketing — ${camp.name}`, sac:"998361", qty:1, rate:camp.budget, gstRate:18 }], notes:"Auto-generated on brief lock. Review and edit before sending." };
     setQuotes(p => [newQ, ...p]);
     writeLS("billing_auto_quotes_pending", {});
     showToast(`Auto-quote created for ${camp.name}`);

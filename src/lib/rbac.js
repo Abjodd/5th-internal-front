@@ -17,7 +17,7 @@ export const PERMS = {
   seeMargins:         ["founder"],
   seeAgencyFee:       ["founder"],
   createCampaign:     ["founder", "pcm", "cm", "am"],
-  deleteCampaign:     ["founder", "pcm"],
+  deleteCampaign:     ["founder"],
   assignUsers:        ["founder", "pcm", "cm", "am"],
 
   // ── Billing tab: which financial widgets to show ───────────────────────────
@@ -47,6 +47,10 @@ export const PERMS = {
   sendQuote:         ["founder", "pcm"],
   seeRegistry:       ["founder", "pcm", "accounts_head", "accounts_exec"],
   seeCampaignPL:     ["founder", "pcm"],
+
+  // ── Founder-only pages ──────────────────────────────────────────────────────
+  seeInfluencers:    ["founder"],   // Influencers directory (all creators + invoices)
+  manageAuth:        ["founder"],   // Auth page: view/add/edit/soft-delete credentials
 };
 
 /**

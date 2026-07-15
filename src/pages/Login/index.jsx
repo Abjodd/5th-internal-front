@@ -208,7 +208,7 @@ export default function LoginPage() {
             border: `1px solid ${T.border}`,
             borderRadius: T.radiusSm,
           }}>
-            <div style={{ fontSize: 9.5, color: T.label, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>
+            {/* <div style={{ fontSize: 9.5, color: T.label, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600 }}>
               Demo credentials
             </div>
             {[
@@ -244,7 +244,7 @@ export default function LoginPage() {
             }, [])}
             <div style={{ fontSize: 9, color: T.label, marginTop: 6 }}>
               Click a row to auto-fill credentials.
-            </div>
+            </div> */}
           </div>
         </div>
       </div>

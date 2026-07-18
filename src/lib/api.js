@@ -11,7 +11,12 @@ async function request(path, options = {}) {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`API ${options.method || "GET"} ${path} failed: ${res.status} ${body}`);
+    const err = new Error(`API ${options.method || "GET"} ${path} failed: ${res.status} ${body}`);
+    // Structured fields so callers can branch on the failure instead of
+    // string-matching the message (e.g. 401 → "invalid credentials").
+    err.status = res.status;
+    try { err.body = JSON.parse(body); } catch { err.body = null; }
+    throw err;
   }
   if (res.status === 204) return null;
   return res.json();
@@ -53,23 +58,25 @@ export const InstagramAPI = {
 };
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
-// Real backend login (sha256 hashKey check server-side). AuthContext calls
-// this first and only falls back to its local USERS directory if the backend
-// is unreachable.
+// Backend login (sha256 hashKey check server-side against the users
+// collection). The DB is the only credential store — no client-side fallback.
 export const AuthAPI = {
   login: (email, password) =>
     request("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
 };
 
 // Founder-only credential management (Auth page). Both clients share the
-// backend's registerAuthCrudRoutes shape: password → hashKey server-side,
-// DELETE is a soft delete with ?actor= for the audit trail.
+// backend's registerAuthCrudRoutes shape: password → hashKey + encrypted
+// passKey server-side, ids are backend-assigned (u10, bc3, …), DELETE is a
+// hard delete so the id sequence stays consistent. `password(id)` decrypts
+// the stored passKey so the founder can see the actual password.
 function authCrud(basePath) {
   return {
-    list: (includeDeleted) => request(`${basePath}${includeDeleted ? "?includeDeleted=1" : ""}`),
+    list: () => request(basePath),
     create: (item) => request(basePath, { method: "POST", body: JSON.stringify(item) }),
     update: (id, patch) => request(`${basePath}/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
-    remove: (id, actor) => request(`${basePath}/${id}${actor ? `?actor=${encodeURIComponent(actor)}` : ""}`, { method: "DELETE" }),
+    remove: (id) => request(`${basePath}/${id}`, { method: "DELETE" }),
+    password: (id) => request(`${basePath}/${id}/password`),
   };
 }
 

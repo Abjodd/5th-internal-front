@@ -56,13 +56,13 @@ export function AuthProvider({ children }) {
     } catch (err) {
       console.error("Login Error:", err);
 
-      return {
-        ok: false,
-        error:
-          err?.response?.data?.error ||
-          err?.message ||
-          "Unable to connect to the server.",
-      };
+      // request() attaches the HTTP status — map it to a user-appropriate
+      // message instead of surfacing the raw API error string.
+      if (err?.status === 401)
+        return { ok: false, error: "Invalid email or password." };
+      if (err?.status)
+        return { ok: false, error: "Something went wrong signing you in. Please try again." };
+      return { ok: false, error: "Unable to reach the server. Check your connection and try again." };
     }
   }, [persist]);
 

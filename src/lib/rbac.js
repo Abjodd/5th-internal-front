@@ -18,6 +18,7 @@ export const PERMS = {
   seeAgencyFee:       ["founder"],
   createCampaign:     ["founder", "pcm", "cm", "am"],
   deleteCampaign:     ["founder"],
+  editCreatorDetails: ["founder"],   // full Edit modal on the creators table
   assignUsers:        ["founder", "pcm", "cm", "am"],
 
   // ── Billing tab: which financial widgets to show ───────────────────────────

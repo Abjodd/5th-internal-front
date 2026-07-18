@@ -1185,7 +1185,7 @@ function TabSpending({ role, expenses, setExpenses, anomalies, pos, campsRef }) 
 }
 
 // ── TAB: PURCHASE ORDERS ──────────────────────────────────────────────────────
-function TabPurchaseOrders({ role, pos, setPos, campsRef }) {
+function TabPurchaseOrders({ role, currentUser, pos, setPos, campsRef }) {
   const [filter, setFilter] = useState("all");
   const [selId,  setSelId]  = useState(null);
   const [showNew,setNew]    = useState(false);
@@ -1200,14 +1200,16 @@ function TabPurchaseOrders({ role, pos, setPos, campsRef }) {
 
   const po = pos.find(p => p.id === selId) || null;
 
-  const handleApprove = id => setPos(p => p.map(o => o.id !== id ? o : { ...o, status:"approved", approvedBy:"founder", approvedAt:todayStr() }));
-  const handleDeliver = id => setPos(p => p.map(o => o.id !== id ? o : { ...o, status:"work_delivered", deliveryConfirmed:true, deliveryConfirmedBy:role }));
+  const handleApprove = id => setPos(p => p.map(o => o.id !== id ? o : { ...o, status:"approved", approvedBy:currentUser?.name || "founder", approvedAt:todayStr() }));
+  const handleDeliver = id => setPos(p => p.map(o => o.id !== id ? o : { ...o, status:"work_delivered", deliveryConfirmed:true, deliveryConfirmedBy:currentUser?.name || role }));
   const handleMatch   = id => setPos(p => p.map(o => o.id !== id ? o : { ...o, status:"matched" }));
   const handleClose   = id => setPos(p => p.map(o => o.id !== id ? o : { ...o, status:"closed" }));
 
   const submitNew = () => {
     const camp = campsRef.find(c => c.id === draft.campaign) || {};
-    const n = { ...draft, id:`PO-${Date.now().toString().slice(-5)}`, raisedBy:role, raisedByName:ROLES.find(r => r.id === role).label, campaignName:camp.name || "", brandId:camp.brandId || null, status:"pending_approval", poDocument:null, approvedBy:null, approvedAt:null, deliveryConfirmed:false, deliveryConfirmedBy:null, createdAt:todayStr(), amount:parseFloat(draft.amount) || 0, deliveryDate:prettyDate(draft.deliveryDate) };
+    // raisedBy = the logged-in user's teamId (the same t-id campaigns use for
+    // amId/cmId/eaId), raisedByName = their real name — not just a role label.
+    const n = { ...draft, id:`PO-${Date.now().toString().slice(-5)}`, raisedBy:currentUser?.teamId || role, raisedByRole:role, raisedByName:currentUser?.name || ROLES.find(r => r.id === role)?.label || role, campaignName:camp.name || "", brandId:camp.brandId || null, status:"pending_approval", poDocument:null, approvedBy:null, approvedAt:null, deliveryConfirmed:false, deliveryConfirmedBy:null, createdAt:todayStr(), amount:parseFloat(draft.amount) || 0, deliveryDate:prettyDate(draft.deliveryDate) };
     setPos(p => [n, ...p]);
     setSelId(n.id);
     setNew(false);
@@ -1728,13 +1730,10 @@ function TabCampaignPL({ role, advMap, setAdvMap, expenses, invoices, campsRef }
             {isFounder(role) ? "Founder" : "PCM — event view"}
           </span>
         </div>
-        {/* Event selector — this is the "particular event" scope for PCM.
-            NOTE: campsRef has no owning-PCM field yet, so every PCM
-            currently sees the same event list a Founder does; once
-            campaigns carry a pcmId (mirroring amId/cmId/eaId in
-            InternalCampaigns_V5), filter this list to
-            campsRef.filter(c => c.pcmId === currentUserId) for real
-            per-PCM scoping. */}
+        {/* Event selector — campsRef arrives pre-scoped from the root
+            (non-founder/accounts users only get campaigns where their teamId
+            is createdBy/amId/cmId/eaId), so a PCM only ever sees their own
+            events here. */}
         <select value={selC} onChange={e => setSelC(e.target.value)} style={{ ...INP, width:"auto" }}>
           {campsRef.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
@@ -1849,6 +1848,22 @@ export default function InternalBilling() {
   const [loading,   setLoading]   = useState(true);
   const [loadError, setLoadError] = useState(null);
 
+  // ── Assignment scoping ─────────────────────────────────────────────────────
+  // Founder and Accounts see company-wide billing; every other internal role
+  // only sees billing tied to campaigns they're on — same rule as canSee() in
+  // Campaigns (createdBy / amId / cmId / eaId === their teamId). Company-level
+  // docs with no campaign link (retainers, payroll, subscriptions) stay
+  // founder/accounts-only.
+  const seesAll   = role === "founder" || role === "accounts";
+  const myCamps   = seesAll ? campsRef : campsRef.filter(c => [c.createdBy, c.amId, c.cmId, c.eaId].includes(currentUser.teamId));
+  const myCampIds = new Set(myCamps.map(c => c.id));
+  const inScope   = d => seesAll || myCampIds.has(d.campaign || d.campaignId);
+  const scopedInvoices  = seesAll ? invoices  : invoices.filter(inScope);
+  const scopedExpenses  = seesAll ? expenses  : expenses.filter(inScope);
+  const scopedPos       = seesAll ? pos       : pos.filter(inScope);
+  const scopedClientPOs = seesAll ? clientPOs : clientPOs.filter(inScope);
+  const scopedQuotes    = seesAll ? quotes    : quotes.filter(inScope);
+
   // ── Brand-filtered display slices ──────────────────────────────────────────
   // Read-only views. Setters (setInvoices, setExpenses…) still write to the
   // full arrays so DB sync is unaffected by the filter.
@@ -1857,7 +1872,7 @@ export default function InternalBilling() {
   // brandId backfill (scrap/migrate_billing_brands.js).
   const brandName        = brands?.find(b => b.id === brandFilter)?.name || null;
   const matchesBrand     = d => d.brandId ? d.brandId === brandFilter : d.client === brandName;
-  const displayCampsRef  = brandFilter ? campsRef.filter(matchesBrand) : campsRef;
+  const displayCampsRef  = brandFilter ? myCamps.filter(matchesBrand) : myCamps;
   const brandCampIds     = new Set(displayCampsRef.map(c => c.id));
   // Deleted campaigns are excluded from CampaignsAPI.list(), so any
   // campaign-linked invoice/client PO whose campaign is missing from campsRef
@@ -1865,11 +1880,11 @@ export default function InternalBilling() {
   // before the delete-cascade in Campaigns existed).
   const liveCampIds      = new Set(campsRef.map(c => c.id));
   const hasLiveCampaign  = d => loading || !d.campaign || liveCampIds.has(d.campaign);
-  const displayInvoices  = (brandFilter ? invoices.filter(matchesBrand) : invoices).filter(hasLiveCampaign);
-  const displayExpenses  = brandFilter ? expenses.filter(e => e.brandId ? e.brandId === brandFilter : (!e.campaign || brandCampIds.has(e.campaign))) : expenses;
-  const displayPos       = brandFilter ? pos.filter(p => p.brandId ? p.brandId === brandFilter : (!p.campaign || brandCampIds.has(p.campaign))) : pos;
-  const displayClientPOs = (brandFilter ? clientPOs.filter(matchesBrand) : clientPOs).filter(hasLiveCampaign);
-  const displayQuotes    = brandFilter ? quotes.filter(matchesBrand) : quotes;
+  const displayInvoices  = (brandFilter ? scopedInvoices.filter(matchesBrand) : scopedInvoices).filter(hasLiveCampaign);
+  const displayExpenses  = brandFilter ? scopedExpenses.filter(e => e.brandId ? e.brandId === brandFilter : (!e.campaign || brandCampIds.has(e.campaign))) : scopedExpenses;
+  const displayPos       = brandFilter ? scopedPos.filter(p => p.brandId ? p.brandId === brandFilter : (!p.campaign || brandCampIds.has(p.campaign))) : scopedPos;
+  const displayClientPOs = (brandFilter ? scopedClientPOs.filter(matchesBrand) : scopedClientPOs).filter(hasLiveCampaign);
+  const displayQuotes    = brandFilter ? scopedQuotes.filter(matchesBrand) : scopedQuotes;
 
   const showToast = useCallback(msg => { setToast(msg); setTimeout(() => setToast(null), 2500); }, []);
 
@@ -1916,6 +1931,11 @@ export default function InternalBilling() {
           budget: c.budget || 0,
           creatorBudget: c.creatorBudget || Math.round((c.budget || 0) * 0.6),
           stage: c.stage,
+          // assignment slots — drive the per-user billing scope below
+          createdBy: c.createdBy || null,
+          amId: c.amId || null,
+          cmId: c.cmId || null,
+          eaId: c.eaId || null,
           marginPct: c.marginPct || 35,
           agencyFeePct: c.agencyFeePct || 15,
           agencyFeeType: c.agencyFeeType || "baked_in",
@@ -2042,7 +2062,7 @@ export default function InternalBilling() {
         {tab === "dashboard"      && <TabDashboard      role={role} invoices={displayInvoices} expenses={displayExpenses} advMap={advMap} setAdvMap={setAdvMap} setTab={setTab} anomalies={anomalies} pos={displayPos} campsRef={displayCampsRef} />}
         {tab === "income"         && <TabIncome         role={role} invoices={displayInvoices} setInvoices={setInvoices} clientPOs={displayClientPOs} setClientPOs={setClientPOs} campsRef={displayCampsRef} />}
         {tab === "spending"       && <TabSpending       role={role} expenses={displayExpenses} setExpenses={setExpenses} anomalies={anomalies} pos={displayPos} campsRef={displayCampsRef} />}
-        {tab === "purchase_orders"&& <TabPurchaseOrders role={role} pos={displayPos} setPos={setPos} campsRef={displayCampsRef} />}
+        {tab === "purchase_orders"&& <TabPurchaseOrders role={role} currentUser={currentUser} pos={displayPos} setPos={setPos} campsRef={displayCampsRef} />}
         {tab === "quotations"     && <TabQuotations     role={role} quotes={displayQuotes} setQuotes={setQuotes} campsRef={displayCampsRef} />}
         {tab === "registry"       && <TabRegistry       role={role} />}
         {tab === "gst"            && <TabGST            role={role} invoices={displayInvoices} expenses={displayExpenses} />}

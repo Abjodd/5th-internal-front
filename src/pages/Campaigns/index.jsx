@@ -14,10 +14,10 @@
  */
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
-import { CampaignsAPI, InstagramAPI, InvoicesAPI, ClientPOsAPI, ClientsAPI, InvoicePdfAPI } from "../../lib/api";
+import { CampaignsAPI, InstagramAPI, InvoicesAPI, ClientPOsAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
-import { fmtCompact, prettyDate } from "../../lib/format";
+import { fmtCompact, prettyDate, initials } from "../../lib/format";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
 
@@ -164,6 +164,11 @@ const CREATOR_COLS = [
 const FIELD_SANITIZE = { phone:"phone", email:"email", pan:"pan", ifsc:"ifsc", bankAccount:"account", upiId:"upi" };
 
 // ── TEAM ─────────────────────────────────────────────────────────────────────
+// Hardcoded fallback only. The live directory (TEAM_DIR below) is derived from
+// the backend `users` collection: each auth user's `teamId` IS the t-id that
+// campaigns store in amId/cmId/eaId — so someone added on the founder's Auth
+// page becomes assignable here without a code change. getM() and the Team-tab
+// dropdowns all read TEAM_DIR.
 const TEAM = [
   {id:"t0",name:"Rohan Mehta",  role:"pcm",     avatar:"RM",jobTitle:"Partner Category Manager"},
   {id:"t1",name:"Priya Nair",   role:"cm",      avatar:"PN",jobTitle:"Category Manager"},
@@ -176,6 +181,19 @@ const TEAM = [
   {id:"t8",name:"Aisha Founder",role:"founder", avatar:"AF",jobTitle:"Founder"},
   {id:"t9",name:"Accounts",    role:"accounts",avatar:"AC",jobTitle:"Accounts"},
 ];
+
+let TEAM_DIR = TEAM;
+// Map DB users → team-directory entries. Users without a teamId can't own
+// campaigns, so they're excluded from assignment lists.
+const teamFromUsers = (users) => (users || [])
+  .filter(u => u.teamId)
+  .map(u => ({
+    id: u.teamId,
+    name: u.name,
+    role: ["accounts_head","accounts_exec"].includes(u.role) ? "accounts" : u.role,
+    avatar: u.avatar || initials(u.name),
+    jobTitle: u.title || u.role,
+  }));
 
 // ── CREATOR DB (used only by Generate) ───────────────────────────────────────
 const CREATOR_DB = [
@@ -219,6 +237,7 @@ const mkCreator = (src={}, fee) => ({
   concept:  {status:"yet_to_receive",fileLink:null},
   demo:     {status:"yet_to_receive",fileLink:null},
   live:     {postUrl:null,postedDate:null},
+  invoiceNo:src.invoiceNo || null, // set once a PDF invoice is generated — locks out duplicates
   tracking: {views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null},
   personalDetails: {
     pan:         src.personalDetails?.pan         || src.pan         || null,
@@ -302,10 +321,16 @@ const INIT_CAMPS = [
   },
 ];
 
+// ── WORKFLOW ACTION LABELS ───────────────────────────────────────────────────
+// Shared by the confirmation modal and the post-action toast.
+const ACTION_MSGS={advance_to_shortlist:"Move to creator shortlisting",am_request_edit:"Request brief edit",raise_po:"Raise Purchase Order",advance_received:"Confirm advance received",assign_cm:"Assign CM",assign_ea:"Assign EA — start execution",brief_sent:"Mark briefs sent to creators",concept_submitted:"Mark concepts received",cm_approve_concept:"Approve concept",cm_request_changes:"Request concept changes",start_production:"Start production",video_submitted:"Mark video submitted",internal_approved:"Approve internally — send to client",internal_revision:"Request internal revision",client_approved:"Mark client approved",client_revision:"Log client revision request",mark_live:"Mark content live",creator_paid:"Confirm creator payments released",start_reporting:"Start reporting",mark_completed:"Mark campaign completed"};
+// Actions that don't move the pipeline stage — no confirmation needed.
+const NO_CONFIRM_ACTIONS=new Set(["assign_cm"]);
+
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 const fmtINR  = n => !n&&n!==0?"—":n>=100000?`₹${(n/100000).toFixed(1)}L`:`₹${(n/1000).toFixed(0)}K`;
 const fmtNum  = fmtCompact; // shared compact formatter — lib/format.js
-const getM    = id => TEAM.find(t=>t.id===id)||null;
+const getM    = id => TEAM_DIR.find(t=>t.id===id)||TEAM.find(t=>t.id===id)||null;
 const getR    = id => ROLES.find(r=>r.id===id)||ROLES[0];
 const plIdx   = id => PL_IDS.indexOf(id);
 
@@ -527,15 +552,43 @@ function DeleteCampaignModal({camp,onConfirm,onCancel}){
   </div>);
 }
 
+// ── CONFIRM STAGE-CHANGE MODAL ───────────────────────────────────────────────
+// Double-check gate for every workflow action that moves a campaign to another
+// pipeline stage — changes are only applied (and synced) after confirmation.
+function ConfirmActionModal({camp,label,onConfirm,onCancel}){
+  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
+    <div style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
+      <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Confirm stage change</div>
+      <div style={{fontSize:11,color:T.sub,lineHeight:1.6,marginBottom:16}}>
+        <strong style={{color:T.text}}>{label}</strong> — this moves <strong style={{color:T.text}}>{camp?.name}</strong> to a different pipeline stage and is logged on the campaign timeline. Continue?
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
+        <div style={{flex:1}}/>
+        <Btn variant="primary" onClick={onConfirm}>Yes, confirm</Btn>
+      </div>
+    </div>
+  </div>);
+}
+
 // ── ADD CREATOR MODAL ─────────────────────────────────────────────────────────
-function AddCreatorModal({onAdd,onClose}){
+// Doubles as the founder-only "Edit Creator" form: pass `editing` (an existing
+// creator object) to prefill every field; onAdd then receives the merged
+// creator (same _id, status/tracking preserved) instead of a new one.
+function AddCreatorModal({onAdd,onClose,editing=null}){
+  const pd0=editing?.personalDetails||{};
   const [f,setF]=useState({
-    name:"",platform:"Instagram",handle:"",igUrl:"",phone:"",niche:"",state:"",followers:"",avgLikes:"",avgER:"",
-    pan:"",email:"",address:"",bankName:"",bankAccount:"",bankBranch:"",ifsc:"",
-    payType:"",upiId:"",vendorCode:""
+    name:editing?.name||"",platform:editing?.platform||"Instagram",handle:editing?.handle||"",igUrl:editing?.igUrl||"",
+    phone:editing?.phone||"",niche:editing?.niche||"",state:editing?.state||"",
+    followers:editing?.followers!=null?String(editing.followers):"",avgLikes:editing?.avgLikes!=null?String(editing.avgLikes):"",avgER:editing?.avgER!=null?String(editing.avgER):"",
+    pan:pd0.pan||"",email:pd0.email||"",address:pd0.address||"",
+    bankName:pd0.bankName||"",bankAccount:pd0.bankAccount||"",bankBranch:pd0.bankBranch||"",ifsc:pd0.ifsc||"",
+    payType:editing?.payType||"",upiId:pd0.upiId||"",
+    vendorCode:editing?.payType==="vendor"?(editing.payId||""):""
   });
-  const [askingPrice,setAskingPrice]=useState("");
-  const [fee,setFee]=useState(""); // negotiated cost
+  const [askingPrice,setAskingPrice]=useState(editing?.askingPrice!=null?String(editing.askingPrice):"");
+  const [fee,setFee]=useState(editing?.fee!=null?String(editing.fee):""); // negotiated cost
   const [fetching,setFetching]=useState(false);
   const [fetchErr,setFetchErr]=useState(null);
   const [igFetched,setIgFetched]=useState(null);
@@ -546,9 +599,9 @@ function AddCreatorModal({onAdd,onClose}){
     setErrors(p=>({...p,[k]:FIELD_SANITIZE[k]?validateField(FIELD_SANITIZE[k],clean):null}));
   };
   const valid=f.name.trim()&&f.handle.trim();
-  const req=requiredForPayType(f.payType);
+  // Nothing beyond name+handle is mandatory here — bank/UPI/vendor details can
+  // be filled later; InvoiceDetailsModal enforces them when they're needed.
   const Err=({k})=>errors[k]?<div style={{fontSize:9.5,color:T.red,marginTop:3}}>{errors[k]}</div>:null;
-  const Req=({on=true})=>on?<span style={{color:T.red}}> *</span>:null;
 
   const handleFetch=async()=>{
     if(!f.igUrl.trim())return;
@@ -573,11 +626,38 @@ function AddCreatorModal({onAdd,onClose}){
 
   const handleAdd=()=>{
     if(!valid)return;
-    const errs=validateCreatorDetails(f,req);
+    // Only the selected payType's fields are mandatory; everything else just
+    // needs to be well-formed if filled in.
+    const errs=validateCreatorDetails(f,requiredForPayType(f.payType));
     setErrors(errs);
     if(Object.keys(errs).length)return;
     // payId mirrors the payType-specific identifier for the payment column
     const payId=f.payType==="vendor"?f.vendorCode:f.payType==="net_banking"?f.bankAccount:f.payType==="upi"?f.upiId:null;
+    const personalDetails={
+      pan: f.pan || null,
+      email: f.email || null,
+      address: f.address || null,
+      bankName: f.bankName || null,
+      bankAccount: f.bankAccount || null,
+      bankBranch: f.bankBranch || null,
+      ifsc: f.ifsc || null,
+      upiId: f.upiId || null,
+    };
+    if(editing){
+      // Merge onto the existing creator — _id, status, concept/demo/live and
+      // tracking data all survive the edit.
+      onAdd({
+        ...editing,
+        name:f.name, platform:f.platform, handle:f.handle, igUrl:f.igUrl||null,
+        phone:f.phone||null, niche:f.niche, state:f.state||null,
+        followers:f.followers, avgLikes:f.avgLikes||null, avgER:parseFloat(f.avgER)||null,
+        askingPrice:parseInt(askingPrice)||null, fee:parseInt(fee)||0,
+        payType:f.payType||null, payId:payId||null,
+        personalDetails:{...editing.personalDetails,...personalDetails},
+      });
+      onClose();
+      return;
+    }
     onAdd(mkCreator({
       ...f,
       avgER:parseFloat(f.avgER)||null,
@@ -587,16 +667,7 @@ function AddCreatorModal({onAdd,onClose}){
       state:f.state||null,
       payType:f.payType||null,
       payId:payId||null,
-      personalDetails: {
-        pan: f.pan || null,
-        email: f.email || null,
-        address: f.address || null,
-        bankName: f.bankName || null,
-        bankAccount: f.bankAccount || null,
-        bankBranch: f.bankBranch || null,
-        ifsc: f.ifsc || null,
-        upiId: f.upiId || null,
-      }
+      personalDetails
     },parseInt(fee)||0));
     onClose();
   };
@@ -605,7 +676,7 @@ function AddCreatorModal({onAdd,onClose}){
     <div onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(5px)"}}/>
     <div style={{position:"relative",width:"min(480px,94vw)",maxHeight:"90vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
       <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div style={{fontFamily:"'Newsreader',serif",fontSize:17,color:T.text,fontStyle:"italic"}}>Add Creator</div>
+        <div style={{fontFamily:"'Newsreader',serif",fontSize:17,color:T.text,fontStyle:"italic"}}>{editing?`Edit Creator — ${editing.name}`:"Add Creator"}</div>
         <button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button>
       </div>
       <div style={{padding:"18px 20px",overflowY:"auto",flex:1}}>
@@ -694,11 +765,11 @@ function AddCreatorModal({onAdd,onClose}){
           <select value={f.payType} onChange={e=>u("payType",e.target.value)} style={{...INP,resize:"none"}}>{PAYMENT_TYPES.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select>
         </div>
         {f.payType==="upi"&&<div style={{marginBottom:12}}>
-          <Lbl style={{display:"block",marginBottom:4}}>UPI ID<Req/></Lbl>
+          <Lbl style={{display:"block",marginBottom:4}}>UPI ID</Lbl>
           <input value={f.upiId} onChange={e=>u("upiId",e.target.value)} placeholder="name@okhdfcbank" style={{...INP,resize:"none",borderColor:errors.upiId?T.red:undefined}}/><Err k="upiId"/>
         </div>}
         {f.payType==="vendor"&&<div style={{marginBottom:12}}>
-          <Lbl style={{display:"block",marginBottom:4}}>Vendor Code / ID<Req/></Lbl>
+          <Lbl style={{display:"block",marginBottom:4}}>Vendor Code / ID</Lbl>
           <input value={f.vendorCode} onChange={e=>u("vendorCode",e.target.value)} placeholder="e.g. VND-1042" style={{...INP,resize:"none",borderColor:errors.vendorCode?T.red:undefined}}/><Err k="vendorCode"/>
         </div>}
         {f.payType==="net_banking"&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
@@ -709,7 +780,7 @@ function AddCreatorModal({onAdd,onClose}){
             ["IFS Code",    "ifsc",        "e.g. CNRB0000684"],
           ].map(([l,k,ph]) => (
             <div key={k}>
-              <Lbl style={{display:"block",marginBottom:4}}>{l}<Req on={req.includes(k)}/></Lbl>
+              <Lbl style={{display:"block",marginBottom:4}}>{l}</Lbl>
               <input value={f[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none",borderColor:errors[k]?T.red:undefined}}/><Err k={k}/>
             </div>
           ))}
@@ -730,7 +801,7 @@ function AddCreatorModal({onAdd,onClose}){
             placeholder="Full address" style={{...INP}}/>
         </div>
       </div>
-      <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}><Btn variant="ghost" onClick={onClose}>Cancel</Btn><div style={{flex:1}}/><Btn variant="primary" onClick={handleAdd} disabled={!valid}>Add to list</Btn></div>
+      <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}><Btn variant="ghost" onClick={onClose}>Cancel</Btn><div style={{flex:1}}/><Btn variant="primary" onClick={handleAdd} disabled={!valid}>{editing?"Save changes":"Add to list"}</Btn></div>
     </div>
   </div>);
 }
@@ -793,8 +864,6 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
         bankBranch: form.bankBranch || null, ifsc: form.ifsc || null, upiId: form.upiId || null,
       },
     };
-    onUpdateCreators(creators.map(c => c._id === creator._id ? updatedCr : c));
-
     const idx       = creators.findIndex(c => c._id === creator._id) + 1;
     const invoiceNo = `INV-CR-${camp.id.slice(-6).toUpperCase()}-${String(idx).padStart(2,"0")}`;
     const dated     = new Date().toLocaleDateString("en-IN", { day:"numeric", month:"long", year:"numeric" });
@@ -808,6 +877,9 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
         creator: updatedCr, dated, actor: user?.name,
       });
       setBusy(false);
+      // Stamp the invoiceNo on the creator — the table's Invoice button
+      // becomes "Download Invoice" and no duplicate can ever be generated.
+      onUpdateCreators(creators.map(c => c._id === creator._id ? { ...updatedCr, invoiceNo } : c));
       if (!window.open(InvoicePdfAPI.url(invoiceNo), "_blank")) {
         alert("Pop-up blocked — please allow pop-ups for this site to view the invoice.");
         return;
@@ -816,8 +888,10 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
       onClose();
       return;
     } catch {
-      // Backend unreachable — fall back to the old client-side printable HTML
-      // (the PDF is NOT saved in this case).
+      // Backend unreachable — fall back to the old client-side printable HTML.
+      // The PDF is NOT saved, so invoiceNo is deliberately not stamped and the
+      // button stays "Invoice" for a proper retry once the backend is back.
+      onUpdateCreators(creators.map(c => c._id === creator._id ? updatedCr : c));
       setBusy(false);
     }
     const blob = new Blob([generateInvoiceHTML(updatedCr, camp, invoiceNo, dated)], { type: "text/html" });
@@ -879,6 +953,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const [genRounds,setGenRounds]=useState(camp.genRounds||0);
   const [removeTarget,setRemoveTarget]=useState(null);
   const [showAdd,setShowAdd]=useState(false);
+  const [editTarget,setEditTarget]=useState(null);       // creator being edited (founder only)
   const [invoiceTarget,setInvoiceTarget]=useState(null); // creator to invoice
   const required=camp.numReq||5,flagged=genRounds>=4;
   const cb=camp.creatorBudget||camp.budget*0.6;
@@ -930,7 +1005,10 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
               {canFin(role)&&<td style={tdS}>{canEdit?<MoneyInput value={cr.fee||0} onChange={v=>patch(cr._id,{fee:parseInt(v)||0})} style={{width:76,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}/>:fmtINR(cr.fee)}</td>}
               {canFin(role)&&<td style={tdS}>{canEdit?<select value={cr.payType||""} onChange={e=>patch(cr._id,{payType:e.target.value||null,payId:null})} style={{background:"transparent",border:`1px solid ${T.border}`,color:cr.payType?T.text:T.label,fontSize:10,fontFamily:"'Sora'",outline:"none",cursor:"pointer",borderRadius:4,padding:"3px 5px"}}>{PAYMENT_TYPES.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select>:<span style={{fontSize:10,color:T.text}}>{PAYMENT_TYPES.find(p=>p.id===cr.payType)?.label||"—"}</span>}</td>}
               {(canEdit||canFin(role))&&<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}>
-                {canFin(role)&&<button onClick={()=>cr.payType&&setInvoiceTarget(cr)} disabled={!cr.payType} title={cr.payType?"Generate invoice":"Select a pay type first"} style={{fontSize:9,color:cr.payType?T.accent:T.label,background:"transparent",border:`1px solid ${cr.payType?`${T.accent}30`:T.border}`,borderRadius:4,padding:"3px 8px",cursor:cr.payType?"pointer":"not-allowed",opacity:cr.payType?1:0.5,fontFamily:"'Sora'"}}>Invoice</button>}
+                {can(role,"editCreatorDetails")&&<button onClick={()=>setEditTarget(cr)} title="Edit all creator details" style={{fontSize:9,color:T.sub,background:"transparent",border:`1px solid ${T.borderMid}`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Edit</button>}
+                {canFin(role)&&(cr.invoiceNo
+                  ?<button onClick={()=>window.open(InvoicePdfAPI.url(cr.invoiceNo),"_blank")} title={`Download ${cr.invoiceNo} — already generated`} style={{fontSize:9,color:T.green,background:"transparent",border:`1px solid ${T.green}30`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>↓ Download Invoice</button>
+                  :<button onClick={()=>cr.payType&&setInvoiceTarget(cr)} disabled={!cr.payType} title={cr.payType?"Generate invoice":"Select a pay type first"} style={{fontSize:9,color:cr.payType?T.accent:T.label,background:"transparent",border:`1px solid ${cr.payType?`${T.accent}30`:T.border}`,borderRadius:4,padding:"3px 8px",cursor:cr.payType?"pointer":"not-allowed",opacity:cr.payType?1:0.5,fontFamily:"'Sora'"}}>Invoice</button>)}
                 {canEdit&&<button onClick={()=>setRemoveTarget(cr)} style={{fontSize:9,color:T.red,background:"transparent",border:`1px solid ${T.red}22`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Remove</button>}
               </div></td>}
             </tr>);
@@ -944,6 +1022,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
     </div>}
     {removeTarget&&<RemoveModal creator={removeTarget} onConfirm={confirmRemove} onCancel={()=>setRemoveTarget(null)}/>}
     {showAdd&&<AddCreatorModal onAdd={cr=>sync([...creators,cr])} onClose={()=>setShowAdd(false)}/>}
+    {editTarget&&<AddCreatorModal editing={editTarget} onAdd={cr=>sync(creators.map(c=>c._id===cr._id?cr:c))} onClose={()=>setEditTarget(null)}/>}
     {invoiceTarget && (
       <InvoiceDetailsModal camp={camp} creator={creators.find(c=>c._id===invoiceTarget._id)||invoiceTarget} creators={creators} onClose={()=>setInvoiceTarget(null)} onUpdateCreators={sync} onLogTimeline={onLogTimeline}/>
     )}
@@ -1021,7 +1100,7 @@ function TabDeliverables({camp,role,onUpdateCreators}){
             <div style={{padding:"12px 14px",borderRight:`1px solid ${T.border}`}}>
               <Lbl style={{display:"block",marginBottom:8}}>Live</Lbl>
               {canEdit&&<input value={liv.postUrl||""} onChange={e=>pLiv(cr._id,{postUrl:e.target.value})} placeholder="Post URL…" style={{...INP,fontSize:10,padding:"5px 8px",resize:"none",marginBottom:6}}/>}
-              {liv.postUrl?<><a href={liv.postUrl} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginBottom:6}}>Open post →</a>{canEdit&&<input value={liv.postedDate||""} onChange={e=>pLiv(cr._id,{postedDate:e.target.value})} placeholder="Posted date…" style={{...INP,fontSize:10,padding:"5px 8px",resize:"none"}}/>}{liv.postedDate&&!canEdit&&<div style={{fontSize:9.5,color:T.sub}}>Posted: {liv.postedDate}</div>}</>:!canEdit&&<div style={{fontSize:11,color:T.label,fontStyle:"italic"}}>Not posted</div>}
+              {liv.postUrl?<><a href={liv.postUrl} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginBottom:6}}>Open post →</a>{canEdit&&<DateInput value={liv.postedDate||""} onChange={v=>pLiv(cr._id,{postedDate:v})} max={today()} placeholder="Posted date" style={{...INP,fontSize:10,padding:"5px 8px"}}/>}{liv.postedDate&&!canEdit&&<div style={{fontSize:9.5,color:T.sub}}>Posted: {prettyDate(liv.postedDate)}</div>}</>:!canEdit&&<div style={{fontSize:11,color:T.label,fontStyle:"italic"}}>Not posted</div>}
             </div>
             {/* Tracking */}
             <div style={{padding:"12px 14px"}}>
@@ -1077,7 +1156,7 @@ function TabTeam({camp,role,onAction}){
   const isAM=["am","founder","pcm"].includes(role),isCM=["cm","pcm","founder"].includes(role);
   const canAssignCM=isAM&&["draft","creator_shortlist","po_raised"].includes(camp.stage);
   const canAssignEA=isCM&&camp.stage==="advance_received"&&!camp.eaId;
-  const cms=TEAM.filter(t=>["cm","pcm"].includes(t.role)),eas=TEAM.filter(t=>t.role==="ea");
+  const cms=TEAM_DIR.filter(t=>["cm","pcm"].includes(t.role)),eas=TEAM_DIR.filter(t=>t.role==="ea");
   return(<div>
     {[{label:"Account Manager",id:camp.amId},{label:"Category Manager",id:camp.cmId},{label:"Exec Associate",id:camp.eaId}].map(({label,id},i)=>{const m=getM(id);return(<div key={label}><div style={{padding:"12px 0"}}><Lbl style={{display:"block",marginBottom:5}}>{label}</Lbl><div style={{display:"flex",alignItems:"center",gap:7}}>{m&&<Av init={m.avatar} size={20}/>}<span style={{fontSize:12,color:m?T.text:T.label,fontStyle:m?"normal":"italic"}}>{m?m.name:"Unassigned"}</span>{m&&<span style={{fontSize:9,color:T.label}}>{m.jobTitle}</span>}</div></div>{i<2&&<Hr/>}</div>);})}
     {canAssignCM&&<div style={{marginTop:20}}><Hr style={{marginBottom:16}}/><Lbl style={{display:"block",marginBottom:8}}>Assign Category Manager</Lbl><select value={selCM} onChange={e=>setSelCM(e.target.value)} style={{...INP,resize:"none",marginBottom:10}}><option value="">Select CM…</option>{cms.map(cm=><option key={cm.id} value={cm.id}>{cm.name}</option>)}</select><Btn variant="primary" onClick={()=>selCM&&onAction("assign_cm",{cmId:selCM})} disabled={!selCM}>Assign CM</Btn></div>}
@@ -1317,6 +1396,15 @@ export default function InternalCampaigns(){
       .catch(err=>{ if(!cancelled){ setLoadError(err.message); setLoading(false); } });
     return ()=>{ cancelled=true; };
   },[]);
+  // Live team directory from the users collection — silent fallback to the
+  // hardcoded TEAM if the API is unreachable. The state bump re-renders so
+  // getM()/Team-tab dropdowns pick up the fetched names.
+  const [,setTeamLoaded]=useState(false);
+  useEffect(()=>{
+    UsersAPI.list()
+      .then(users=>{ const dir=teamFromUsers(users); if(dir.length){ TEAM_DIR=dir; setTeamLoaded(true); } })
+      .catch(()=>{});
+  },[]);
   const [selectedId,setSelId]=useState("c1");
   const [search,setSearch]=useState("");
   const [stageFilter,setStageF]=useState("all");
@@ -1356,7 +1444,6 @@ export default function InternalCampaigns(){
       updatedCamp=next;
       return next;
     }));
-    const msgs={advance_to_shortlist:"Moved to creator shortlisting",am_request_edit:"Edit requested",raise_po:"PO raised",advance_received:"Advance confirmed",assign_cm:"CM assigned",assign_ea:"EA assigned — execution started",brief_sent:"Briefs sent to creators",concept_submitted:"Concepts received",cm_approve_concept:"Concept approved",cm_request_changes:"Changes requested",start_production:"Production started",video_submitted:"Video submitted",internal_approved:"Approved — sent to client",internal_revision:"Revision requested",client_approved:"Client approved",client_revision:"Client revision requested",mark_live:"Campaign is live",creator_paid:"Payments released",start_reporting:"Reporting started",mark_completed:"Campaign completed"};
     // DB sync — happens after setCampaigns so updatedCamp is set
     setTimeout(()=>{
       if(updatedCamp){
@@ -1364,8 +1451,15 @@ export default function InternalCampaigns(){
         CampaignsAPI.update(id,rest).catch(()=>showToast("Save failed — check connection"));
       }
     },0);
-    showToast(msgs[action]||action);
+    showToast(ACTION_MSGS[action]||action);
   },[selectedId,showToast,role]);
+  // Double-check gate: stage-changing actions go through a confirmation modal
+  // before onAction applies (and persists) anything. Pure assignments skip it.
+  const [pendingAction,setPendingAction]=useState(null); // {action,data}
+  const requestAction=useCallback((action,data={})=>{
+    if(NO_CONFIRM_ACTIONS.has(action)){onAction(action,data);return;}
+    setPendingAction({action,data});
+  },[onAction]);
   const onSaveBrief=useCallback(patch=>{setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,brief:{...c.brief,...patch}}));CampaignsAPI.update(selectedId,{brief:{...(campaigns.find(c=>c.id===selectedId)?.brief||{}),...patch}}).catch(()=>showToast("Save failed — check connection"));showToast("Brief updated");},[selectedId,showToast,campaigns]);
   const onUpdateCreators=useCallback((next,extra)=>{setCampaigns(prev=>prev.map(c=>{if(c.id!==selectedId)return c;return{...c,creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}}));CampaignsAPI.update(selectedId,{creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}).catch(()=>showToast("Save failed — check connection"));if(extra==="send_to_client")showToast("Creator list sent to client");},[selectedId,showToast]);
   // Appends an audit entry to the selected campaign's timeline and persists it.
@@ -1520,7 +1614,7 @@ export default function InternalCampaigns(){
       {/* Detail panel */}
       <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
         {selected
-          ? <Detail camp={selected} role={role} onAction={onAction} onSaveBrief={onSaveBrief} onUpdateCreators={onUpdateCreators} onDelete={onDeleteCampaign} onLogTimeline={onLogTimeline}/>
+          ? <Detail camp={selected} role={role} onAction={requestAction} onSaveBrief={onSaveBrief} onUpdateCreators={onUpdateCreators} onDelete={onDeleteCampaign} onLogTimeline={onLogTimeline}/>
           : <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12,background:"#F5F5F7"}}>
               <div style={{width:48,height:48,borderRadius:16,background:"rgba(0,0,0,0.05)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#86868B"}}>◎</div>
               <div style={{fontSize:14,fontWeight:600,color:"#1D1D1F",fontFamily:SF,letterSpacing:"-0.02em"}}>Select a campaign</div>
@@ -1532,5 +1626,8 @@ export default function InternalCampaigns(){
       </div>
     </div>
     {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand}/>}
+    {pendingAction&&selected&&<ConfirmActionModal camp={selected} label={ACTION_MSGS[pendingAction.action]||pendingAction.action}
+      onConfirm={()=>{onAction(pendingAction.action,pendingAction.data);setPendingAction(null);}}
+      onCancel={()=>setPendingAction(null)}/>}
   </div>);
 }

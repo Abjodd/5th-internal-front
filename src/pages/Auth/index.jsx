@@ -9,8 +9,8 @@
  * The DB stores { id, username, hashKey } — hashKey is sha256(password),
  * so the actual password can never be displayed; the hash is shown instead
  * (reveal + copy). Founder can add new users, edit existing ones (including
- * a password reset, re-hashed server-side) and remove them (soft delete —
- * the doc stays in Mongo with deleted:true and login is blocked).
+ * a password reset, re-hashed server-side) and remove them (hard delete —
+ * the doc is removed from Mongo so the id sequence stays consistent).
  */
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";
@@ -63,29 +63,56 @@ const Pill = ({ children, color = T.sub }) => (
 
 const roleLabel = id => PLATFORM_ROLES.find(r => r.id === id)?.label || id;
 
-// ── HASH KEY CELL ────────────────────────────────────────────────────────────
-// The stored credential is sha256(password) — unrecoverable by design, so we
-// show the hash itself: masked by default, reveal on click, copy to clipboard.
-function HashKey({ hash }) {
+// ── PASSWORD CELL ────────────────────────────────────────────────────────────
+// The DB stores only hashKey (sha256, for login) + passKey (encrypted copy).
+// Reveal fetches the decrypted actual password from GET …/:id/password —
+// founder-only page, so only the founder ever sees it. Records created before
+// the passKey era have nothing to decrypt until their password is reset once.
+function PasswordCell({ api, record }) {
   const [shown, setShown] = useState(false);
+  const [password, setPassword] = useState(null); // fetched plaintext
+  const [notice, setNotice] = useState(null);     // e.g. "reset to enable"
   const [copied, setCopied] = useState(false);
-  if (!hash) return <span style={{ color: T.label }}>—</span>;
-  const copy = () => {
-    navigator.clipboard?.writeText(hash).then(() => {
+
+  // Fetch-and-cache the plaintext; returns null (and sets the notice) when
+  // there's nothing to decrypt (pre-passKey records → backend 404).
+  const fetchPassword = async () => {
+    if (password != null) return password;
+    try {
+      const pw = (await api.password(record.id)).password;
+      setPassword(pw);
+      return pw;
+    } catch (err) {
+      setNotice(err.status === 404 ? "Set a new password to enable reveal" : "Could not fetch password");
+      return null;
+    }
+  };
+
+  const reveal = async () => {
+    if (shown) { setShown(false); return; }
+    if (await fetchPassword() != null) setShown(true);
+  };
+
+  const copy = async () => {
+    const pw = await fetchPassword();
+    if (pw == null) return;
+    navigator.clipboard?.writeText(pw).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     });
   };
+
+  if (notice) return <span style={{ fontSize: 9.5, color: T.amber }}>{notice}</span>;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <span style={{ fontFamily: "monospace", fontSize: 10, color: T.sub }}>
-        {shown ? `${hash.slice(0, 18)}…` : "•".repeat(14)}
+      <span style={{ fontFamily: "monospace", fontSize: 10.5, color: shown ? T.text : T.sub }}>
+        {shown ? password : "•".repeat(10)}
       </span>
-      <button onClick={() => setShown(s => !s)} title={shown ? "Hide" : "Reveal"}
+      <button onClick={reveal} title={shown ? "Hide" : "Reveal actual password"}
         style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, color: T.label, padding: 2 }}>
         {shown ? "🙈" : "👁"}
       </button>
-      <button onClick={copy} title="Copy full hash"
+      <button onClick={copy} title="Copy password"
         style={{ background: "none", border: "none", cursor: "pointer", fontSize: 9.5, color: copied ? T.green : T.accent, padding: 2 }}>
         {copied ? "✓" : "copy"}
       </button>
@@ -162,8 +189,8 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
                 </select>
               </div>
               <div>
-                <Lbl>Team ID (optional)</Lbl>
-                <input value={form.teamId} onChange={e => u("teamId", e.target.value)} placeholder="e.g. t3 — campaign ownership" style={INP} />
+                <Lbl>Team ID (auto-assigned if blank)</Lbl>
+                <input value={form.teamId} onChange={e => u("teamId", e.target.value)} placeholder="e.g. t3 — links campaigns (amId/cmId/eaId)" style={INP} />
               </div>
             </div>
           ) : (
@@ -179,7 +206,7 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
             <input type="password" value={form.password} onChange={e => u("password", e.target.value)}
               placeholder={editing ? "••••••••" : "Set an initial password"} style={INP} />
             <div style={{ fontSize: 9.5, color: T.label, marginTop: 5 }}>
-              Stored as a SHA-256 hash key — the plaintext never reaches the database.
+              Stored as a SHA-256 hash key plus an encrypted copy for the founder's reveal — plaintext is never stored.
             </div>
           </div>
           {err && <div style={{ fontSize: 11, color: T.red, marginTop: 10 }}>{err}</div>}
@@ -195,7 +222,7 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
   );
 }
 
-// ── REMOVE (SOFT DELETE) CONFIRM ─────────────────────────────────────────────
+// ── REMOVE (HARD DELETE) CONFIRM ─────────────────────────────────────────────
 function RemoveModal({ record, onClose, onConfirm }) {
   const [busy, setBusy] = useState(false);
   return (
@@ -206,8 +233,8 @@ function RemoveModal({ record, onClose, onConfirm }) {
           Remove {record.name}?
         </div>
         <div style={{ fontSize: 11.5, color: T.sub, lineHeight: 1.6, marginBottom: 18 }}>
-          This is a <strong style={{ color: T.text }}>soft delete</strong> — the record stays in the
-          database (marked removed) and can be restored by hand, but{" "}
+          This <strong style={{ color: T.red }}>permanently deletes</strong> the record from the
+          database — it cannot be restored, and{" "}
           <span style={{ fontFamily: "monospace", fontSize: 10.5 }}>{record.username}</span> will no
           longer be able to sign in.
         </div>
@@ -233,9 +260,8 @@ export default function Auth() {
   const [creds, setCreds] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [showRemoved, setShowRemoved] = useState(false);
   const [modal, setModal] = useState(null);            // { mode:"add"|"edit", record? }
-  const [removing, setRemoving] = useState(null);      // record pending soft delete
+  const [removing, setRemoving] = useState(null);      // record pending hard delete
 
   const api    = tab === "internal" ? UsersAPI : BrandCredentialsAPI;
   // Brand Portal tab respects the global brand filter (top bar), same as
@@ -247,45 +273,42 @@ export default function Auth() {
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    Promise.all([UsersAPI.list(showRemoved), BrandCredentialsAPI.list(showRemoved)])
+    Promise.all([UsersAPI.list(), BrandCredentialsAPI.list()])
       .then(([u, c]) => { setUsers(u); setCreds(c); })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
-  }, [showRemoved]);
+  }, []);
 
   useEffect(() => { if (can(role, "manageAuth")) load(); }, [role, load]);
 
   const brandName = id => brands.find(b => b.id === id)?.name || id || "—";
 
-  // Create / update handlers passed into the modal. IDs are human-readable
-  // and generated here, matching the codebase's frontend-generated-ID pattern.
+  // Create / update handlers passed into the modal. Ids and teamIds are
+  // assigned by the backend, continuing the seed sequence (u10, bc3, t10, …).
   const handleSave = async (form) => {
     const isUser = tab === "internal";
     if (modal.mode === "edit") {
       const patch = {
         username: form.username, name: form.name, title: form.title,
-        ...(isUser ? { role: form.role, teamId: form.teamId || null } : { brandId: form.brandId }),
+        ...(isUser ? { role: form.role, ...(form.teamId ? { teamId: form.teamId } : {}) } : { brandId: form.brandId }),
         ...(form.password ? { password: form.password } : {}),
       };
       const updated = await api.update(modal.record.id, patch);
       setRows(prev => prev.map(r => r.id === updated.id ? updated : r));
     } else {
-      const id = isUser ? `u_${Date.now().toString(36)}` : `bc_${form.brandId}_${Date.now().toString(36)}`;
       const avatar = form.name.split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase();
       const created = await api.create({
-        id, avatar, username: form.username, name: form.name, title: form.title,
+        avatar, username: form.username, name: form.name, title: form.title,
         password: form.password,
-        ...(isUser ? { role: form.role, teamId: form.teamId || null } : { brandId: form.brandId }),
+        ...(isUser ? { role: form.role, ...(form.teamId ? { teamId: form.teamId } : {}) } : { brandId: form.brandId }),
       });
       setRows(prev => [...prev, created]);
     }
   };
 
   const handleRemove = async () => {
-    await api.remove(removing.id, user?.name);
-    setRows(prev => showRemoved
-      ? prev.map(r => r.id === removing.id ? { ...r, deleted: true } : r)
-      : prev.filter(r => r.id !== removing.id));
+    await api.remove(removing.id);
+    setRows(prev => prev.filter(r => r.id !== removing.id));
     setRemoving(null);
   };
 
@@ -308,7 +331,7 @@ export default function Auth() {
             Access & Credentials
           </div>
           <div style={{ fontSize: 11, color: T.sub, marginTop: 4 }}>
-            Every login in the system — internal team and brand portal. Passwords are stored as hash keys only.
+            Every login in the system — internal team and brand portal. The DB stores hash keys; reveal shows the actual password (founder only).
           </div>
         </div>
         <Btn variant="primary" onClick={() => setModal({ mode: "add" })}>
@@ -316,7 +339,7 @@ export default function Auth() {
         </Btn>
       </div>
 
-      {/* Tabs + show-removed toggle */}
+      {/* Tabs */}
       <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 14, borderBottom: `1px solid ${T.border}` }}>
         {TABS.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -326,11 +349,6 @@ export default function Auth() {
             color: tab === t.id ? T.text : T.sub, cursor: "pointer", fontFamily: "'Sora'",
           }}>{t.label}</button>
         ))}
-        <div style={{ flex: 1 }} />
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: T.sub, cursor: "pointer", paddingBottom: 6 }}>
-          <input type="checkbox" checked={showRemoved} onChange={e => setShowRemoved(e.target.checked)} style={{ accentColor: T.accent }} />
-          Show removed
-        </label>
       </div>
 
       {/* States */}
@@ -357,50 +375,43 @@ export default function Auth() {
                 <th style={thS}>ID</th>
                 <th style={thS}>Name</th>
                 <th style={thS}>Username</th>
-                <th style={thS}>Hash Key</th>
+                <th style={thS}>Password</th>
                 <th style={thS}>{tab === "internal" ? "Role" : "Brand"}</th>
                 <th style={thS}>Title</th>
-                <th style={thS}>Status</th>
                 <th style={{ ...thS, textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => (
-                <tr key={r.id} style={{ opacity: r.deleted ? 0.55 : 1 }}>
-                  <td style={{ ...tdS, fontFamily: "monospace", fontSize: 10.5, color: T.sub }}>{r.id}</td>
-                  <td style={{ ...tdS, fontWeight: 500 }}>{r.name}</td>
-                  <td style={{ ...tdS, fontFamily: "monospace", fontSize: 10.5 }}>{r.username}</td>
-                  <td style={tdS}><HashKey hash={r.hashKey} /></td>
-                  <td style={tdS}>
-                    {tab === "internal"
-                      ? <Pill color={r.role === "founder" ? T.purple : T.accent}>{roleLabel(r.role)}</Pill>
-                      : <Pill color={T.teal}>{brandName(r.brandId)}</Pill>}
-                  </td>
-                  <td style={{ ...tdS, color: T.sub }}>{r.title || "—"}</td>
-                  <td style={tdS}>
-                    {r.deleted
-                      ? <Pill color={T.red}>Removed</Pill>
-                      : <Pill color={T.green}>Active</Pill>}
-                  </td>
-                  <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
-                    {!r.deleted && (
-                      <>
-                        <button onClick={() => setModal({ mode: "edit", record: r })}
-                          style={{ fontSize: 9.5, color: T.accent, background: "transparent", border: `1px solid ${T.accent}30`, borderRadius: 4, padding: "3px 10px", cursor: "pointer", fontFamily: "'Sora'", marginRight: 6 }}>
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => setRemoving(r)}
-                          disabled={tab === "internal" && r.id === user?.id}
-                          title={tab === "internal" && r.id === user?.id ? "You can't remove your own login" : "Soft delete"}
-                          style={{ fontSize: 9.5, color: T.red, background: "transparent", border: `1px solid ${T.red}30`, borderRadius: 4, padding: "3px 10px", cursor: tab === "internal" && r.id === user?.id ? "not-allowed" : "pointer", opacity: tab === "internal" && r.id === user?.id ? 0.4 : 1, fontFamily: "'Sora'" }}>
-                          Remove
-                        </button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {rows.map(r => {
+                const isSelf = tab === "internal" && r.id === user?.id;
+                return (
+                  <tr key={r.id}>
+                    <td style={{ ...tdS, fontFamily: "monospace", fontSize: 10.5, color: T.sub }}>{r.id}</td>
+                    <td style={{ ...tdS, fontWeight: 500 }}>{r.name}</td>
+                    <td style={{ ...tdS, fontFamily: "monospace", fontSize: 10.5 }}>{r.username}</td>
+                    <td style={tdS}><PasswordCell api={api} record={r} /></td>
+                    <td style={tdS}>
+                      {tab === "internal"
+                        ? <Pill color={r.role === "founder" ? T.purple : T.accent}>{roleLabel(r.role)}</Pill>
+                        : <Pill color={T.teal}>{brandName(r.brandId)}</Pill>}
+                    </td>
+                    <td style={{ ...tdS, color: T.sub }}>{r.title || "—"}</td>
+                    <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button onClick={() => setModal({ mode: "edit", record: r })}
+                        style={{ fontSize: 9.5, color: T.accent, background: "transparent", border: `1px solid ${T.accent}30`, borderRadius: 4, padding: "3px 10px", cursor: "pointer", fontFamily: "'Sora'", marginRight: 6 }}>
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => setRemoving(r)}
+                        disabled={isSelf}
+                        title={isSelf ? "You can't remove your own login" : "Permanently delete"}
+                        style={{ fontSize: 9.5, color: T.red, background: "transparent", border: `1px solid ${T.red}30`, borderRadius: 4, padding: "3px 10px", cursor: isSelf ? "not-allowed" : "pointer", opacity: isSelf ? 0.4 : 1, fontFamily: "'Sora'" }}>
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -67,17 +67,81 @@ const Fact = ({ label, value }) => (
   </div>
 );
 
+// Shared styles for the three expanded-row panels.
+const panel = {
+  flex: 1, minWidth: 220, background: T.surface,
+  border: `1px solid ${T.border}`, borderRadius: T.radiusSm, padding: "12px 14px",
+};
+const panelTitle = {
+  fontSize: 9, fontWeight: 600, color: T.label, textTransform: "uppercase",
+  letterSpacing: "0.07em", marginBottom: 8,
+};
+
+// ── INVOICES PANEL ───────────────────────────────────────────────────────────
+// One influencer's generated invoices with a local filter — matches invoice
+// no, label, or the campaign the invoice belongs to.
+function InvoicesPanel({ invoices, campaigns }) {
+  const [invQuery, setInvQuery] = useState("");
+  const nameById = useMemo(() => new Map(campaigns.map(c => [c.id, c.name])), [campaigns]);
+  const campaignName = (id) => nameById.get(id) || null;
+  const shown = useMemo(() => {
+    const q = invQuery.trim().toLowerCase();
+    if (!q) return invoices;
+    return invoices.filter(inv =>
+      [inv.id, inv.label, inv.campaign, nameById.get(inv.campaign)]
+        .filter(Boolean).some(v => String(v).toLowerCase().includes(q))
+    );
+  }, [invoices, invQuery, nameById]);
+
+  return (
+    <div style={panel}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+        <div style={{ ...panelTitle, marginBottom: 0 }}>Invoices ({shown.length}{invQuery ? ` of ${invoices.length}` : ""})</div>
+        {invoices.length > 1 && (
+          <input
+            value={invQuery}
+            onChange={e => setInvQuery(e.target.value)}
+            placeholder="Filter by campaign / invoice no…"
+            style={{ ...INP, width: 170, padding: "4px 8px", fontSize: 10 }}
+          />
+        )}
+      </div>
+      {invoices.length === 0 && (
+        <div style={{ fontSize: 10.5, color: T.label, fontStyle: "italic" }}>No invoices generated yet.</div>
+      )}
+      {invoices.length > 0 && shown.length === 0 && (
+        <div style={{ fontSize: 10.5, color: T.label, fontStyle: "italic" }}>No invoices match "{invQuery}".</div>
+      )}
+      {shown.map((inv, i) => (
+        <div key={inv.id} style={{
+          display: "flex", alignItems: "center", gap: 8, padding: "7px 0",
+          borderBottom: i < shown.length - 1 ? `1px solid ${T.border}` : "none",
+        }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 10.5, fontFamily: "monospace", color: T.text }}>{inv.id}</div>
+            <div style={{ fontSize: 9.5, color: T.sub, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {campaignName(inv.campaign) ? `${campaignName(inv.campaign)} · ` : ""}{fmtINR(inv.amount)}{inv.generatedAt ? ` · ${new Date(inv.generatedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}` : ""}
+            </div>
+          </div>
+          {inv.pdfUrl && (
+            <button
+              onClick={() => window.open(InvoicePdfAPI.url(inv.id), "_blank")}
+              style={{
+                fontSize: 9.5, color: T.accent, background: "transparent",
+                border: `1px solid ${T.accent}30`, borderRadius: 4,
+                padding: "3px 9px", cursor: "pointer", fontFamily: "'Sora'",
+              }}
+            >View PDF</button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── EXPANDED ROW ─────────────────────────────────────────────────────────────
 function InfluencerDetail({ inf }) {
   const pd = inf.personalDetails || {};
-  const panel = {
-    flex: 1, minWidth: 220, background: T.surface,
-    border: `1px solid ${T.border}`, borderRadius: T.radiusSm, padding: "12px 14px",
-  };
-  const panelTitle = {
-    fontSize: 9, fontWeight: 600, color: T.label, textTransform: "uppercase",
-    letterSpacing: "0.07em", marginBottom: 8,
-  };
   return (
     <div style={{ display: "flex", gap: 12, padding: "14px 14px 16px", flexWrap: "wrap", background: T.raised }}>
       {/* Onboarding & billing details */}
@@ -118,35 +182,7 @@ function InfluencerDetail({ inf }) {
       </div>
 
       {/* Generated invoices */}
-      <div style={panel}>
-        <div style={panelTitle}>Invoices ({inf.invoices.length})</div>
-        {inf.invoices.length === 0 && (
-          <div style={{ fontSize: 10.5, color: T.label, fontStyle: "italic" }}>No invoices generated yet.</div>
-        )}
-        {inf.invoices.map((inv, i) => (
-          <div key={inv.id} style={{
-            display: "flex", alignItems: "center", gap: 8, padding: "7px 0",
-            borderBottom: i < inf.invoices.length - 1 ? `1px solid ${T.border}` : "none",
-          }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 10.5, fontFamily: "monospace", color: T.text }}>{inv.id}</div>
-              <div style={{ fontSize: 9.5, color: T.sub }}>
-                {fmtINR(inv.amount)}{inv.generatedAt ? ` · ${new Date(inv.generatedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}` : ""}
-              </div>
-            </div>
-            {inv.pdfUrl && (
-              <button
-                onClick={() => window.open(InvoicePdfAPI.url(inv.id), "_blank")}
-                style={{
-                  fontSize: 9.5, color: T.accent, background: "transparent",
-                  border: `1px solid ${T.accent}30`, borderRadius: 4,
-                  padding: "3px 9px", cursor: "pointer", fontFamily: "'Sora'",
-                }}
-              >View PDF</button>
-            )}
-          </div>
-        ))}
-      </div>
+      <InvoicesPanel invoices={inf.invoices} campaigns={inf.campaigns} />
     </div>
   );
 }

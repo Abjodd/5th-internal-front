@@ -34,8 +34,8 @@ export default function App() {
             {/* Founder-only — AppShell blocks other roles via sections.js */}
             <Route path="/influencers" element={<Influencers />} />
             <Route path="/auth"        element={<Auth />} />
-            <Route path="/"          element={<Navigate to="/campaigns" replace />} />
-            <Route path="*"          element={<Navigate to="/campaigns" replace />} />
+            <Route path="/"          element={<Navigate to="/summary" replace />} />
+            <Route path="*"          element={<Navigate to="/summary" replace />} />
           </Route>
         </Routes>
       </BrowserRouter>

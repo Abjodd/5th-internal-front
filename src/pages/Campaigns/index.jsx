@@ -14,7 +14,7 @@
  */
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
-import { CampaignsAPI, InstagramAPI, InvoicesAPI, ClientPOsAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
+import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ClientPOsAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
 import { fmtCompact, prettyDate, initials } from "../../lib/format";
@@ -40,23 +40,8 @@ const T = {
 };
 
 // ── API STUBS ────────────────────────────────────────────────────────────────
+// Post metrics moved to the backend (PostMetricsAPI) — only these remain fake.
 const API = {
-  fetchPostMetrics: async (url, platform) => {
-    // GET /v1/metrics?url=:url&platform=:platform  →  Instagram Graph / YouTube Data API
-    await new Promise(r => setTimeout(r, 800));
-    return { views:Math.floor(Math.random()*1_100_000)+60_000, likes:Math.floor(Math.random()*55_000)+3_000,
-             comments:Math.floor(Math.random()*2_800)+150, forwards:Math.floor(Math.random()*7_000)+300 };
-  },
-  analyzeComments: async (url, platform) => {
-    // POST /v1/comment-analysis  →  LLM sentiment pipeline
-    await new Promise(r => setTimeout(r, 1100));
-    const opts = [
-      { summary:"Predominantly positive. Themes: taste, packaging, value. Users tagging friends.", positivityScore:86 },
-      { summary:"Mixed. Excitement around flavours but availability concerns in Tier-2.", positivityScore:62 },
-      { summary:"Very positive. Strong brand recall. High save/share rate.", positivityScore:91 },
-    ];
-    return opts[Math.floor(Math.random()*opts.length)];
-  },
   saveCampaign: async (id, patch) => { console.info("[API stub] saveCampaign", id, patch); },
   removeCreator: async (campId, crId, reason, note) => { console.info("[API stub] removeCreator", crId, reason, note); },
 };
@@ -152,6 +137,12 @@ const AGENCY = {
   name:    "5th Avenue",
 };
 const PLATFORMS = ["Instagram","YouTube","Twitter / X","LinkedIn","Moj","Josh","Snapchat","Other"];
+// Profile auto-fetch per platform. Add an entry here when the backend grows a
+// lookup endpoint for another platform.
+const PROFILE_LOOKUP = {
+  Instagram: { label:"Instagram profile link", placeholder:"https://www.instagram.com/username/", fetch:u=>InstagramAPI.lookup(u) },
+  YouTube:   { label:"YouTube channel link",   placeholder:"https://www.youtube.com/@channel",    fetch:u=>YouTubeAPI.lookup(u) },
+};
 const CREATOR_COLS = [
   {key:"name",label:"Creator",cv:true,w:190},{key:"platform",label:"Platform",cv:true,w:90},
   {key:"followers",label:"Followers",cv:true,w:78},{key:"avgER",label:"Avg ER%",cv:true,w:65},
@@ -460,6 +451,21 @@ const today   = () => {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 };
 const needsLnk= s => ["received","rework"].includes(s);
+// External links pasted without a protocol ("instagram.com/p/…") would resolve
+// relative to the SPA — the new tab lands on our router with an empty
+// sessionStorage and gets bounced to /login. Always absolutize before href.
+const extUrl = u => {
+  if (!u) return u;
+  const t = String(u).trim();
+  return /^https?:\/\//i.test(t) ? t : `https://${t}`;
+};
+// Live post URLs must match the creator's platform — those are the two
+// platforms the backend /api/post-metrics endpoint can track.
+const isIgUrl = u => /^(https?:\/\/)?(www\.)?instagram\.com\/.+/i.test(String(u || "").trim());
+const isYtUrl = u => /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/i.test(String(u || "").trim());
+const livePostUrlOk = (u, platform) => platform === "YouTube" ? isYtUrl(u) : isIgUrl(u);
+// Demo statuses that count as "received" — receiving the demo unlocks Live.
+const demoReceived = s => ["received", "rework", "approved", "pending_brand", "locked"].includes(s);
 
 // ── DESIGN CONSTANTS ─────────────────────────────────────────────────────────
 const SF = "'SF Pro Display','-apple-system','BlinkMacSystemFont','Helvetica Neue',sans-serif";
@@ -573,10 +579,11 @@ function ConfirmActionModal({camp,label,onConfirm,onCancel}){
 }
 
 // ── ADD CREATOR MODAL ─────────────────────────────────────────────────────────
-// Doubles as the founder-only "Edit Creator" form: pass `editing` (an existing
+// Doubles as the "Edit Creator" form (PERMS.editCreatorDetails): pass `editing` (an existing
 // creator object) to prefill every field; onAdd then receives the merged
 // creator (same _id, status/tracking preserved) instead of a new one.
-function AddCreatorModal({onAdd,onClose,editing=null}){
+// Exported so the Influencers directory reuses it as its founder edit form.
+export function AddCreatorModal({onAdd,onClose,editing=null}){
   const pd0=editing?.personalDetails||{};
   const [f,setF]=useState({
     name:editing?.name||"",platform:editing?.platform||"Instagram",handle:editing?.handle||"",igUrl:editing?.igUrl||"",
@@ -603,11 +610,14 @@ function AddCreatorModal({onAdd,onClose,editing=null}){
   // be filled later; InvoiceDetailsModal enforces them when they're needed.
   const Err=({k})=>errors[k]?<div style={{fontSize:9.5,color:T.red,marginTop:3}}>{errors[k]}</div>:null;
 
+  // Per-platform profile lookup — only Instagram has a backend endpoint today;
+  // other platforms keep the link field but Fetch stays disabled.
+  const lookup=PROFILE_LOOKUP[f.platform];
   const handleFetch=async()=>{
-    if(!f.igUrl.trim())return;
+    if(!lookup||!f.igUrl.trim())return;
     setFetching(true);setFetchErr(null);
     try{
-      const data=await InstagramAPI.lookup(f.igUrl.trim());
+      const data=await lookup.fetch(f.igUrl.trim());
       setIgFetched(data);
       setF(p=>({
         ...p,
@@ -680,11 +690,13 @@ function AddCreatorModal({onAdd,onClose,editing=null}){
         <button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button>
       </div>
       <div style={{padding:"18px 20px",overflowY:"auto",flex:1}}>
-        <Lbl style={{display:"block",marginBottom:6}}>Instagram profile link</Lbl>
+        <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:4}}>Platform <span style={{color:T.red}}>*</span></Lbl><select value={f.platform} onChange={e=>u("platform",e.target.value)} style={{...INP,resize:"none"}}>{PLATFORMS.map(p=><option key={p}>{p}</option>)}</select></div>
+        <Lbl style={{display:"block",marginBottom:6}}>{lookup?.label||`${f.platform} profile link`}</Lbl>
         <div style={{display:"flex",gap:8,marginBottom:6}}>
-          <input value={f.igUrl} onChange={e=>u("igUrl",e.target.value)} placeholder="https://www.instagram.com/username/" style={{...INP,resize:"none",flex:1}}/>
-          <Btn variant="ghost" onClick={handleFetch} disabled={fetching||!f.igUrl.trim()}>{fetching?"Fetching…":"Fetch"}</Btn>
+          <input value={f.igUrl} onChange={e=>u("igUrl",e.target.value)} placeholder={lookup?.placeholder||"https://…"} style={{...INP,resize:"none",flex:1}}/>
+          <Btn variant="ghost" onClick={handleFetch} disabled={!lookup||fetching||!f.igUrl.trim()}>{fetching?"Fetching…":"Fetch"}</Btn>
         </div>
+        {!lookup&&<div style={{fontSize:9.5,color:T.label,marginBottom:10}}>Auto-fetch supports Instagram only for now — fill the stats below manually.</div>}
         {fetchErr&&<div style={{fontSize:10.5,color:T.red,marginBottom:10}}>{fetchErr}</div>}
         {igFetched&&!fetchErr&&(
           <div style={{marginBottom:14,padding:"14px",borderRadius:10,background:T.raised,border:`1px solid ${T.green}25`}}>
@@ -738,7 +750,6 @@ function AddCreatorModal({onAdd,onClose,editing=null}){
         <Hr style={{margin:"10px 0 14px"}}/>
         <Lbl style={{display:"block",marginBottom:10}}>Required</Lbl>
         <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Name <span style={{color:T.red}}>*</span></Lbl><input value={f.name} onChange={e=>u("name",e.target.value)} placeholder="e.g. Anjali Kitchen" style={{...INP,resize:"none"}}/></div>
-        <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Platform <span style={{color:T.red}}>*</span></Lbl><select value={f.platform} onChange={e=>u("platform",e.target.value)} style={{...INP,resize:"none"}}>{PLATFORMS.map(p=><option key={p}>{p}</option>)}</select></div>
         <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Handle / Tag <span style={{color:T.red}}>*</span></Lbl><input value={f.handle} onChange={e=>u("handle",e.target.value)} placeholder="@username" style={{...INP,resize:"none"}}/></div>
         <Hr style={{margin:"14px 0"}}/>
         <Lbl style={{display:"block",marginBottom:10}}>Profile stats <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— auto-filled by Fetch, editable</span></Lbl>
@@ -953,7 +964,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const [genRounds,setGenRounds]=useState(camp.genRounds||0);
   const [removeTarget,setRemoveTarget]=useState(null);
   const [showAdd,setShowAdd]=useState(false);
-  const [editTarget,setEditTarget]=useState(null);       // creator being edited (founder only)
+  const [editTarget,setEditTarget]=useState(null);       // creator being edited (see PERMS.editCreatorDetails)
   const [invoiceTarget,setInvoiceTarget]=useState(null); // creator to invoice
   const required=camp.numReq||5,flagged=genRounds>=4;
   const cb=camp.creatorBudget||camp.budget*0.6;
@@ -1009,7 +1020,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
                 {canFin(role)&&(cr.invoiceNo
                   ?<button onClick={()=>window.open(InvoicePdfAPI.url(cr.invoiceNo),"_blank")} title={`Download ${cr.invoiceNo} — already generated`} style={{fontSize:9,color:T.green,background:"transparent",border:`1px solid ${T.green}30`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>↓ Download Invoice</button>
                   :<button onClick={()=>cr.payType&&setInvoiceTarget(cr)} disabled={!cr.payType} title={cr.payType?"Generate invoice":"Select a pay type first"} style={{fontSize:9,color:cr.payType?T.accent:T.label,background:"transparent",border:`1px solid ${cr.payType?`${T.accent}30`:T.border}`,borderRadius:4,padding:"3px 8px",cursor:cr.payType?"pointer":"not-allowed",opacity:cr.payType?1:0.5,fontFamily:"'Sora'"}}>Invoice</button>)}
-                {canEdit&&<button onClick={()=>setRemoveTarget(cr)} style={{fontSize:9,color:T.red,background:"transparent",border:`1px solid ${T.red}22`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Remove</button>}
+                {can(role,"removeCreator")&&<button onClick={()=>setRemoveTarget(cr)} style={{fontSize:9,color:T.red,background:"transparent",border:`1px solid ${T.red}22`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Remove</button>}
               </div></td>}
             </tr>);
           })}
@@ -1039,7 +1050,16 @@ function TabDeliverables({camp,role,onUpdateCreators}){
   const pCon=(id,obj)=>pCr(id,{concept:{...(creators.find(c=>c._id===id)?.concept||{}),...obj}});
   const pDem=(id,obj)=>pCr(id,{demo:{...(creators.find(c=>c._id===id)?.demo||{}),...obj}});
   const pLiv=(id,obj)=>pCr(id,{live:{...(creators.find(c=>c._id===id)?.live||{}),...obj}});
-  const refresh=async(id,url,platform)=>{setFetching(f=>({...f,[id]:true}));try{const[m,a]=await Promise.all([API.fetchPostMetrics(url,platform),API.analyzeComments(url,platform)]);pCr(id,{tracking:{...m,commentAnalysis:a.summary,positivityScore:a.positivityScore,lastFetched:new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}});}catch(e){}setFetching(f=>({...f,[id]:false}));};
+  const pTrk=(id,obj)=>pCr(id,{tracking:{...(creators.find(c=>c._id===id)?.tracking||{}),...obj}});
+  const [fetchErrs,setFetchErrs]=useState({});
+  const refresh=async(id,url,platform)=>{
+    setFetching(f=>({...f,[id]:true}));setFetchErrs(e=>({...e,[id]:null}));
+    try{
+      const m=await PostMetricsAPI.fetch(url,platform);
+      pTrk(id,{views:m.views,likes:m.likes,comments:m.comments,forwards:m.forwards,lastFetched:new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})});
+    }catch(e){setFetchErrs(errs=>({...errs,[id]:e.body?.error||"Fetch failed — check connection"}));}
+    setFetching(f=>({...f,[id]:false}));
+  };
   // Aggregates
   const wd=creators.filter(c=>c.tracking?.views!=null);
   const totV=wd.reduce((s,c)=>s+(c.tracking.views||0),0);
@@ -1086,33 +1106,37 @@ function TabDeliverables({camp,role,onUpdateCreators}){
             <div style={{padding:"12px 14px",borderRight:`1px solid ${T.border}`}}>
               <Lbl style={{display:"block",marginBottom:8}}>Concept</Lbl>
               {canEdit?<select value={con.status} onChange={e=>pCon(cr._id,{status:e.target.value})} style={{background:"transparent",border:`1px solid ${T.border}`,color:ASSET_COLOR[con.status]||T.sub,fontSize:10,fontFamily:"'Sora'",outline:"none",borderRadius:4,padding:"3px 6px",width:"100%",marginBottom:needsLnk(con.status)?8:0}}>{ASSET_STATUSES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>:<span style={stS(con.status)}>{ASSET_STATUSES.find(s=>s.id===con.status)?.label}</span>}
-              {needsLnk(con.status)&&canEdit&&<><input value={con.fileLink||""} onChange={e=>pCon(cr._id,{fileLink:e.target.value})} placeholder="Attach file link…" style={{...INP,fontSize:10,padding:"5px 8px",resize:"none"}}/>{con.fileLink&&<a href={con.fileLink} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:4}}>Open →</a>}</>}
-              {con.fileLink&&!needsLnk(con.status)&&<a href={con.fileLink} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:6}}>Open file →</a>}
+              {needsLnk(con.status)&&canEdit&&<><input value={con.fileLink||""} onChange={e=>pCon(cr._id,{fileLink:e.target.value})} placeholder="Attach file link…" style={{...INP,fontSize:10,padding:"5px 8px",resize:"none"}}/>{con.fileLink&&<a href={extUrl(con.fileLink)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:4}}>Open →</a>}</>}
+              {con.fileLink&&!needsLnk(con.status)&&<a href={extUrl(con.fileLink)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:6}}>Open file →</a>}
             </div>
             {/* Demo */}
             <div style={{padding:"12px 14px",borderRight:`1px solid ${T.border}`}}>
               <Lbl style={{display:"block",marginBottom:8}}>Demo Video</Lbl>
               {canEdit?<select value={dem.status} onChange={e=>pDem(cr._id,{status:e.target.value})} style={{background:"transparent",border:`1px solid ${T.border}`,color:ASSET_COLOR[dem.status]||T.sub,fontSize:10,fontFamily:"'Sora'",outline:"none",borderRadius:4,padding:"3px 6px",width:"100%",marginBottom:needsLnk(dem.status)?8:0}}>{ASSET_STATUSES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>:<span style={stS(dem.status)}>{ASSET_STATUSES.find(s=>s.id===dem.status)?.label}</span>}
-              {needsLnk(dem.status)&&canEdit&&<><input value={dem.fileLink||""} onChange={e=>pDem(cr._id,{fileLink:e.target.value})} placeholder="Attach file link…" style={{...INP,fontSize:10,padding:"5px 8px",resize:"none"}}/>{dem.fileLink&&<a href={dem.fileLink} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:4}}>Open →</a>}</>}
-              {dem.fileLink&&!needsLnk(dem.status)&&<a href={dem.fileLink} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:6}}>Open file →</a>}
+              {needsLnk(dem.status)&&canEdit&&<><input value={dem.fileLink||""} onChange={e=>pDem(cr._id,{fileLink:e.target.value})} placeholder="Attach file link…" style={{...INP,fontSize:10,padding:"5px 8px",resize:"none"}}/>{dem.fileLink&&<a href={extUrl(dem.fileLink)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:4}}>Open →</a>}</>}
+              {dem.fileLink&&!needsLnk(dem.status)&&<a href={extUrl(dem.fileLink)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:6}}>Open file →</a>}
             </div>
-            {/* Live */}
+            {/* Live — unlocked once the demo video is received; URL must match the creator's platform */}
             <div style={{padding:"12px 14px",borderRight:`1px solid ${T.border}`}}>
               <Lbl style={{display:"block",marginBottom:8}}>Live</Lbl>
-              {canEdit&&<input value={liv.postUrl||""} onChange={e=>pLiv(cr._id,{postUrl:e.target.value})} placeholder="Post URL…" style={{...INP,fontSize:10,padding:"5px 8px",resize:"none",marginBottom:6}}/>}
-              {liv.postUrl?<><a href={liv.postUrl} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginBottom:6}}>Open post →</a>{canEdit&&<DateInput value={liv.postedDate||""} onChange={v=>pLiv(cr._id,{postedDate:v})} max={today()} placeholder="Posted date" style={{...INP,fontSize:10,padding:"5px 8px"}}/>}{liv.postedDate&&!canEdit&&<div style={{fontSize:9.5,color:T.sub}}>Posted: {prettyDate(liv.postedDate)}</div>}</>:!canEdit&&<div style={{fontSize:11,color:T.label,fontStyle:"italic"}}>Not posted</div>}
+              {!demoReceived(dem.status)?<div style={{fontSize:10.5,color:T.label,fontStyle:"italic"}}>Unlocks once the demo video is received.</div>:<>
+              {canEdit&&<input value={liv.postUrl||""} onChange={e=>pLiv(cr._id,{postUrl:e.target.value})} placeholder={`${cr.platform==="YouTube"?"YouTube video":"Instagram post"} URL…`} style={{...INP,fontSize:10,padding:"5px 8px",resize:"none",marginBottom:6,borderColor:liv.postUrl&&!livePostUrlOk(liv.postUrl,cr.platform)?T.red:T.border}}/>}
+              {liv.postUrl&&!livePostUrlOk(liv.postUrl,cr.platform)&&<div style={{fontSize:9,color:T.red,marginBottom:6}}>Only {cr.platform==="YouTube"?"YouTube":"Instagram"} URLs are supported.</div>}
+              {liv.postUrl&&livePostUrlOk(liv.postUrl,cr.platform)?<><a href={extUrl(liv.postUrl)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginBottom:6}}>Open post →</a>{canEdit&&<DateInput value={liv.postedDate||""} onChange={v=>pLiv(cr._id,{postedDate:v})} max={today()} placeholder="Posted date" style={{...INP,fontSize:10,padding:"5px 8px"}}/>}{liv.postedDate&&!canEdit&&<div style={{fontSize:9.5,color:T.sub}}>Posted: {prettyDate(liv.postedDate)}</div>}</>:!canEdit&&<div style={{fontSize:11,color:T.label,fontStyle:"italic"}}>Not posted</div>}
+              </>}
             </div>
             {/* Tracking */}
             <div style={{padding:"12px 14px"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                 <Lbl>Tracking</Lbl>
-                {liv.postUrl&&<button onClick={()=>refresh(cr._id,liv.postUrl,cr.platform)} disabled={isFetch} style={{fontSize:8.5,color:T.accent,background:"transparent",border:`1px solid ${T.accent}25`,borderRadius:3,padding:"2px 6px",cursor:isFetch?"not-allowed":"pointer",fontFamily:"'Sora'",opacity:isFetch?0.5:1}}>{isFetch?"…":"↻ Refresh"}</button>}
+                {liv.postUrl&&livePostUrlOk(liv.postUrl,cr.platform)&&<button onClick={()=>refresh(cr._id,extUrl(liv.postUrl),cr.platform)} disabled={isFetch} style={{fontSize:8.5,color:T.accent,background:"transparent",border:`1px solid ${T.accent}25`,borderRadius:3,padding:"2px 6px",cursor:isFetch?"not-allowed":"pointer",fontFamily:"'Sora'",opacity:isFetch?0.5:1}}>{isFetch?"…":"↻ Refresh"}</button>}
               </div>
               {!liv.postUrl&&<div style={{fontSize:9.5,color:T.label,fontStyle:"italic"}}>Post URL required</div>}
               {liv.postUrl&&<>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:8}}>{[["Views",trk.views],["Likes",trk.likes],["Comments",trk.comments],["Forwards",trk.forwards]].map(([l,v])=><div key={l}><div style={{fontSize:8,color:T.label,marginBottom:1}}>{l}</div><div style={{fontSize:14,fontWeight:600,color:v!=null?T.text:T.mute}}>{fmtNum(v)}</div></div>)}</div>
                 {trk.commentAnalysis&&<><div style={{fontSize:8,color:T.label,marginBottom:3}}>Comment Analysis</div><div style={{fontSize:9.5,color:T.sub,lineHeight:1.5}}>{trk.commentAnalysis}</div>{trk.positivityScore!=null&&<div style={{fontSize:9,color:T.green,marginTop:4}}>↑ {trk.positivityScore}% positive</div>}</>}
-                {!trk.views&&!isFetch&&<div style={{fontSize:9.5,color:T.label,fontStyle:"italic"}}>No data — click Refresh</div>}
+                {fetchErrs[cr._id]&&<div style={{fontSize:9,color:T.red,marginBottom:4}}>{fetchErrs[cr._id]}</div>}
+                {!trk.views&&!isFetch&&!fetchErrs[cr._id]&&<div style={{fontSize:9.5,color:T.label,fontStyle:"italic"}}>No data — click Refresh</div>}
                 {trk.lastFetched&&<div style={{fontSize:8,color:T.label,marginTop:5}}>Last fetched: {trk.lastFetched}</div>}
               </>}
             </div>

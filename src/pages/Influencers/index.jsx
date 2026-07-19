@@ -9,12 +9,13 @@
  * creators across campaigns and attaches invoices, so this page is a
  * pure view over that endpoint (single source of truth).
  */
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";
 import { InfluencersAPI, InvoicePdfAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { fmtCompact } from "../../lib/format";
 import { T } from "../../theme/tokens";
+import { AddCreatorModal } from "../Campaigns";
 
 // ── STYLE HELPERS ────────────────────────────────────────────────────────────
 const thS = {
@@ -140,13 +141,25 @@ function InvoicesPanel({ invoices, campaigns }) {
 }
 
 // ── EXPANDED ROW ─────────────────────────────────────────────────────────────
-function InfluencerDetail({ inf }) {
+function InfluencerDetail({ inf, canEdit, onEdit }) {
   const pd = inf.personalDetails || {};
   return (
     <div style={{ display: "flex", gap: 12, padding: "14px 14px 16px", flexWrap: "wrap", background: T.raised }}>
       {/* Onboarding & billing details */}
       <div style={panel}>
-        <div style={panelTitle}>Onboarding & Billing</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={panelTitle}>Onboarding & Billing</div>
+          {canEdit && (
+            <button
+              onClick={e => { e.stopPropagation(); onEdit(inf); }}
+              style={{
+                fontSize: 9.5, color: T.accent, background: "transparent",
+                border: `1px solid ${T.accent}30`, borderRadius: 4,
+                padding: "3px 9px", cursor: "pointer", fontFamily: "'Sora'",
+              }}
+            >Edit</button>
+          )}
+        </div>
         <Fact label="Phone"    value={inf.phone} />
         <Fact label="Email"    value={pd.email} />
         <Fact label="PAN"      value={pd.pan} />
@@ -197,6 +210,19 @@ export default function Influencers() {
   const [error, setError]     = useState(null);
   const [query, setQuery]     = useState("");
   const [expanded, setExpanded] = useState(null); // influencer id
+  const [editTarget, setEditTarget] = useState(null); // influencer being edited (founder only)
+  const [toast, setToast] = useState(null);
+  const showToast = useCallback(msg => { setToast(msg); setTimeout(() => setToast(null), 2800); }, []);
+  const canEdit = can(role, "editInfluencer");
+
+  // Same optimistic-update + toast-on-failure pattern as Campaigns. The modal
+  // returns the merged record; aggregate-only keys stay out of the PATCH.
+  const saveEdit = useCallback(merged => {
+    const { campaigns, invoices, ...patch } = merged;
+    setInfluencers(prev => prev.map(i => (i.id === merged.id ? { ...i, ...patch } : i)));
+    InfluencersAPI.update(merged.id, patch).catch(() => showToast("Save failed — check connection"));
+    showToast("Influencer updated");
+  }, [showToast]);
 
   useEffect(() => {
     if (!can(role, "seeInfluencers")) return;
@@ -325,7 +351,7 @@ export default function Influencers() {
                             transform: open ? "translateY(0)" : "translateY(-6px)",
                             transition: "opacity 0.28s ease 0.06s, transform 0.32s cubic-bezier(0.4,0,0.2,1)",
                           }}>
-                            <InfluencerDetail inf={inf} />
+                            <InfluencerDetail inf={inf} canEdit={canEdit} onEdit={setEditTarget} />
                           </div>
                         </div>
                       </div>
@@ -336,6 +362,13 @@ export default function Influencers() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {editTarget && (
+        <AddCreatorModal editing={editTarget} onAdd={saveEdit} onClose={() => setEditTarget(null)} />
+      )}
+      {toast && (
+        <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 9999, padding: "11px 18px", background: "rgba(29,29,31,0.92)", backdropFilter: "blur(16px)", borderRadius: 12, fontSize: 12, color: "#FFFFFF", fontFamily: "'Sora'", boxShadow: "0 8px 32px rgba(0,0,0,0.24)", letterSpacing: "-0.01em" }}>{toast}</div>
       )}
     </div>
   );

@@ -57,6 +57,19 @@ export const InstagramAPI = {
   lookup: (handle) => request(`/api/instagram?handle=${encodeURIComponent(handle)}`),
 };
 
+// Same response shape as InstagramAPI.lookup so the Add Creator fetched-profile
+// card renders both platforms unchanged.
+export const YouTubeAPI = {
+  lookup: (handle) => request(`/api/youtube?handle=${encodeURIComponent(handle)}`),
+};
+
+// Deliverables tab tracking — backend dispatches IG (HikerAPI) / YT (Data API)
+// on the link, returns { views, likes, comments, forwards, fetchedAt }.
+export const PostMetricsAPI = {
+  fetch: (url, platform) =>
+    request(`/api/post-metrics?url=${encodeURIComponent(url)}&platform=${encodeURIComponent(platform || "")}`),
+};
+
 // ── Auth ─────────────────────────────────────────────────────────────────────
 // Backend login (sha256 hashKey check server-side against the users
 // collection). The DB is the only credential store — no client-side fallback.
@@ -86,6 +99,10 @@ export const BrandCredentialsAPI = authCrud("/api/brand-credentials");
 // ── Influencers (founder directory) ──────────────────────────────────────────
 export const InfluencersAPI = {
   list: (brandId) => request(`/api/influencers${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ""}`),
+  // Founder edit from the directory — the backend propagates the patch to the
+  // creator's entries across campaigns so the directory stays the source of truth.
+  update: (id, patch) =>
+    request(`/api/influencers/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
 };
 
 // ── Invoice PDFs ─────────────────────────────────────────────────────────────

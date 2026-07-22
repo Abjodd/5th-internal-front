@@ -62,6 +62,11 @@ const Pill = ({ children, color = T.sub }) => (
 );
 
 const roleLabel = id => PLATFORM_ROLES.find(r => r.id === id)?.label || id;
+// Hierarchy for sorting the internal-users table — PLATFORM_ROLES is already
+// declared top-down (Founder → PCM → CM → AM → EA → Accounts), so its order is
+// the source of truth. Unknown roles sort last.
+const ROLE_RANK = Object.fromEntries(PLATFORM_ROLES.map((r, i) => [r.id, i]));
+const roleRank = id => (id in ROLE_RANK ? ROLE_RANK[id] : PLATFORM_ROLES.length);
 
 // ── PASSWORD CELL ────────────────────────────────────────────────────────────
 // The DB stores only hashKey (sha256, for login) + passKey (encrypted copy).
@@ -267,7 +272,14 @@ export default function Auth() {
   // Brand Portal tab respects the global brand filter (top bar), same as
   // Campaigns/Billing. Internal users aren't brand-scoped, so no filter there.
   const visibleCreds = brandFilter ? creds.filter(c => c.brandId === brandFilter) : creds;
-  const rows   = tab === "internal" ? users : visibleCreds;
+  // Internal users are grouped by role hierarchy (Founder first, then PCMs, …),
+  // then A–Z within a role. Brand credentials have no role, so they're sorted
+  // by name. The DB id (u3 / bc2) is no longer surfaced — rows are shown with a
+  // plain running number instead (see the "#" column below).
+  const rows = useMemo(() => {
+    if (tab !== "internal") return [...visibleCreds].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    return [...users].sort((a, b) => roleRank(a.role) - roleRank(b.role) || (a.name || "").localeCompare(b.name || ""));
+  }, [tab, users, visibleCreds]);
   const setRows = tab === "internal" ? setUsers : setCreds;
 
   const load = useCallback(() => {
@@ -372,7 +384,7 @@ export default function Auth() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                <th style={thS}>ID</th>
+                <th style={{ ...thS, width: 34, textAlign: "right" }}>#</th>
                 <th style={thS}>Name</th>
                 <th style={thS}>Username</th>
                 <th style={thS}>Password</th>
@@ -382,11 +394,11 @@ export default function Auth() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => {
+              {rows.map((r, i) => {
                 const isSelf = tab === "internal" && r.id === user?.id;
                 return (
                   <tr key={r.id}>
-                    <td style={{ ...tdS, fontFamily: "monospace", fontSize: 10.5, color: T.sub }}>{r.id}</td>
+                    <td style={{ ...tdS, fontSize: 10.5, color: T.sub, textAlign: "right" }}>{i + 1}</td>
                     <td style={{ ...tdS, fontWeight: 500 }}>{r.name}</td>
                     <td style={{ ...tdS, fontFamily: "monospace", fontSize: 10.5 }}>{r.username}</td>
                     <td style={tdS}><PasswordCell api={api} record={r} /></td>

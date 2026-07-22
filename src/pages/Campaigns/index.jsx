@@ -137,6 +137,27 @@ const AGENCY = {
   name:    "5th Avenue",
 };
 const PLATFORMS = ["Instagram","YouTube","Twitter / X","LinkedIn","Moj","Josh","Snapchat","Other"];
+// Campaign niches — chosen on the Commercial step and used to steer the
+// Generate suggestions towards same/similar creators. NICHE_SIMILAR groups
+// niches that share an audience so "Generate" isn't limited to an exact match
+// (e.g. a Food campaign also surfaces Cooking creators).
+const NICHES = ["Food","Cooking","Fitness","Lifestyle","Beauty","Fashion","Travel","Tech","Gaming","Comedy","Parenting","Finance","Education"];
+const NICHE_SIMILAR = {
+  Food:      ["Food","Cooking"],
+  Cooking:   ["Cooking","Food"],
+  Fitness:   ["Fitness","Lifestyle"],
+  Lifestyle: ["Lifestyle","Fashion","Beauty","Travel"],
+  Beauty:    ["Beauty","Fashion","Lifestyle"],
+  Fashion:   ["Fashion","Beauty","Lifestyle"],
+  Travel:    ["Travel","Lifestyle"],
+  Tech:      ["Tech","Gaming"],
+  Gaming:    ["Gaming","Tech"],
+};
+// Creators whose niche shares an audience with the campaign's chosen niche.
+const nicheMatches = (campNiche, creatorNiche) => {
+  if (!campNiche) return true; // no niche picked → don't filter
+  return (NICHE_SIMILAR[campNiche] || [campNiche]).includes(creatorNiche);
+};
 // Profile auto-fetch per platform. Add an entry here when the backend grows a
 // lookup endpoint for another platform.
 const PROFILE_LOOKUP = {
@@ -243,74 +264,74 @@ const mkCreator = (src={}, fee) => ({
 });
 
 // ── SEED DATA ────────────────────────────────────────────────────────────────
-const INIT_CAMPS = [
-  {
-    id:"c1",name:"Diwali Festive Push",client:"FreshBite Foods",
-    service:"Influencer Marketing",region:"South India",
-    stage:"execution",progress:62,budget:1250000,creatorBudget:750000,numReq:5,
-    start:"Mar 1",end:"Apr 30",amId:"t7",cmId:"t1",eaId:"t3",
-    brief:{objective:"Build festive awareness across South India for FreshBite's new snack range.",
-      audience:"18–35 in TN, KA, KL, TS.",messages:"FreshBite — the festive snack companion.",
-      deliverables:["Reel — Collab","Reel — Non-Collab","Story"],budget:"₹12.5L",timeline:"6 weeks"},
-    briefStatus:"locked",amNote:"",cmNote:"Focus on authentic home-cook aesthetic.",
-    creators:[
-      {...mkCreator(CREATOR_DB[0],85000), status:"locked",   payType:"vendor",     payId:"VND-1042",
-        concept:{status:"approved",fileLink:"https://drive.google.com/file1"},
-        demo:{status:"locked",fileLink:"https://drive.google.com/demo1"},
-        live:{postUrl:"https://instagram.com/p/abc1",postedDate:"Apr 12"},
-        tracking:{views:480000,likes:21000,comments:980,forwards:3200,commentAnalysis:"Very positive. Users tagging friends.",positivityScore:88,lastFetched:"May 2 09:14"}},
-      {...mkCreator(CREATOR_DB[1],180000),status:"negotiating",payType:null,payId:null,
-        concept:{status:"received",fileLink:"https://drive.google.com/file2"},
-        demo:{status:"yet_to_receive",fileLink:null},live:{postUrl:null,postedDate:null},
-        tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
-      {...mkCreator(CREATOR_DB[3],50000), status:"reached_out",payType:null,payId:null,
-        concept:{status:"yet_to_receive",fileLink:null},demo:{status:"yet_to_receive",fileLink:null},
-        live:{postUrl:null,postedDate:null},
-        tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
-    ],
-    genRounds:1,sentToClient:true,
-    internalNotes:"Creator budget ₹7.5L. Keep pricing tight.",
-    timeline:[
-      {date:"Feb 20",event:"Campaign submitted by client",actor:"Client"},
-      {date:"Feb 25",event:"Brief locked by client",actor:"Client"},
-      {date:"Feb 27",event:"CM approved, advance pending",actor:"Priya Nair"},
-      {date:"Mar 2", event:"Advance confirmed",actor:"Accounts"},
-      {date:"Mar 2", event:"Assigned to Arjun Reddy",actor:"Priya Nair"},
-    ],
-  },
-  {
-    id:"c2",name:"Summer Launch Teaser",client:"FreshBite Foods",
-    service:"Influencer Marketing",region:"North India",
-    stage:"draft",progress:8,budget:800000,creatorBudget:500000,numReq:8,
-    start:"Apr 20",end:"Jun 15",amId:"t7",cmId:null,eaId:null,
-    brief:{objective:"Teaser campaign for FreshBite's summer range.",audience:"18–28, college students.",
-      messages:"",deliverables:[],budget:"₹8L",timeline:"Apr 20 – Jun 15"},
-    briefStatus:"draft",amNote:"",cmNote:"",
-    creators:[],genRounds:0,sentToClient:false,
-    internalNotes:"Solid budget — good margin potential.",
-    timeline:[{date:"Apr 18",event:"Campaign submitted",actor:"Client"}],
-  },
-  {
-    id:"c3",name:"Festive Nano Wave",client:"FreshBite Foods",
-    service:"Influencer Marketing",region:"Pan-India",
-    stage:"live",progress:88,budget:320000,creatorBudget:200000,numReq:3,
-    start:"Jan 1",end:"Feb 28",amId:"t7",cmId:"t1",eaId:"t4",
-    brief:{objective:"Nano creator sampling across 10 cities.",audience:"18–30 urban millennials.",
-      messages:"Healthy snacking, redefined.",deliverables:["Reel — Non-Collab","Story"],budget:"₹3.2L",timeline:"8 weeks"},
-    briefStatus:"locked",amNote:"",cmNote:"",
-    creators:[
-      {...mkCreator(CREATOR_DB[5],18000),status:"locked",payType:"net_banking",payId:"9876543210@upi",
-        concept:{status:"locked",fileLink:"#"},demo:{status:"locked",fileLink:"#"},
-        live:{postUrl:"https://instagram.com/p/xyz1",postedDate:"Feb 10"},
-        tracking:{views:420000,likes:18200,comments:840,forwards:1200,commentAnalysis:"Very positive. Strong brand recall.",positivityScore:91,lastFetched:"Apr 28 10:32"}},
-      {...mkCreator(CREATOR_DB[9],8000),status:"locked",payType:"vendor",payId:"VND-2081",
-        concept:{status:"locked",fileLink:"#"},demo:{status:"approved",fileLink:"#"},
-        live:{postUrl:null,postedDate:null},
-        tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
-    ],
-    genRounds:1,sentToClient:true,internalNotes:"Strong results on first creator.",timeline:[],
-  },
-];
+// const INIT_CAMPS = [
+//   {
+//     id:"c1",name:"Diwali Festive Push",client:"FreshBite Foods",
+//     service:"Influencer Marketing",region:"South India",
+//     stage:"execution",progress:62,budget:1250000,creatorBudget:750000,numReq:5,
+//     start:"Mar 1",end:"Apr 30",amId:"t7",cmId:"t1",eaId:"t3",
+//     brief:{objective:"Build festive awareness across South India for FreshBite's new snack range.",
+//       audience:"18–35 in TN, KA, KL, TS.",messages:"FreshBite — the festive snack companion.",
+//       deliverables:["Reel — Collab","Reel — Non-Collab","Story"],budget:"₹12.5L",timeline:"6 weeks"},
+//     briefStatus:"locked",amNote:"",cmNote:"Focus on authentic home-cook aesthetic.",
+//     creators:[
+//       {...mkCreator(CREATOR_DB[0],85000), status:"locked",   payType:"vendor",     payId:"VND-1042",
+//         concept:{status:"approved",fileLink:"https://drive.google.com/file1"},
+//         demo:{status:"locked",fileLink:"https://drive.google.com/demo1"},
+//         live:{postUrl:"https://instagram.com/p/abc1",postedDate:"Apr 12"},
+//         tracking:{views:480000,likes:21000,comments:980,forwards:3200,commentAnalysis:"Very positive. Users tagging friends.",positivityScore:88,lastFetched:"May 2 09:14"}},
+//       {...mkCreator(CREATOR_DB[1],180000),status:"negotiating",payType:null,payId:null,
+//         concept:{status:"received",fileLink:"https://drive.google.com/file2"},
+//         demo:{status:"yet_to_receive",fileLink:null},live:{postUrl:null,postedDate:null},
+//         tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
+//       {...mkCreator(CREATOR_DB[3],50000), status:"reached_out",payType:null,payId:null,
+//         concept:{status:"yet_to_receive",fileLink:null},demo:{status:"yet_to_receive",fileLink:null},
+//         live:{postUrl:null,postedDate:null},
+//         tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
+//     ],
+//     genRounds:1,sentToClient:true,
+//     internalNotes:"Creator budget ₹7.5L. Keep pricing tight.",
+//     timeline:[
+//       {date:"Feb 20",event:"Campaign submitted by client",actor:"Client"},
+//       {date:"Feb 25",event:"Brief locked by client",actor:"Client"},
+//       {date:"Feb 27",event:"CM approved, advance pending",actor:"Priya Nair"},
+//       {date:"Mar 2", event:"Advance confirmed",actor:"Accounts"},
+//       {date:"Mar 2", event:"Assigned to Arjun Reddy",actor:"Priya Nair"},
+//     ],
+//   },
+//   {
+//     id:"c2",name:"Summer Launch Teaser",client:"FreshBite Foods",
+//     service:"Influencer Marketing",region:"North India",
+//     stage:"draft",progress:8,budget:800000,creatorBudget:500000,numReq:8,
+//     start:"Apr 20",end:"Jun 15",amId:"t7",cmId:null,eaId:null,
+//     brief:{objective:"Teaser campaign for FreshBite's summer range.",audience:"18–28, college students.",
+//       messages:"",deliverables:[],budget:"₹8L",timeline:"Apr 20 – Jun 15"},
+//     briefStatus:"draft",amNote:"",cmNote:"",
+//     creators:[],genRounds:0,sentToClient:false,
+//     internalNotes:"Solid budget — good margin potential.",
+//     timeline:[{date:"Apr 18",event:"Campaign submitted",actor:"Client"}],
+//   },
+//   {
+//     id:"c3",name:"Festive Nano Wave",client:"FreshBite Foods",
+//     service:"Influencer Marketing",region:"Pan-India",
+//     stage:"live",progress:88,budget:320000,creatorBudget:200000,numReq:3,
+//     start:"Jan 1",end:"Feb 28",amId:"t7",cmId:"t1",eaId:"t4",
+//     brief:{objective:"Nano creator sampling across 10 cities.",audience:"18–30 urban millennials.",
+//       messages:"Healthy snacking, redefined.",deliverables:["Reel — Non-Collab","Story"],budget:"₹3.2L",timeline:"8 weeks"},
+//     briefStatus:"locked",amNote:"",cmNote:"",
+//     creators:[
+//       {...mkCreator(CREATOR_DB[5],18000),status:"locked",payType:"net_banking",payId:"9876543210@upi",
+//         concept:{status:"locked",fileLink:"#"},demo:{status:"locked",fileLink:"#"},
+//         live:{postUrl:"https://instagram.com/p/xyz1",postedDate:"Feb 10"},
+//         tracking:{views:420000,likes:18200,comments:840,forwards:1200,commentAnalysis:"Very positive. Strong brand recall.",positivityScore:91,lastFetched:"Apr 28 10:32"}},
+//       {...mkCreator(CREATOR_DB[9],8000),status:"locked",payType:"vendor",payId:"VND-2081",
+//         concept:{status:"locked",fileLink:"#"},demo:{status:"approved",fileLink:"#"},
+//         live:{postUrl:null,postedDate:null},
+//         tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
+//     ],
+//     genRounds:1,sentToClient:true,internalNotes:"Strong results on first creator.",timeline:[],
+//   },
+// ];
 
 // ── WORKFLOW ACTION LABELS ───────────────────────────────────────────────────
 // Shared by the confirmation modal and the post-action toast.
@@ -973,7 +994,12 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const canEdit=["ea","cm","am","pcm","founder"].includes(role);
   const sync=next=>{setCreators(next);onUpdateCreators(next);};
   const patch=(id,obj)=>sync(creators.map(c=>c._id===id?{...c,...obj}:c));
-  const generate=()=>{if(flagged||generating)return;setGenerating(true);setTimeout(()=>{const taken=new Set(creators.map(c=>c.dbId).filter(Boolean));const pool=CREATOR_DB.filter(c=>!taken.has(c.id)).slice(0,required*2).map(c=>mkCreator(c));setSuggested(pool);setGenRounds(r=>r+1);setGenerating(false);},900);};
+  const generate=()=>{if(flagged||generating)return;setGenerating(true);setTimeout(()=>{const taken=new Set(creators.map(c=>c.dbId).filter(Boolean));
+    // Restrict suggestions to the campaign's niche (same/similar). If nothing
+    // in the DB matches, fall back to the full pool so Generate is never empty.
+    const inNiche=CREATOR_DB.filter(c=>!taken.has(c.id)&&nicheMatches(camp.niche,c.niche));
+    const base=inNiche.length?inNiche:CREATOR_DB.filter(c=>!taken.has(c.id));
+    const pool=base.slice(0,required*2).map(c=>mkCreator(c));setSuggested(pool);setGenRounds(r=>r+1);setGenerating(false);},900);};
   const confirmRemove=(reason,note)=>{API.removeCreator(camp.id,removeTarget._id,reason,note);sync(creators.filter(c=>c._id!==removeTarget._id));setRemoveTarget(null);};
   const addFromSugg=cr=>{if(creators.length>=required)return;sync([...creators,cr]);setSuggested(p=>p.filter(c=>c._id!==cr._id));};
   const thS={fontSize:9,fontWeight:600,color:T.label,textTransform:"uppercase",letterSpacing:"0.07em",padding:"8px 10px",whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`,textAlign:"left",background:T.raised};
@@ -1303,7 +1329,7 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
 // ── CREATE MODAL ─────────────────────────────────────────────────────────────
 function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
   const [step,setStep]=useState(0);
-  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",budget:"",numCreators:5,objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
+  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",niche:"",budget:"",numCreators:5,objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
   const [newBrandName,setNewBrandName]=useState("");
   // Staged only — nothing is written to the backend until the campaign is
   // actually submitted, so abandoning this modal never leaves an orphan brand.
@@ -1377,6 +1403,14 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
         {step===2&&<>
           <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Total budget (₹) *</Lbl><MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="e.g. 12,50,000" style={{...INP,resize:"none"}}/></div>
           <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Creators required *</Lbl><input type="number" min={1} value={f.numCreators} onChange={e=>u("numCreators",e.target.value)} placeholder="5" style={{...INP,resize:"none"}}/></div>
+          <div style={{marginBottom:14}}>
+            <Lbl style={{display:"block",marginBottom:5}}>Niche</Lbl>
+            <select value={f.niche} onChange={e=>u("niche",e.target.value)} style={{...INP,resize:"none",cursor:"pointer"}}>
+              <option value="">— Any niche —</option>
+              {NICHES.map(n=><option key={n} value={n}>{n}</option>)}
+            </select>
+            <div style={{fontSize:9,color:T.sub,marginTop:4}}>Steers Generate towards same/similar creators.</div>
+          </div>
           <div style={{marginBottom:14}}>
             <Lbl style={{display:"block",marginBottom:5}}>Timeline *</Lbl>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
@@ -1530,7 +1564,7 @@ export default function InternalCampaigns(){
     const budget = parseInt(f.budget)||0;
     const c={
       id:campId, name:f.name, client:brandName(f.brandId)||"", brandId:f.brandId, service:f.service,
-      region:f.region||"TBD", stage:"draft", progress:0,
+      region:f.region||"TBD", niche:f.niche||"", stage:"draft", progress:0,
       budget, creatorBudget:Math.round(budget*0.6),
       numReq:parseInt(f.numCreators)||5, start:f.timelineStart||today(), end:f.timelineEnd||"TBD",
       createdBy:currentUser.teamId,

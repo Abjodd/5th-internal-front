@@ -17,7 +17,7 @@ import { useOutletContext } from "react-router-dom";
 import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ClientPOsAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
-import { fmtCompact, prettyDate, initials } from "../../lib/format";
+import { fmtCompact, prettyDate, initials, ISO_DATE } from "../../lib/format";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
 
@@ -471,6 +471,24 @@ const today   = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 };
+// End-date proximity nudge. Returns null unless the campaign is still running
+// and its ISO end date is within a week (or already past) — a subtle "ending
+// soon" cue on the card + detail header. Completed campaigns never warn.
+const endStatus = (iso, stage) => {
+  if (stage === "completed" || !ISO_DATE.test(iso || "")) return null;
+  const days = Math.round((new Date(`${iso}T00:00:00`) - new Date(`${today()}T00:00:00`)) / 86400000);
+  if (days < 0)   return { tone: T.red,   text: "Ended",           key: "ended"  };
+  if (days === 0) return { tone: T.amber, text: "Ends today",      key: "ending" };
+  if (days <= 7)  return { tone: T.amber, text: `Ending in ${days}d`, key: "ending" };
+  return null;
+};
+// Small inline pill matching the stage-chip styling, used for the end-date nudge.
+// Uses a color dot instead of "!" — reads as a status, not an alarm.
+const EndPill = ({ es, style = {} }) => es ? (
+  <span style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"3px 10px", borderRadius:20, background:`${es.tone}18`, border:`1px solid ${es.tone}45`, fontSize:10.5, fontWeight:700, color:es.tone, fontFamily:SF, whiteSpace:"nowrap", ...style }}>
+    <Dot color={es.tone} size={5}/>{es.text}
+  </span>
+) : null;
 const needsLnk= s => ["received","rework"].includes(s);
 // External links pasted without a protocol ("instagram.com/p/…") would resolve
 // relative to the SPA — the new tab lands on our router with an empty
@@ -537,6 +555,7 @@ function DelvSelect({value=[],onChange}){const t=d=>onChange(value.includes(d)?v
 function CampCard({camp,selected,onClick,role}){
   const col=T.sc[camp.stage]||T.sub,pl=PIPELINE.find(p=>p.id===camp.stage)||PIPELINE[0];
   const am=getM(camp.amId),cm=getM(camp.cmId),ea=getM(camp.eaId);
+  const es=endStatus(camp.end,camp.stage);
   const [hovered,setHovered]=useState(false);
   return(
     <div onClick={onClick} onMouseEnter={()=>setHovered(true)} onMouseLeave={()=>setHovered(false)} style={{padding:"14px 16px",borderRadius:12,cursor:"pointer",marginBottom:4,background:selected?"#FFFFFF":hovered?"rgba(255,255,255,0.65)":"transparent",border:`1px solid ${selected?"rgba(0,0,0,0.1)":"transparent"}`,boxShadow:selected?"0 2px 12px rgba(0,0,0,0.08)":"none",transition:"all 0.15s"}}>
@@ -548,6 +567,7 @@ function CampCard({camp,selected,onClick,role}){
       <div style={{fontSize:11,color:"#6E6E73",marginBottom:8,fontFamily:SF}}>{camp.client}{camp.region?` · ${camp.region}`:""}</div>
       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
         <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:20,background:`${col}14`,border:`1px solid ${col}28`,fontSize:9.5,fontWeight:500,color:col,fontFamily:SF}}>{pl.label}</span>
+        <EndPill es={es}/>
         {canFin(role)&&<span style={{marginLeft:"auto",fontSize:11,color:"#6E6E73",fontFamily:SF,fontWeight:500}}>{fmtINR(camp.budget)}</span>}
       </div>
       <MiniPipe stage={camp.stage}/>
@@ -603,7 +623,7 @@ function ConfirmActionModal({camp,label,onConfirm,onCancel}){
 // Doubles as the "Edit Creator" form (PERMS.editCreatorDetails): pass `editing` (an existing
 // creator object) to prefill every field; onAdd then receives the merged
 // creator (same _id, status/tracking preserved) instead of a new one.
-// Exported so the Influencers directory reuses it as its founder edit form.
+// Exported so the Creators directory reuses it as its founder edit form.
 export function AddCreatorModal({onAdd,onClose,editing=null}){
   const pd0=editing?.personalDetails||{};
   const [f,setF]=useState({
@@ -1288,6 +1308,7 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
   // on one campaign shouldn't leak onto the next.
   useEffect(()=>{setTab("brief");setConfirmDelete(false);},[camp.id]);
   const stCol=T.sc[camp.stage]||T.sub,pl=PIPELINE.find(p=>p.id===camp.stage)||PIPELINE[0];
+  const es=endStatus(camp.end,camp.stage);
   const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},{id:"timeline",label:"Timeline"},...(canFin(role)?[{id:"financials",label:"Financials"}]:[])];
   return(<div style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7"}}>
     {/* Thin color accent top border */}
@@ -1296,7 +1317,7 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8}}>
         <div style={{flex:1,minWidth:0}}>
           <h2 style={{fontFamily:"'Newsreader',serif",fontSize:24,fontWeight:600,color:"#1D1D1F",margin:"0 0 4px",fontStyle:"italic",letterSpacing:"-0.02em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{camp.name}</h2>
-          <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF}}>{camp.client} · {camp.service} · {camp.region} · {prettyDate(camp.start)}–{prettyDate(camp.end)}{canFin(role)&&<span style={{marginLeft:8,fontWeight:600,color:"#1D1D1F"}}>{fmtINR(camp.budget)}</span>}</div>
+          <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF,display:"flex",alignItems:"center",flexWrap:"wrap",gap:8}}><span>{camp.client} · {camp.service} · {camp.region} · {prettyDate(camp.start)}–{prettyDate(camp.end)}{canFin(role)&&<span style={{marginLeft:8,fontWeight:600,color:"#1D1D1F"}}>{fmtINR(camp.budget)}</span>}</span><EndPill es={es}/></div>
         </div>
         <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,marginLeft:16}}>
           <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:`${stCol}14`,border:`1px solid ${stCol}28`,fontSize:10.5,fontWeight:600,color:stCol,fontFamily:SF}}>{pl.label}</span>
@@ -1596,7 +1617,7 @@ export default function InternalCampaigns(){
     }
     setCampaigns(p=>[c,...p]);setSelId(c.id);setCreate(false);showToast("Campaign created");
   },[showToast,role,currentUser,brandName]);
-  const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(brandFilter&&c.brandId!==brandFilter)return false;if(stageFilter!=="all"){const g={intake:["draft","creator_shortlist","po_raised"],planning:["advance_received","execution","brief_sent"],execution:["concept_submitted","concept_approved","production"],delivery:["video_submitted","internal_review","client_approved","live","creator_paid","reporting","completed"]};if(!g[stageFilter]?.includes(c.stage))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search,brandFilter]);
+  const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(brandFilter&&c.brandId!==brandFilter)return false;if(stageFilter==="ended"){if(endStatus(c.end,c.stage)?.key!=="ended")return false;}else if(stageFilter!=="all"){const g={intake:["draft","creator_shortlist","po_raised"],planning:["advance_received","execution","brief_sent"],execution:["concept_submitted","concept_approved","production"],delivery:["video_submitted","internal_review","client_approved","live","creator_paid","reporting","completed"]};if(!g[stageFilter]?.includes(c.stage))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search,brandFilter]);
   // Selection must respect the active filters — resolve against `visible`, not
   // `campaigns`, or the detail panel (and its Creators tab) keeps showing a
   // campaign from another brand after the brand filter changes.
@@ -1636,7 +1657,7 @@ export default function InternalCampaigns(){
           <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",fontSize:12,color:"#86868B",pointerEvents:"none"}}>⌕</span>
         </div>
         <div style={{display:"flex",background:"rgba(0,0,0,0.04)",borderRadius:8,padding:2,gap:1}}>
-          {[["all","All"],["intake","Intake"],["planning","Plan"],["execution","Exec"],["delivery","Done"]].map(([id,lbl])=>(
+          {[["all","All"],["intake","Intake"],["planning","Plan"],["execution","Exec"],["delivery","Done"],["ended","Ended"]].map(([id,lbl])=>(
             <button key={id} onClick={()=>setStageF(id)} style={{padding:"5px 10px",borderRadius:6,fontSize:10.5,fontWeight:stageFilter===id?600:400,background:stageFilter===id?"#FFFFFF":"transparent",cursor:"pointer",fontFamily:SF,border:"none",color:stageFilter===id?"#1D1D1F":"#6E6E73",boxShadow:stageFilter===id?"0 1px 3px rgba(0,0,0,0.1)":"none",transition:"all 0.12s"}}>{lbl}</button>
           ))}
         </div>

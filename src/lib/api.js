@@ -36,6 +36,16 @@ export const FindingsAPI = {
     request(`/api/findings/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
 };
 
+// ── Client Requests (founder inbox) ──────────────────────────────────────────
+// landing page POSTs; the founder tab uses list/update
+// Backend fires the founder email on create (mailer.js)
+export const ClientRequestsAPI = {
+  list: (status) => request(`/api/client-requests${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  create: (req) => request("/api/client-requests", { method: "POST", body: JSON.stringify(req) }),
+  update: (id, patch) =>
+    request(`/api/client-requests/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+};
+
 // Generic CRUD client factory matching the backend's registerCrudRoutes shape.
 function crud(basePath) {
   return {
@@ -96,13 +106,13 @@ function authCrud(basePath) {
 export const UsersAPI = authCrud("/api/users");
 export const BrandCredentialsAPI = authCrud("/api/brand-credentials");
 
-// ── Influencers (founder directory) ──────────────────────────────────────────
-export const InfluencersAPI = {
-  list: (brandId) => request(`/api/influencers${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ""}`),
+// ── Creators (founder directory) ─────────────────────────────────────────────
+export const CreatorsAPI = {
+  list: (brandId) => request(`/api/creators${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ""}`),
   // Founder edit from the directory — the backend propagates the patch to the
   // creator's entries across campaigns so the directory stays the source of truth.
   update: (id, patch) =>
-    request(`/api/influencers/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+    request(`/api/creators/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
 };
 
 // ── Invoice PDFs ─────────────────────────────────────────────────────────────

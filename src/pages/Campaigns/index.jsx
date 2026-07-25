@@ -14,6 +14,7 @@
  */
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
+import { motion, AnimatePresence } from "motion/react";
 import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ClientPOsAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
@@ -522,7 +523,7 @@ function Btn({children,onClick,variant="ghost",disabled,style={}}){
 const INP={width:"100%",padding:"9px 12px",borderRadius:9,background:"rgba(0,0,0,0.03)",border:"1px solid rgba(0,0,0,0.1)",color:"#1D1D1F",fontSize:12,fontFamily:SF,outline:"none",resize:"vertical",transition:"border 0.15s"};
 
 // ── PIPELINE WIDGETS ─────────────────────────────────────────────────────────
-const MiniPipe=({stage})=>{const pct=Math.round((plIdx(stage)/(PIPELINE.length-1))*100),col=T.sc[stage]||T.sub;return <div style={{height:2,background:"rgba(0,0,0,0.07)",borderRadius:1,marginTop:9}}><div style={{height:2,borderRadius:1,background:col,width:`${pct}%`,transition:"width 0.5s ease"}}/></div>;};
+const MiniPipe=({stage})=>{const pct=Math.round((plIdx(stage)/(PIPELINE.length-1))*100),col=T.sc[stage]||T.sub;return <div style={{height:2,background:"rgba(0,0,0,0.07)",borderRadius:1,marginTop:9}}><motion.div style={{height:2,borderRadius:1,background:col}} animate={{width:`${pct}%`}} transition={{type:"spring",stiffness:220,damping:26}}/></div>;};
 function FullPipe({stage}){
   const idx=plIdx(stage),col=T.sc[stage]||T.sub,GREEN="#34C759";
   // Top/bottom padding keeps the pulse ring and hover lift inside the
@@ -531,19 +532,18 @@ function FullPipe({stage}){
     const done=i<idx,cur=i===idx;
     return(<div key={p.id} style={{display:"flex",alignItems:"flex-start"}}>
       <div className="pipe-node" title={`Stage ${i+1} of ${PIPELINE.length} — ${p.label}${done?" · complete":cur?" · current":""}`} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,minWidth:72}}>
-        <div style={{width:14,height:14,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",
-          background:cur?col:done?GREEN:"#FFFFFF",
+        <motion.div style={{width:14,height:14,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",
           border:done||cur?"none":"1.5px solid rgba(0,0,0,0.14)",
           animation:cur?"pipePulse 2s ease-out infinite":"none",
-          "--pulse-col":`${col}50`,
-          transition:"background 0.3s"}}>
+          "--pulse-col":`${col}50`}}
+          animate={{background:cur?col:done?GREEN:"#FFFFFF"}} transition={{duration:0.3}}>
           {done&&<span style={{color:"#FFF",fontSize:8,fontWeight:700,lineHeight:1}}>✓</span>}
           {cur&&<span style={{width:4,height:4,borderRadius:"50%",background:"#FFF"}}/>}
-        </div>
+        </motion.div>
         <span style={{fontSize:7.5,textAlign:"center",whiteSpace:"nowrap",color:cur?col:done?"#1D1D1F":"rgba(0,0,0,0.30)",fontWeight:cur?700:done?500:400,fontFamily:SF,letterSpacing:"0.01em"}}>{p.label}</span>
         {cur&&<span style={{fontSize:6.5,fontWeight:700,color:col,background:`${col}14`,borderRadius:4,padding:"1px 5px",textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:SF,marginTop:-2}}>Now</span>}
       </div>
-      {i<PIPELINE.length-1&&<div style={{width:18,height:2,borderRadius:1,background:i<idx?GREEN:"rgba(0,0,0,0.08)",marginTop:6,flexShrink:0,transition:"background 0.3s"}}/>}
+      {i<PIPELINE.length-1&&<motion.div style={{width:18,height:2,borderRadius:1,marginTop:6,flexShrink:0}} animate={{background:i<idx?GREEN:"rgba(0,0,0,0.08)"}} transition={{duration:0.3}}/>}
     </div>);
   })}</div></div>);
 }
@@ -551,27 +551,87 @@ function FullPipe({stage}){
 // ── DELIVERABLE MULTISELECT ───────────────────────────────────────────────────
 function DelvSelect({value=[],onChange}){const t=d=>onChange(value.includes(d)?value.filter(x=>x!==d):[...value,d]);return(<div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:2}}>{IM_DELIVERABLES.map(d=>{const on=value.includes(d);return <button key={d} onClick={()=>t(d)} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{d}</button>;})}</div>);}
 
-// ── CAMPAIGN CARD ────────────────────────────────────────────────────────────
-function CampCard({camp,selected,onClick,role}){
+// ── CAMPAIGN CARD (grid tile) ─────────────────────────────────────────────────
+function CampCard({camp,onClick,role}){
   const col=T.sc[camp.stage]||T.sub,pl=PIPELINE.find(p=>p.id===camp.stage)||PIPELINE[0];
   const am=getM(camp.amId),cm=getM(camp.cmId),ea=getM(camp.eaId);
   const es=endStatus(camp.end,camp.stage);
-  const [hovered,setHovered]=useState(false);
   return(
-    <div onClick={onClick} onMouseEnter={()=>setHovered(true)} onMouseLeave={()=>setHovered(false)} style={{padding:"14px 16px",borderRadius:12,cursor:"pointer",marginBottom:4,background:selected?"#FFFFFF":hovered?"rgba(255,255,255,0.65)":"transparent",border:`1px solid ${selected?"rgba(0,0,0,0.1)":"transparent"}`,boxShadow:selected?"0 2px 12px rgba(0,0,0,0.08)":"none",transition:"all 0.15s"}}>
-      {selected&&<div style={{height:2,background:col,borderRadius:1,marginBottom:10,width:24}}/>}
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:3}}>
-        <span style={{fontSize:12.5,fontWeight:600,color:"#1D1D1F",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,letterSpacing:"-0.02em",fontFamily:SF}}>{camp.name}</span>
-        <span style={{fontSize:9.5,color:"#6E6E73",marginLeft:8,flexShrink:0,fontFamily:SF}}>{camp.progress}%</span>
+    <motion.div
+      layoutId={`card-${camp.id}`}
+      layout
+      initial={{opacity:0,y:10,scale:0.98}}
+      animate={{opacity:1,y:0,scale:1}}
+      exit={{opacity:0,scale:0.96,transition:{duration:0.12}}}
+      whileHover={{y:-3,boxShadow:"0 10px 28px rgba(0,0,0,0.10)"}}
+      whileTap={{scale:0.985}}
+      transition={{type:"spring",stiffness:340,damping:30}}
+      onClick={onClick}
+      style={{padding:"16px 18px 14px",borderRadius:16,cursor:"pointer",background:"#FFFFFF",border:"1px solid rgba(0,0,0,0.07)",boxShadow:"0 1px 2px rgba(0,0,0,0.04)",overflow:"hidden",position:"relative"}}>
+      <div style={{position:"absolute",top:0,left:0,right:0,height:3,background:col}}/>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4,marginTop:2}}>
+        <span style={{fontSize:14,fontWeight:600,color:"#1D1D1F",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,letterSpacing:"-0.02em",fontFamily:SF}}>{camp.name}</span>
+        <span style={{fontSize:10,color:"#6E6E73",marginLeft:8,flexShrink:0,fontFamily:SF}}>{camp.progress}%</span>
       </div>
-      <div style={{fontSize:11,color:"#6E6E73",marginBottom:8,fontFamily:SF}}>{camp.client}{camp.region?` · ${camp.region}`:""}</div>
-      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
-        <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:20,background:`${col}14`,border:`1px solid ${col}28`,fontSize:9.5,fontWeight:500,color:col,fontFamily:SF}}>{pl.label}</span>
+      <div style={{fontSize:11.5,color:"#6E6E73",marginBottom:12,fontFamily:SF}}>{camp.client}{camp.region?` · ${camp.region}`:""}</div>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
+        <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 9px",borderRadius:20,background:`${col}14`,border:`1px solid ${col}28`,fontSize:10,fontWeight:500,color:col,fontFamily:SF}}>{pl.label}</span>
         <EndPill es={es}/>
-        {canFin(role)&&<span style={{marginLeft:"auto",fontSize:11,color:"#6E6E73",fontFamily:SF,fontWeight:500}}>{fmtINR(camp.budget)}</span>}
+        {canFin(role)&&<span style={{marginLeft:"auto",fontSize:11.5,color:"#1D1D1F",fontFamily:SF,fontWeight:600}}>{fmtINR(camp.budget)}</span>}
       </div>
       <MiniPipe stage={camp.stage}/>
-      {(am||cm||ea)&&<div style={{display:"flex",gap:6,marginTop:9,alignItems:"center"}}>{[{m:am,l:"AM"},{m:cm,l:"CM"},{m:ea,l:"EA"}].filter(x=>x.m).map(({m,l})=><div key={l} style={{display:"flex",alignItems:"center",gap:4}}><Av init={m.avatar} size={16}/><span style={{fontSize:8.5,color:"#6E6E73",fontFamily:SF}}>{l}</span></div>)}</div>}
+      {(am||cm||ea)&&<div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>{[{m:am,l:"AM"},{m:cm,l:"CM"},{m:ea,l:"EA"}].filter(x=>x.m).map(({m,l})=><div key={l} style={{display:"flex",alignItems:"center",gap:4}}><Av init={m.avatar} size={18}/><span style={{fontSize:9,color:"#6E6E73",fontFamily:SF}}>{l}</span></div>)}</div>}
+    </motion.div>
+  );
+}
+
+// ── CAMPAIGN GRID ─────────────────────────────────────────────────────────────
+// Groups the already-filtered `visible` list by brand (same grouping rule the
+// old sidebar used) and lays each group out as a responsive card grid.
+function CampaignGrid({campaigns,role,onSelect,brandName}){
+  if(campaigns.length===0){
+    return <div style={{padding:"64px 16px",textAlign:"center",color:"#86868B",fontSize:13,fontFamily:SF}}>No campaigns match</div>;
+  }
+  const groups={};
+  campaigns.forEach(c=>{
+    const label=brandName(c.brandId)||"Unassigned";
+    (groups[label]=groups[label]||[]).push(c);
+  });
+  const labels=Object.keys(groups).sort((a,b)=>a==="Unassigned"?1:b==="Unassigned"?-1:a.localeCompare(b));
+  return(
+    <div style={{padding:"20px 28px 40px"}}>
+      {labels.map(label=>(
+        <div key={label} style={{marginBottom:28}}>
+          <div style={{padding:"0 0 10px",fontSize:10.5,fontWeight:700,color:"#86868B",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:SF}}>
+            {label} · {groups[label].length}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
+            <AnimatePresence mode="popLayout">
+              {groups[label].map(c=>(
+                <CampCard key={c.id} camp={c} role={role} onClick={()=>onSelect(c.id)}/>
+              ))}
+            </AnimatePresence>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── FILTER TABS (sliding pill indicator) ──────────────────────────────────────
+const STAGE_FILTERS=[["all","All"],["intake","Intake"],["planning","Plan"],["execution","Exec"],["delivery","Done"],["ended","Ended"]];
+function FilterTabs({value,onChange}){
+  return(
+    <div style={{display:"flex",background:"rgba(0,0,0,0.04)",borderRadius:8,padding:2,gap:1}}>
+      {STAGE_FILTERS.map(([id,lbl])=>{
+        const on=value===id;
+        return(
+          <button key={id} onClick={()=>onChange(id)} style={{position:"relative",padding:"5px 10px",borderRadius:6,fontSize:10.5,fontWeight:on?600:400,background:"transparent",cursor:"pointer",fontFamily:SF,border:"none",color:on?"#1D1D1F":"#6E6E73",transition:"color 0.15s"}}>
+            {on&&<motion.div layoutId="filterPill" style={{position:"absolute",inset:0,background:"#FFFFFF",borderRadius:6,boxShadow:"0 1px 3px rgba(0,0,0,0.1)",zIndex:0}} transition={{type:"spring",stiffness:500,damping:38}}/>}
+            <span style={{position:"relative",zIndex:1}}>{lbl}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -584,8 +644,8 @@ function RemoveModal({creator,onConfirm,onCancel}){const [reason,setReason]=useS
 // campaign disappears from every list but stays recoverable in the DB.
 function DeleteCampaignModal({camp,onConfirm,onCancel}){
   return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <div onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
-    <div style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
       <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Delete Campaign</div>
       <div style={{fontSize:11,color:T.sub,marginBottom:16}}>
         Delete <strong style={{color:T.text}}>{camp?.name}</strong> ({camp?.client})? It will be removed from all views. Recovery requires a database restore.
@@ -595,7 +655,7 @@ function DeleteCampaignModal({camp,onConfirm,onCancel}){
         <div style={{flex:1}}/>
         <Btn variant="danger" onClick={onConfirm}>Delete campaign</Btn>
       </div>
-    </div>
+    </motion.div>
   </div>);
 }
 
@@ -604,8 +664,8 @@ function DeleteCampaignModal({camp,onConfirm,onCancel}){
 // pipeline stage — changes are only applied (and synced) after confirmation.
 function ConfirmActionModal({camp,label,onConfirm,onCancel}){
   return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <div onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
-    <div style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
       <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Confirm stage change</div>
       <div style={{fontSize:11,color:T.sub,lineHeight:1.6,marginBottom:16}}>
         <strong style={{color:T.text}}>{label}</strong> — this moves <strong style={{color:T.text}}>{camp?.name}</strong> to a different pipeline stage and is logged on the campaign timeline. Continue?
@@ -615,7 +675,7 @@ function ConfirmActionModal({camp,label,onConfirm,onCancel}){
         <div style={{flex:1}}/>
         <Btn variant="primary" onClick={onConfirm}>Yes, confirm</Btn>
       </div>
-    </div>
+    </motion.div>
   </div>);
 }
 
@@ -1301,7 +1361,7 @@ function WorkflowActions({camp, role, onAction}) {
 }
 
 // ── DETAIL ───────────────────────────────────────────────────────────────────
-function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogTimeline}){
+function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogTimeline,onBack,onPrev,onNext,hasPrev,hasNext}){
   const [tab,setTab]=useState("brief");
   const [confirmDelete,setConfirmDelete]=useState(false);
   // Selecting a different campaign resets the panel to Brief — the tab chosen
@@ -1310,10 +1370,19 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
   const stCol=T.sc[camp.stage]||T.sub,pl=PIPELINE.find(p=>p.id===camp.stage)||PIPELINE[0];
   const es=endStatus(camp.end,camp.stage);
   const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},{id:"timeline",label:"Timeline"},...(canFin(role)?[{id:"financials",label:"Financials"}]:[])];
-  return(<div style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7"}}>
-    {/* Thin color accent top border */}
-    <div style={{height:2,background:stCol,flexShrink:0}}/>
-    <div style={{padding:"22px 28px 16px",background:"#FFFFFF",flexShrink:0,borderBottom:"1px solid rgba(0,0,0,0.07)"}}>
+  const navBtn={display:"flex",alignItems:"center",gap:4,background:"transparent",border:"none",cursor:"pointer",fontSize:11.5,fontWeight:500,color:"#6E6E73",fontFamily:SF,padding:"5px 8px",borderRadius:6};
+  return(<motion.div initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-6}} transition={{duration:0.22,ease:"easeOut"}} style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7"}}>
+    {/* Thin color accent top border — crossfades between campaigns of different stages */}
+    <motion.div style={{height:2,flexShrink:0}} animate={{backgroundColor:stCol}} transition={{duration:0.3}}/>
+    {/* Drill-in nav: back to grid + step through the filtered list */}
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 24px 0",flexShrink:0,background:"#FFFFFF"}}>
+      <button onClick={onBack} style={navBtn}>← Campaigns</button>
+      <div style={{display:"flex",alignItems:"center",gap:2}}>
+        <button onClick={onPrev} disabled={!hasPrev} style={{...navBtn,opacity:hasPrev?1:0.3,cursor:hasPrev?"pointer":"default"}}>‹ Prev</button>
+        <button onClick={onNext} disabled={!hasNext} style={{...navBtn,opacity:hasNext?1:0.3,cursor:hasNext?"pointer":"default"}}>Next ›</button>
+      </div>
+    </div>
+    <div style={{padding:"14px 28px 16px",background:"#FFFFFF",flexShrink:0,borderBottom:"1px solid rgba(0,0,0,0.07)"}}>
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8}}>
         <div style={{flex:1,minWidth:0}}>
           <h2 style={{fontFamily:"'Newsreader',serif",fontSize:24,fontWeight:600,color:"#1D1D1F",margin:"0 0 4px",fontStyle:"italic",letterSpacing:"-0.02em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{camp.name}</h2>
@@ -1325,15 +1394,20 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
           {can(role,"deleteCampaign")&&<Btn variant="danger" onClick={()=>setConfirmDelete(true)} style={{fontSize:10,padding:"4px 10px"}}>Delete</Btn>}
         </div>
       </div>
-      {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
+      <AnimatePresence>
+        {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
+      </AnimatePresence>
       <div style={{fontSize:10.5,color:"#6E6E73",marginBottom:12,fontFamily:SF,fontStyle:"italic"}}>{STAGE_HINT[camp.stage]}</div>
       <WorkflowActions camp={camp} role={role} onAction={onAction}/>
       <FullPipe stage={camp.stage}/>
     </div>
-    {/* Tab strip */}
+    {/* Tab strip — sliding indicator shared across tab switches AND campaign switches */}
     <div style={{display:"flex",padding:"0 28px",background:"#FFFFFF",borderBottom:"1px solid rgba(0,0,0,0.07)",flexShrink:0}}>
       {tabs.map(t=>(
-        <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"11px 0",marginRight:22,background:"transparent",border:"none",borderBottom:`2px solid ${tab===t.id?stCol:"transparent"}`,color:tab===t.id?"#1D1D1F":"#6E6E73",fontSize:12,cursor:"pointer",fontFamily:SF,fontWeight:tab===t.id?600:400,marginBottom:-1,transition:"all 0.15s",letterSpacing:"-0.01em"}}>{t.label}</button>
+        <button key={t.id} onClick={()=>setTab(t.id)} style={{position:"relative",padding:"11px 0",marginRight:22,background:"transparent",border:"none",color:tab===t.id?"#1D1D1F":"#6E6E73",fontSize:12,cursor:"pointer",fontFamily:SF,fontWeight:tab===t.id?600:400,marginBottom:-1,transition:"color 0.15s",letterSpacing:"-0.01em"}}>
+          {t.label}
+          {tab===t.id&&<motion.div layoutId="detailTabIndicator" style={{position:"absolute",left:0,right:0,bottom:-1,height:2,borderRadius:1,background:stCol}} transition={{type:"spring",stiffness:500,damping:40}}/>}
+        </button>
       ))}
     </div>
     <div style={{flex:1,overflowY:"auto",padding:"24px 28px",background:"#F5F5F7"}}>
@@ -1344,7 +1418,7 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
       {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
       {tab==="financials"   &&canFin(role)&&<TabFinancials camp={camp} role={role}/>}
     </div>
-  </div>);
+  </motion.div>);
 }
 
 // ── CREATE MODAL ─────────────────────────────────────────────────────────────
@@ -1398,8 +1472,8 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
     }
   };
   // Backdrop is intentionally not clickable — the modal only closes via ✕
-  return(<div style={{position:"fixed",inset:0,zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(6px)"}}/>
-    <div style={{position:"relative",width:"min(500px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
+  return(<div style={{position:"fixed",inset:0,zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}><motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(6px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(500px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
       <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}><div><div style={{fontFamily:"'Newsreader',serif",fontSize:18,color:T.text,fontStyle:"italic",marginBottom:2}}>New Campaign</div><Lbl>{STEPS[step]} — {step+1} of {STEPS.length}</Lbl></div><button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button></div>
       <div style={{height:1.5,background:T.mute}}><div style={{height:1.5,background:T.accent,width:`${((step+1)/STEPS.length)*100}%`,transition:"width 0.25s"}}/></div>
       <div style={{padding:"18px 20px",overflowY:"auto",flex:1}}>
@@ -1445,7 +1519,7 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
         {step===3&&<div><Lbl color={T.amber} style={{display:"block",marginBottom:5}}>Internal notes — never visible to client</Lbl><textarea value={f.internalNotes} onChange={e=>u("internalNotes",e.target.value)} placeholder="Margin targets, context…" style={{...INP,minHeight:100,borderColor:`${T.amber}30`}}/></div>}
       </div>
       <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>{step>0&&<Btn variant="ghost" onClick={()=>setStep(s=>s-1)}>← Back</Btn>}<div style={{flex:1}}/>{step<STEPS.length-1?<Btn variant="primary" onClick={()=>setStep(s=>s+1)} disabled={!ok}>Next</Btn>:<Btn variant="primary" onClick={handleSubmit} disabled={submitting||!allOk}>{submitting?"Creating…":"Create campaign"}</Btn>}</div>
-    </div>
+    </motion.div>
   </div>);
 }
 
@@ -1484,7 +1558,7 @@ export default function InternalCampaigns(){
       .then(users=>{ const dir=teamFromUsers(users); if(dir.length){ TEAM_DIR=dir; setTeamLoaded(true); } })
       .catch(()=>{});
   },[]);
-  const [selectedId,setSelId]=useState("c1");
+  const [selectedId,setSelId]=useState(null);
   const [search,setSearch]=useState("");
   const [stageFilter,setStageF]=useState("all");
   const [showCreate,setCreate]=useState(false);
@@ -1622,91 +1696,75 @@ export default function InternalCampaigns(){
   // `campaigns`, or the detail panel (and its Creators tab) keeps showing a
   // campaign from another brand after the brand filter changes.
   const selected=visible.find(c=>c.id===selectedId)||null;
+  // Grid-first drill-in: a selection only ever gets *cleared* (back to the
+  // grid) when it drops out of the active filters — it's never replaced with
+  // another campaign automatically, since that'd be jarring in a full
+  // drill-in view (contrast with the old sidebar, where auto-picking a
+  // fallback made sense because the grid stayed visible alongside it).
   useEffect(()=>{
-    if(!loading&&!visible.some(c=>c.id===selectedId)) setSelId(visible[0]?.id??null);
+    if(!loading&&selectedId&&!visible.some(c=>c.id===selectedId)) setSelId(null);
   },[loading,visible,selectedId]);
+  const selIndex=selected?visible.findIndex(c=>c.id===selectedId):-1;
+  const hasPrev=selIndex>0, hasNext=selIndex>=0&&selIndex<visible.length-1;
+  const goPrev=useCallback(()=>{if(selIndex>0)setSelId(visible[selIndex-1].id);},[selIndex,visible]);
+  const goNext=useCallback(()=>{if(selIndex>=0&&selIndex<visible.length-1)setSelId(visible[selIndex+1].id);},[selIndex,visible]);
   const needsAttn=visible.filter(c=>["draft","po_raised","concept_submitted","video_submitted"].includes(c.stage)).length;
   if(loading)return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",background:"#F5F5F7",fontFamily:SF,fontSize:13,color:"#6E6E73"}}>Loading campaigns…</div>);
   if(loadError)return(<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",background:"#F5F5F7",fontFamily:SF,fontSize:13,gap:8,color:"#6E6E73"}}><div>Couldn't reach the campaigns API.</div><div style={{fontSize:11,color:"#86868B"}}>{loadError}</div></div>);
   return(<div style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7",fontFamily:SF,color:"#1D1D1F",overflow:"hidden"}}>
     {/* Toast */}
     {toast&&<div style={{position:"fixed",bottom:24,right:24,zIndex:9999,padding:"11px 18px",background:"rgba(29,29,31,0.92)",backdropFilter:"blur(16px)",borderRadius:12,fontSize:12,color:"#FFFFFF",fontFamily:SF,boxShadow:"0 8px 32px rgba(0,0,0,0.24)",letterSpacing:"-0.01em"}}>{toast}</div>}
-    {/* Header */}
-    <div style={{padding:"16px 20px 14px",borderBottom:"1px solid rgba(0,0,0,0.07)",flexShrink:0,background:"#FFFFFF"}}>
-      <div style={{display:"flex",alignItems:"center",marginBottom:14}}>
-        <div>
-          <h1 style={{fontFamily:"'Newsreader',serif",fontSize:20,fontWeight:600,color:"#1D1D1F",margin:0,fontStyle:"italic",letterSpacing:"-0.02em"}}>IM Campaigns</h1>
-          <div style={{fontSize:10.5,color:"#86868B",fontFamily:SF,marginTop:2}}>5th Avenue · Influencer Marketing</div>
-        </div>
-        <div style={{flex:1}}/>
-        {canCreate(role)&&<Btn variant="primary" onClick={()=>setCreate(true)} style={{padding:"8px 16px",fontSize:12}}>+ New</Btn>}
-      </div>
-      {/* Stats row */}
-      <div style={{display:"flex",gap:0,marginBottom:14,background:"rgba(0,0,0,0.03)",borderRadius:10,padding:"2px",border:"1px solid rgba(0,0,0,0.06)"}}>
-        {[{l:"All",v:visible.length},{l:"Active",v:visible.filter(c=>!["completed","draft"].includes(c.stage)).length},{l:"Live",v:visible.filter(c=>c.stage==="live").length},{l:"Attention",v:needsAttn}].map((s,i)=>(
-          <div key={s.l} style={{flex:1,padding:"8px 12px",textAlign:"center",borderRight:i<3?"1px solid rgba(0,0,0,0.06)":"none"}}>
-            <div style={{fontSize:18,fontWeight:700,color:s.l==="Attention"&&needsAttn>0?T.amber:"#1D1D1F",letterSpacing:"-0.03em",lineHeight:1,fontFamily:SF}}>{s.v}</div>
-            <div style={{fontSize:9.5,color:"#86868B",marginTop:2,fontFamily:SF}}>{s.l}</div>
-          </div>
-        ))}
-      </div>
-      {/* Search + filters */}
-      <div style={{display:"flex",gap:6,alignItems:"center"}}>
-        <div style={{position:"relative",flex:1,maxWidth:200}}>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search…" style={{width:"100%",padding:"7px 10px 7px 28px",borderRadius:8,background:"rgba(0,0,0,0.04)",border:"1px solid rgba(0,0,0,0.08)",color:"#1D1D1F",fontSize:11.5,fontFamily:SF,outline:"none",boxSizing:"border-box"}}/>
-          <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",fontSize:12,color:"#86868B",pointerEvents:"none"}}>⌕</span>
-        </div>
-        <div style={{display:"flex",background:"rgba(0,0,0,0.04)",borderRadius:8,padding:2,gap:1}}>
-          {[["all","All"],["intake","Intake"],["planning","Plan"],["execution","Exec"],["delivery","Done"],["ended","Ended"]].map(([id,lbl])=>(
-            <button key={id} onClick={()=>setStageF(id)} style={{padding:"5px 10px",borderRadius:6,fontSize:10.5,fontWeight:stageFilter===id?600:400,background:stageFilter===id?"#FFFFFF":"transparent",cursor:"pointer",fontFamily:SF,border:"none",color:stageFilter===id?"#1D1D1F":"#6E6E73",boxShadow:stageFilter===id?"0 1px 3px rgba(0,0,0,0.1)":"none",transition:"all 0.12s"}}>{lbl}</button>
-          ))}
-        </div>
-      </div>
-    </div>
-    {/* Body */}
-    <div style={{display:"flex",flex:1,minHeight:0}}>
-      {/* Sidebar */}
-      <div style={{width:290,flexShrink:0,borderRight:"1px solid rgba(0,0,0,0.07)",overflowY:"auto",padding:"8px 8px",background:"#FAFAFA"}}>
-        {visible.length===0
-          ? <div style={{padding:"48px 16px",textAlign:"center",color:"#86868B",fontSize:12,fontFamily:SF}}>No campaigns match</div>
-          : (() => {
-              const groups = {};
-              visible.forEach(c => {
-                const label = brandName(c.brandId) || "Unassigned";
-                (groups[label] = groups[label] || []).push(c);
-              });
-              const labels = Object.keys(groups).sort((a,b) =>
-                a==="Unassigned" ? 1 : b==="Unassigned" ? -1 : a.localeCompare(b));
-              return labels.map(label => (
-                <div key={label} style={{marginBottom:10}}>
-                  <div style={{padding:"6px 8px 4px",fontSize:9.5,fontWeight:700,color:"#86868B",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:SF}}>
-                    {label} · {groups[label].length}
-                  </div>
-                  {groups[label].map(c => (
-                    <CampCard key={c.id} camp={c} selected={selectedId===c.id} onClick={()=>setSelId(c.id)} role={role}/>
-                  ))}
-                </div>
-              ));
-            })()
-        }
-      </div>
-      {/* Detail panel */}
-      <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
-        {selected
-          ? <Detail camp={selected} role={role} onAction={requestAction} onSaveBrief={onSaveBrief} onUpdateCreators={onUpdateCreators} onDelete={onDeleteCampaign} onLogTimeline={onLogTimeline}/>
-          : <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12,background:"#F5F5F7"}}>
-              <div style={{width:48,height:48,borderRadius:16,background:"rgba(0,0,0,0.05)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#86868B"}}>◎</div>
-              <div style={{fontSize:14,fontWeight:600,color:"#1D1D1F",fontFamily:SF,letterSpacing:"-0.02em"}}>Select a campaign</div>
-              <div style={{fontSize:11.5,color:"#86868B",fontFamily:SF}}>
-                {needsAttn>0?`${needsAttn} campaign${needsAttn>1?"s":""} need attention`:`${visible.length} campaign${visible.length!==1?"s":""}` }
+    <AnimatePresence mode="wait">
+      {selected ? (
+        <Detail key={selected.id} camp={selected} role={role} onAction={requestAction} onSaveBrief={onSaveBrief}
+          onUpdateCreators={onUpdateCreators} onDelete={onDeleteCampaign} onLogTimeline={onLogTimeline}
+          onBack={()=>setSelId(null)} onPrev={goPrev} onNext={goNext} hasPrev={hasPrev} hasNext={hasNext}/>
+      ) : (
+        <motion.div key="grid" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.18}}
+          style={{display:"flex",flexDirection:"column",flex:1,minHeight:0,overflow:"hidden"}}>
+          {/* Header */}
+          <div style={{padding:"16px 20px 14px",borderBottom:"1px solid rgba(0,0,0,0.07)",flexShrink:0,background:"#FFFFFF"}}>
+            <div style={{display:"flex",alignItems:"center",marginBottom:14}}>
+              <div>
+                <h1 style={{fontFamily:"'Newsreader',serif",fontSize:20,fontWeight:600,color:"#1D1D1F",margin:0,fontStyle:"italic",letterSpacing:"-0.02em"}}>IM Campaigns</h1>
+                <div style={{fontSize:10.5,color:"#86868B",fontFamily:SF,marginTop:2}}>5th Avenue · Influencer Marketing</div>
               </div>
+              <div style={{flex:1}}/>
+              {canCreate(role)&&<Btn variant="primary" onClick={()=>setCreate(true)} style={{padding:"8px 16px",fontSize:12}}>+ New</Btn>}
             </div>
-        }
-      </div>
-    </div>
-    {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand}/>}
-    {pendingAction&&selected&&<ConfirmActionModal camp={selected} label={ACTION_MSGS[pendingAction.action]||pendingAction.action}
-      onConfirm={()=>{onAction(pendingAction.action,pendingAction.data);setPendingAction(null);}}
-      onCancel={()=>setPendingAction(null)}/>}
+            {/* Stats row */}
+            <div style={{display:"flex",gap:0,marginBottom:14,background:"rgba(0,0,0,0.03)",borderRadius:10,padding:"2px",border:"1px solid rgba(0,0,0,0.06)"}}>
+              {[{l:"All",v:visible.length},{l:"Active",v:visible.filter(c=>!["completed","draft"].includes(c.stage)).length},{l:"Live",v:visible.filter(c=>c.stage==="live").length},{l:"Attention",v:needsAttn}].map((s,i)=>(
+                <div key={s.l} style={{flex:1,padding:"8px 12px",textAlign:"center",borderRight:i<3?"1px solid rgba(0,0,0,0.06)":"none"}}>
+                  <div style={{fontSize:18,fontWeight:700,color:s.l==="Attention"&&needsAttn>0?T.amber:"#1D1D1F",letterSpacing:"-0.03em",lineHeight:1,fontFamily:SF}}>{s.v}</div>
+                  <div style={{fontSize:9.5,color:"#86868B",marginTop:2,fontFamily:SF}}>{s.l}</div>
+                </div>
+              ))}
+            </div>
+            {/* Search + filters */}
+            <div style={{display:"flex",gap:10,alignItems:"center"}}>
+              <div style={{position:"relative",flex:"1 1 320px",maxWidth:380}}>
+                <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search campaigns or clients…" style={{width:"100%",padding:"8px 12px 8px 30px",borderRadius:9,background:"rgba(0,0,0,0.04)",border:"1px solid rgba(0,0,0,0.08)",color:"#1D1D1F",fontSize:12,fontFamily:SF,outline:"none",boxSizing:"border-box"}}/>
+                <span style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",fontSize:13,color:"#86868B",pointerEvents:"none"}}>⌕</span>
+              </div>
+              <div style={{flex:1}}/>
+              <FilterTabs value={stageFilter} onChange={setStageF}/>
+            </div>
+          </div>
+          {/* Grid */}
+          <div style={{flex:1,minHeight:0,overflowY:"auto"}}>
+            <CampaignGrid campaigns={visible} role={role} onSelect={setSelId} brandName={brandName}/>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+    <AnimatePresence>
+      {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand}/>}
+    </AnimatePresence>
+    <AnimatePresence>
+      {pendingAction&&selected&&<ConfirmActionModal camp={selected} label={ACTION_MSGS[pendingAction.action]||pendingAction.action}
+        onConfirm={()=>{onAction(pendingAction.action,pendingAction.data);setPendingAction(null);}}
+        onCancel={()=>setPendingAction(null)}/>}
+    </AnimatePresence>
   </div>);
 }

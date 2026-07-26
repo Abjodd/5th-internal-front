@@ -18,12 +18,12 @@ export const PERMS = {
   seeAgencyFee:       ["founder"],
   createCampaign:     ["founder", "pcm", "cm", "am"],
   deleteCampaign:     ["founder"],
-  // Creator/influencer records are retained: any campaign role can edit
+  // Creator records are retained: any campaign role can edit
   // details, but only the founder can remove a creator (the underlying
   // record is only ever deleted from the founder's Auth side).
   editCreatorDetails: ["founder", "pcm", "cm", "am", "ea"],   // full Edit modal on the creators table
   removeCreator:      ["founder"],
-  editInfluencer:     ["founder"],   // edit from the Influencers directory
+  editCreator:        ["founder"],   // edit from the Creators directory
   assignUsers:        ["founder", "pcm", "cm", "am"],
 
   // ── Billing tab: which financial widgets to show ───────────────────────────
@@ -55,7 +55,8 @@ export const PERMS = {
   seeCampaignPL:     ["founder", "pcm"],
 
   // ── Founder-only pages ──────────────────────────────────────────────────────
-  seeInfluencers:    ["founder"],   // Influencers directory (all creators + invoices)
+  seeCreators:       ["founder"],   // Creators directory (all creators + invoices)
+  seeClientRequests: ["founder"],   // Client Requests inbox (brand landing-page signups)
   manageAuth:        ["founder"],   // Auth page: view/add/edit/soft-delete credentials
 };
 

@@ -157,7 +157,7 @@ export default function LoginPage() {
             }}>one place.</span>
           </div>
           <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", lineHeight: 1.7, maxWidth: 280 }}>
-            Manage influencer campaigns, track billing, and keep your team aligned — end to end.
+            Manage creator campaigns, track billing, and keep your team aligned — end to end.
           </div>
         </div>
 

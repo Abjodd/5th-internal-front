@@ -14,7 +14,7 @@
  */
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";
-import { UsersAPI, BrandCredentialsAPI } from "../../lib/api";
+import { UsersAPI, BrandCredentialsAPI, ClientsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { PLATFORM_ROLES } from "../../routes/sections";
 import { T } from "../../theme/tokens";
@@ -62,6 +62,11 @@ const Pill = ({ children, color = T.sub }) => (
 );
 
 const roleLabel = id => PLATFORM_ROLES.find(r => r.id === id)?.label || id;
+// Hierarchy for sorting the internal-users table — PLATFORM_ROLES is already
+// declared top-down (Founder → PCM → CM → AM → EA → Accounts), so its order is
+// the source of truth. Unknown roles sort last.
+const ROLE_RANK = Object.fromEntries(PLATFORM_ROLES.map((r, i) => [r.id, i]));
+const roleRank = id => (id in ROLE_RANK ? ROLE_RANK[id] : PLATFORM_ROLES.length);
 
 // ── PASSWORD CELL ────────────────────────────────────────────────────────────
 // The DB stores only hashKey (sha256, for login) + passKey (encrypted copy).
@@ -124,7 +129,7 @@ function PasswordCell({ api, record }) {
 // One modal for both collections: `kind` decides which fields show (role for
 // internal users, brand for portal credentials). `editing` = existing record
 // (password optional = reset) vs null = create (password required).
-function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSave }) {
+function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSave, onCreateBrand }) {
   const isUser = kind === "internal";
   const [form, setForm] = useState({
     username: editing?.username || "",
@@ -132,12 +137,32 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
     title:    editing?.title || "",
     role:     editing?.role || "cm",
     teamId:   editing?.teamId || "",
-    brandId:  editing?.brandId || defaultBrandId || brands[0]?.id || "",
+    brandId:  editing?.brandId || defaultBrandId || "",
     password: "",
   });
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
   const u = (k, v) => { setForm(p => ({ ...p, [k]: v })); setErr(""); };
+
+  // New-brand staging — same pattern as the campaign creation modal: nothing
+  // is written to the backend until the credential is actually submitted, so
+  // abandoning this modal never leaves an orphan brand.
+  const [newBrandName, setNewBrandName] = useState("");
+  const [pendingBrandName, setPendingBrandName] = useState(null);
+  const handleStageBrand = () => {
+    const name = newBrandName.trim();
+    if (!name) return;
+    setErr("");
+    const existing = brands.find(b => b.name.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      u("brandId", existing.id);
+      setPendingBrandName(null);
+    } else {
+      setPendingBrandName(name);
+      u("brandId", "__new__");
+    }
+    setNewBrandName("");
+  };
 
   const submit = async () => {
     if (!form.username.trim()) return setErr("Username (email) is required.");
@@ -146,7 +171,12 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
     if (!isUser && !form.brandId)   return setErr("Select a brand for this credential.");
     setSaving(true);
     try {
-      await onSave(form);
+      let brandId = form.brandId;
+      if (!isUser && brandId === "__new__") {
+        const created = await onCreateBrand(pendingBrandName);
+        brandId = created.id;
+      }
+      await onSave({ ...form, brandId });
       onClose();
     } catch (e) {
       setErr(String(e.message).includes("409") ? "That username already exists." : `Save failed: ${e.message}`);
@@ -196,9 +226,18 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
           ) : (
             <div style={{ marginBottom: 12 }}>
               <Lbl>Brand</Lbl>
-              <select value={form.brandId} onChange={e => u("brandId", e.target.value)} style={{ ...INP, cursor: "pointer" }}>
-                {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              <select value={form.brandId} onChange={e => { u("brandId", e.target.value); if (e.target.value !== "__new__") setPendingBrandName(null); }} style={{ ...INP, cursor: "pointer" }}>
+                <option value="">— Select brand —</option>
+                {brands.slice().sort((a, b) => a.name.localeCompare(b.name)).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                {pendingBrandName && <option value="__new__">{pendingBrandName} (new)</option>}
               </select>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <input value={newBrandName} onChange={e => setNewBrandName(e.target.value)} placeholder="+ Add new brand…" style={{ ...INP, flex: 1 }} />
+                <Btn onClick={handleStageBrand} disabled={!newBrandName.trim()}>Add</Btn>
+              </div>
+              {pendingBrandName && form.brandId === "__new__" && (
+                <div style={{ fontSize: 9.5, color: T.amber, marginTop: 6 }}>"{pendingBrandName}" will be created when you save this credential.</div>
+              )}
             </div>
           )}
           <div style={{ marginBottom: 4 }}>
@@ -252,7 +291,7 @@ function RemoveModal({ record, onClose, onConfirm }) {
 
 // ── PAGE ─────────────────────────────────────────────────────────────────────
 export default function Auth() {
-  const { user, brands = [], brandFilter } = useOutletContext() || {};
+  const { user, brands = [], brandFilter, refreshBrands } = useOutletContext() || {};
   const role = user?.role;
 
   const [tab, setTab] = useState("internal");          // internal | external
@@ -267,7 +306,14 @@ export default function Auth() {
   // Brand Portal tab respects the global brand filter (top bar), same as
   // Campaigns/Billing. Internal users aren't brand-scoped, so no filter there.
   const visibleCreds = brandFilter ? creds.filter(c => c.brandId === brandFilter) : creds;
-  const rows   = tab === "internal" ? users : visibleCreds;
+  // Internal users are grouped by role hierarchy (Founder first, then PCMs, …),
+  // then A–Z within a role. Brand credentials have no role, so they're sorted
+  // by name. The DB id (u3 / bc2) is no longer surfaced — rows are shown with a
+  // plain running number instead (see the "#" column below).
+  const rows = useMemo(() => {
+    if (tab !== "internal") return [...visibleCreds].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    return [...users].sort((a, b) => roleRank(a.role) - roleRank(b.role) || (a.name || "").localeCompare(b.name || ""));
+  }, [tab, users, visibleCreds]);
   const setRows = tab === "internal" ? setUsers : setCreds;
 
   const load = useCallback(() => {
@@ -305,6 +351,17 @@ export default function Auth() {
       setRows(prev => [...prev, created]);
     }
   };
+
+  // Lets "Add brand credential" create a brand new brand inline, instead of
+  // requiring one to already exist from the campaign-creation flow. Same slug
+  // scheme as Campaigns' onCreateBrand; refreshBrands() re-pulls the list so
+  // the top-bar brand filter picks it up right away.
+  const onCreateBrand = useCallback(async (name) => {
+    const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const created = await ClientsAPI.create({ id, name });
+    refreshBrands?.();
+    return { id: created.id, name: created.name };
+  }, [refreshBrands]);
 
   const handleRemove = async () => {
     await api.remove(removing.id);
@@ -372,7 +429,7 @@ export default function Auth() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
-                <th style={thS}>ID</th>
+                <th style={{ ...thS, width: 34, textAlign: "right" }}>#</th>
                 <th style={thS}>Name</th>
                 <th style={thS}>Username</th>
                 <th style={thS}>Password</th>
@@ -382,11 +439,11 @@ export default function Auth() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => {
+              {rows.map((r, i) => {
                 const isSelf = tab === "internal" && r.id === user?.id;
                 return (
                   <tr key={r.id}>
-                    <td style={{ ...tdS, fontFamily: "monospace", fontSize: 10.5, color: T.sub }}>{r.id}</td>
+                    <td style={{ ...tdS, fontSize: 10.5, color: T.sub, textAlign: "right" }}>{i + 1}</td>
                     <td style={{ ...tdS, fontWeight: 500 }}>{r.name}</td>
                     <td style={{ ...tdS, fontFamily: "monospace", fontSize: 10.5 }}>{r.username}</td>
                     <td style={tdS}><PasswordCell api={api} record={r} /></td>
@@ -425,6 +482,7 @@ export default function Auth() {
           defaultBrandId={brandFilter}
           onClose={() => setModal(null)}
           onSave={handleSave}
+          onCreateBrand={onCreateBrand}
         />
       )}
       {removing && (

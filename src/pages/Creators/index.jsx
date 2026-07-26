@@ -1,17 +1,17 @@
 /**
- * 5th Avenue — Influencers (founder-only)
+ * 5th Avenue — Creators (founder-only)
  * ─────────────────────────────────────────────────────────────────
  * Directory of every creator across all campaigns, row by row, with
  * their profile, billing/onboarding details, campaign appearances and
  * generated invoices (PDFs stored in the backend's GridFS bucket).
  *
- * All data comes from GET /api/influencers — the backend aggregates
+ * All data comes from GET /api/creators — the backend aggregates
  * creators across campaigns and attaches invoices, so this page is a
  * pure view over that endpoint (single source of truth).
  */
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";
-import { InfluencersAPI, InvoicePdfAPI } from "../../lib/api";
+import { CreatorsAPI, InvoicePdfAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { fmtCompact } from "../../lib/format";
 import { T } from "../../theme/tokens";
@@ -79,7 +79,7 @@ const panelTitle = {
 };
 
 // ── INVOICES PANEL ───────────────────────────────────────────────────────────
-// One influencer's generated invoices with a local filter — matches invoice
+// One creator's generated invoices with a local filter — matches invoice
 // no, label, or the campaign the invoice belongs to.
 function InvoicesPanel({ invoices, campaigns }) {
   const [invQuery, setInvQuery] = useState("");
@@ -141,7 +141,7 @@ function InvoicesPanel({ invoices, campaigns }) {
 }
 
 // ── EXPANDED ROW ─────────────────────────────────────────────────────────────
-function InfluencerDetail({ inf, canEdit, onEdit }) {
+function CreatorDetail({ inf, canEdit, onEdit }) {
   const pd = inf.personalDetails || {};
   return (
     <div style={{ display: "flex", gap: 12, padding: "14px 14px 16px", flexWrap: "wrap", background: T.raised }}>
@@ -201,50 +201,50 @@ function InfluencerDetail({ inf, canEdit, onEdit }) {
 }
 
 // ── PAGE ─────────────────────────────────────────────────────────────────────
-export default function Influencers() {
+export default function Creators() {
   const { user, brandFilter } = useOutletContext() || {};
   const role = user?.role;
 
-  const [influencers, setInfluencers] = useState([]);
+  const [creators, setCreators] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
   const [query, setQuery]     = useState("");
-  const [expanded, setExpanded] = useState(null); // influencer id
-  const [editTarget, setEditTarget] = useState(null); // influencer being edited (founder only)
+  const [expanded, setExpanded] = useState(null); // creator id
+  const [editTarget, setEditTarget] = useState(null); // creator being edited (founder only)
   const [toast, setToast] = useState(null);
   const showToast = useCallback(msg => { setToast(msg); setTimeout(() => setToast(null), 2800); }, []);
-  const canEdit = can(role, "editInfluencer");
+  const canEdit = can(role, "editCreator");
 
   // Same optimistic-update + toast-on-failure pattern as Campaigns. The modal
   // returns the merged record; aggregate-only keys stay out of the PATCH.
   const saveEdit = useCallback(merged => {
     const { campaigns, invoices, ...patch } = merged;
-    setInfluencers(prev => prev.map(i => (i.id === merged.id ? { ...i, ...patch } : i)));
-    InfluencersAPI.update(merged.id, patch).catch(() => showToast("Save failed — check connection"));
-    showToast("Influencer updated");
+    setCreators(prev => prev.map(i => (i.id === merged.id ? { ...i, ...patch } : i)));
+    CreatorsAPI.update(merged.id, patch).catch(() => showToast("Save failed — check connection"));
+    showToast("Creator updated");
   }, [showToast]);
 
   useEffect(() => {
-    if (!can(role, "seeInfluencers")) return;
+    if (!can(role, "seeCreators")) return;
     setLoading(true);
     setError(null);
-    InfluencersAPI.list(brandFilter)
-      .then(list => setInfluencers(list))
+    CreatorsAPI.list(brandFilter)
+      .then(list => setCreators(list))
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
   }, [role, brandFilter]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return influencers;
-    return influencers.filter(i =>
+    if (!q) return creators;
+    return creators.filter(i =>
       [i.name, i.handle, i.niche, i.state, ...(i.campaigns || []).map(c => c.name)]
         .filter(Boolean).some(v => String(v).toLowerCase().includes(q))
     );
-  }, [influencers, query]);
+  }, [creators, query]);
 
   // Defense in depth — the shell already hides this section from non-founders.
-  if (!can(role, "seeInfluencers")) {
+  if (!can(role, "seeCreators")) {
     return <div style={{ padding: 40, fontSize: 12, color: T.sub }}>This page is restricted to the founder.</div>;
   }
 
@@ -254,7 +254,7 @@ export default function Influencers() {
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 20 }}>
         <div>
           <div style={{ fontFamily: "'Newsreader', serif", fontStyle: "italic", fontSize: 24, fontWeight: 600, color: T.text }}>
-            Influencers
+            Creators
           </div>
           <div style={{ fontSize: 11, color: T.sub, marginTop: 4 }}>
             Every creator across all campaigns — profiles, onboarding details and generated invoices.
@@ -269,15 +269,15 @@ export default function Influencers() {
       </div>
 
       {/* States */}
-      {loading && <div style={{ padding: 40, fontSize: 12, color: T.sub, textAlign: "center" }}>Loading influencers…</div>}
+      {loading && <div style={{ padding: 40, fontSize: 12, color: T.sub, textAlign: "center" }}>Loading creators…</div>}
       {error && !loading && (
         <div style={{ padding: "14px 16px", background: `${T.red}0C`, border: `1px solid ${T.red}30`, borderRadius: T.radiusSm, fontSize: 11.5, color: T.red }}>
-          Could not load influencers from the backend: {error}
+          Could not load creators from the backend: {error}
         </div>
       )}
       {!loading && !error && visible.length === 0 && (
         <div style={{ padding: 40, fontSize: 12, color: T.label, textAlign: "center", fontStyle: "italic" }}>
-          {query ? "No influencers match your search." : "No creators found on any campaign yet."}
+          {query ? "No creators match your search." : "No creators found on any campaign yet."}
         </div>
       )}
 
@@ -351,7 +351,7 @@ export default function Influencers() {
                             transform: open ? "translateY(0)" : "translateY(-6px)",
                             transition: "opacity 0.28s ease 0.06s, transform 0.32s cubic-bezier(0.4,0,0.2,1)",
                           }}>
-                            <InfluencerDetail inf={inf} canEdit={canEdit} onEdit={setEditTarget} />
+                            <CreatorDetail inf={inf} canEdit={canEdit} onEdit={setEditTarget} />
                           </div>
                         </div>
                       </div>

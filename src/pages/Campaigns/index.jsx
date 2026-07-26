@@ -14,10 +14,11 @@
  */
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
+import { motion, AnimatePresence } from "motion/react";
 import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ClientPOsAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
-import { fmtCompact, prettyDate, initials } from "../../lib/format";
+import { fmtCompact, prettyDate, initials, ISO_DATE } from "../../lib/format";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
 
@@ -137,6 +138,27 @@ const AGENCY = {
   name:    "5th Avenue",
 };
 const PLATFORMS = ["Instagram","YouTube","Twitter / X","LinkedIn","Moj","Josh","Snapchat","Other"];
+// Campaign niches — chosen on the Commercial step and used to steer the
+// Generate suggestions towards same/similar creators. NICHE_SIMILAR groups
+// niches that share an audience so "Generate" isn't limited to an exact match
+// (e.g. a Food campaign also surfaces Cooking creators).
+const NICHES = ["Food","Cooking","Fitness","Lifestyle","Beauty","Fashion","Travel","Tech","Gaming","Comedy","Parenting","Finance","Education"];
+const NICHE_SIMILAR = {
+  Food:      ["Food","Cooking"],
+  Cooking:   ["Cooking","Food"],
+  Fitness:   ["Fitness","Lifestyle"],
+  Lifestyle: ["Lifestyle","Fashion","Beauty","Travel"],
+  Beauty:    ["Beauty","Fashion","Lifestyle"],
+  Fashion:   ["Fashion","Beauty","Lifestyle"],
+  Travel:    ["Travel","Lifestyle"],
+  Tech:      ["Tech","Gaming"],
+  Gaming:    ["Gaming","Tech"],
+};
+// Creators whose niche shares an audience with the campaign's chosen niche.
+const nicheMatches = (campNiche, creatorNiche) => {
+  if (!campNiche) return true; // no niche picked → don't filter
+  return (NICHE_SIMILAR[campNiche] || [campNiche]).includes(creatorNiche);
+};
 // Profile auto-fetch per platform. Add an entry here when the backend grows a
 // lookup endpoint for another platform.
 const PROFILE_LOOKUP = {
@@ -243,74 +265,74 @@ const mkCreator = (src={}, fee) => ({
 });
 
 // ── SEED DATA ────────────────────────────────────────────────────────────────
-const INIT_CAMPS = [
-  {
-    id:"c1",name:"Diwali Festive Push",client:"FreshBite Foods",
-    service:"Influencer Marketing",region:"South India",
-    stage:"execution",progress:62,budget:1250000,creatorBudget:750000,numReq:5,
-    start:"Mar 1",end:"Apr 30",amId:"t7",cmId:"t1",eaId:"t3",
-    brief:{objective:"Build festive awareness across South India for FreshBite's new snack range.",
-      audience:"18–35 in TN, KA, KL, TS.",messages:"FreshBite — the festive snack companion.",
-      deliverables:["Reel — Collab","Reel — Non-Collab","Story"],budget:"₹12.5L",timeline:"6 weeks"},
-    briefStatus:"locked",amNote:"",cmNote:"Focus on authentic home-cook aesthetic.",
-    creators:[
-      {...mkCreator(CREATOR_DB[0],85000), status:"locked",   payType:"vendor",     payId:"VND-1042",
-        concept:{status:"approved",fileLink:"https://drive.google.com/file1"},
-        demo:{status:"locked",fileLink:"https://drive.google.com/demo1"},
-        live:{postUrl:"https://instagram.com/p/abc1",postedDate:"Apr 12"},
-        tracking:{views:480000,likes:21000,comments:980,forwards:3200,commentAnalysis:"Very positive. Users tagging friends.",positivityScore:88,lastFetched:"May 2 09:14"}},
-      {...mkCreator(CREATOR_DB[1],180000),status:"negotiating",payType:null,payId:null,
-        concept:{status:"received",fileLink:"https://drive.google.com/file2"},
-        demo:{status:"yet_to_receive",fileLink:null},live:{postUrl:null,postedDate:null},
-        tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
-      {...mkCreator(CREATOR_DB[3],50000), status:"reached_out",payType:null,payId:null,
-        concept:{status:"yet_to_receive",fileLink:null},demo:{status:"yet_to_receive",fileLink:null},
-        live:{postUrl:null,postedDate:null},
-        tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
-    ],
-    genRounds:1,sentToClient:true,
-    internalNotes:"Creator budget ₹7.5L. Keep pricing tight.",
-    timeline:[
-      {date:"Feb 20",event:"Campaign submitted by client",actor:"Client"},
-      {date:"Feb 25",event:"Brief locked by client",actor:"Client"},
-      {date:"Feb 27",event:"CM approved, advance pending",actor:"Priya Nair"},
-      {date:"Mar 2", event:"Advance confirmed",actor:"Accounts"},
-      {date:"Mar 2", event:"Assigned to Arjun Reddy",actor:"Priya Nair"},
-    ],
-  },
-  {
-    id:"c2",name:"Summer Launch Teaser",client:"FreshBite Foods",
-    service:"Influencer Marketing",region:"North India",
-    stage:"draft",progress:8,budget:800000,creatorBudget:500000,numReq:8,
-    start:"Apr 20",end:"Jun 15",amId:"t7",cmId:null,eaId:null,
-    brief:{objective:"Teaser campaign for FreshBite's summer range.",audience:"18–28, college students.",
-      messages:"",deliverables:[],budget:"₹8L",timeline:"Apr 20 – Jun 15"},
-    briefStatus:"draft",amNote:"",cmNote:"",
-    creators:[],genRounds:0,sentToClient:false,
-    internalNotes:"Solid budget — good margin potential.",
-    timeline:[{date:"Apr 18",event:"Campaign submitted",actor:"Client"}],
-  },
-  {
-    id:"c3",name:"Festive Nano Wave",client:"FreshBite Foods",
-    service:"Influencer Marketing",region:"Pan-India",
-    stage:"live",progress:88,budget:320000,creatorBudget:200000,numReq:3,
-    start:"Jan 1",end:"Feb 28",amId:"t7",cmId:"t1",eaId:"t4",
-    brief:{objective:"Nano creator sampling across 10 cities.",audience:"18–30 urban millennials.",
-      messages:"Healthy snacking, redefined.",deliverables:["Reel — Non-Collab","Story"],budget:"₹3.2L",timeline:"8 weeks"},
-    briefStatus:"locked",amNote:"",cmNote:"",
-    creators:[
-      {...mkCreator(CREATOR_DB[5],18000),status:"locked",payType:"net_banking",payId:"9876543210@upi",
-        concept:{status:"locked",fileLink:"#"},demo:{status:"locked",fileLink:"#"},
-        live:{postUrl:"https://instagram.com/p/xyz1",postedDate:"Feb 10"},
-        tracking:{views:420000,likes:18200,comments:840,forwards:1200,commentAnalysis:"Very positive. Strong brand recall.",positivityScore:91,lastFetched:"Apr 28 10:32"}},
-      {...mkCreator(CREATOR_DB[9],8000),status:"locked",payType:"vendor",payId:"VND-2081",
-        concept:{status:"locked",fileLink:"#"},demo:{status:"approved",fileLink:"#"},
-        live:{postUrl:null,postedDate:null},
-        tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
-    ],
-    genRounds:1,sentToClient:true,internalNotes:"Strong results on first creator.",timeline:[],
-  },
-];
+// const INIT_CAMPS = [
+//   {
+//     id:"c1",name:"Diwali Festive Push",client:"FreshBite Foods",
+//     service:"Influencer Marketing",region:"South India",
+//     stage:"execution",progress:62,budget:1250000,creatorBudget:750000,numReq:5,
+//     start:"Mar 1",end:"Apr 30",amId:"t7",cmId:"t1",eaId:"t3",
+//     brief:{objective:"Build festive awareness across South India for FreshBite's new snack range.",
+//       audience:"18–35 in TN, KA, KL, TS.",messages:"FreshBite — the festive snack companion.",
+//       deliverables:["Reel — Collab","Reel — Non-Collab","Story"],budget:"₹12.5L",timeline:"6 weeks"},
+//     briefStatus:"locked",amNote:"",cmNote:"Focus on authentic home-cook aesthetic.",
+//     creators:[
+//       {...mkCreator(CREATOR_DB[0],85000), status:"locked",   payType:"vendor",     payId:"VND-1042",
+//         concept:{status:"approved",fileLink:"https://drive.google.com/file1"},
+//         demo:{status:"locked",fileLink:"https://drive.google.com/demo1"},
+//         live:{postUrl:"https://instagram.com/p/abc1",postedDate:"Apr 12"},
+//         tracking:{views:480000,likes:21000,comments:980,forwards:3200,commentAnalysis:"Very positive. Users tagging friends.",positivityScore:88,lastFetched:"May 2 09:14"}},
+//       {...mkCreator(CREATOR_DB[1],180000),status:"negotiating",payType:null,payId:null,
+//         concept:{status:"received",fileLink:"https://drive.google.com/file2"},
+//         demo:{status:"yet_to_receive",fileLink:null},live:{postUrl:null,postedDate:null},
+//         tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
+//       {...mkCreator(CREATOR_DB[3],50000), status:"reached_out",payType:null,payId:null,
+//         concept:{status:"yet_to_receive",fileLink:null},demo:{status:"yet_to_receive",fileLink:null},
+//         live:{postUrl:null,postedDate:null},
+//         tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
+//     ],
+//     genRounds:1,sentToClient:true,
+//     internalNotes:"Creator budget ₹7.5L. Keep pricing tight.",
+//     timeline:[
+//       {date:"Feb 20",event:"Campaign submitted by client",actor:"Client"},
+//       {date:"Feb 25",event:"Brief locked by client",actor:"Client"},
+//       {date:"Feb 27",event:"CM approved, advance pending",actor:"Priya Nair"},
+//       {date:"Mar 2", event:"Advance confirmed",actor:"Accounts"},
+//       {date:"Mar 2", event:"Assigned to Arjun Reddy",actor:"Priya Nair"},
+//     ],
+//   },
+//   {
+//     id:"c2",name:"Summer Launch Teaser",client:"FreshBite Foods",
+//     service:"Influencer Marketing",region:"North India",
+//     stage:"draft",progress:8,budget:800000,creatorBudget:500000,numReq:8,
+//     start:"Apr 20",end:"Jun 15",amId:"t7",cmId:null,eaId:null,
+//     brief:{objective:"Teaser campaign for FreshBite's summer range.",audience:"18–28, college students.",
+//       messages:"",deliverables:[],budget:"₹8L",timeline:"Apr 20 – Jun 15"},
+//     briefStatus:"draft",amNote:"",cmNote:"",
+//     creators:[],genRounds:0,sentToClient:false,
+//     internalNotes:"Solid budget — good margin potential.",
+//     timeline:[{date:"Apr 18",event:"Campaign submitted",actor:"Client"}],
+//   },
+//   {
+//     id:"c3",name:"Festive Nano Wave",client:"FreshBite Foods",
+//     service:"Influencer Marketing",region:"Pan-India",
+//     stage:"live",progress:88,budget:320000,creatorBudget:200000,numReq:3,
+//     start:"Jan 1",end:"Feb 28",amId:"t7",cmId:"t1",eaId:"t4",
+//     brief:{objective:"Nano creator sampling across 10 cities.",audience:"18–30 urban millennials.",
+//       messages:"Healthy snacking, redefined.",deliverables:["Reel — Non-Collab","Story"],budget:"₹3.2L",timeline:"8 weeks"},
+//     briefStatus:"locked",amNote:"",cmNote:"",
+//     creators:[
+//       {...mkCreator(CREATOR_DB[5],18000),status:"locked",payType:"net_banking",payId:"9876543210@upi",
+//         concept:{status:"locked",fileLink:"#"},demo:{status:"locked",fileLink:"#"},
+//         live:{postUrl:"https://instagram.com/p/xyz1",postedDate:"Feb 10"},
+//         tracking:{views:420000,likes:18200,comments:840,forwards:1200,commentAnalysis:"Very positive. Strong brand recall.",positivityScore:91,lastFetched:"Apr 28 10:32"}},
+//       {...mkCreator(CREATOR_DB[9],8000),status:"locked",payType:"vendor",payId:"VND-2081",
+//         concept:{status:"locked",fileLink:"#"},demo:{status:"approved",fileLink:"#"},
+//         live:{postUrl:null,postedDate:null},
+//         tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
+//     ],
+//     genRounds:1,sentToClient:true,internalNotes:"Strong results on first creator.",timeline:[],
+//   },
+// ];
 
 // ── WORKFLOW ACTION LABELS ───────────────────────────────────────────────────
 // Shared by the confirmation modal and the post-action toast.
@@ -450,6 +472,24 @@ const today   = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 };
+// End-date proximity nudge. Returns null unless the campaign is still running
+// and its ISO end date is within a week (or already past) — a subtle "ending
+// soon" cue on the card + detail header. Completed campaigns never warn.
+const endStatus = (iso, stage) => {
+  if (stage === "completed" || !ISO_DATE.test(iso || "")) return null;
+  const days = Math.round((new Date(`${iso}T00:00:00`) - new Date(`${today()}T00:00:00`)) / 86400000);
+  if (days < 0)   return { tone: T.red,   text: "Ended",           key: "ended"  };
+  if (days === 0) return { tone: T.amber, text: "Ends today",      key: "ending" };
+  if (days <= 7)  return { tone: T.amber, text: `Ending in ${days}d`, key: "ending" };
+  return null;
+};
+// Small inline pill matching the stage-chip styling, used for the end-date nudge.
+// Uses a color dot instead of "!" — reads as a status, not an alarm.
+const EndPill = ({ es, style = {} }) => es ? (
+  <span style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"3px 10px", borderRadius:20, background:`${es.tone}18`, border:`1px solid ${es.tone}45`, fontSize:10.5, fontWeight:700, color:es.tone, fontFamily:SF, whiteSpace:"nowrap", ...style }}>
+    <Dot color={es.tone} size={5}/>{es.text}
+  </span>
+) : null;
 const needsLnk= s => ["received","rework"].includes(s);
 // External links pasted without a protocol ("instagram.com/p/…") would resolve
 // relative to the SPA — the new tab lands on our router with an empty
@@ -483,7 +523,7 @@ function Btn({children,onClick,variant="ghost",disabled,style={}}){
 const INP={width:"100%",padding:"9px 12px",borderRadius:9,background:"rgba(0,0,0,0.03)",border:"1px solid rgba(0,0,0,0.1)",color:"#1D1D1F",fontSize:12,fontFamily:SF,outline:"none",resize:"vertical",transition:"border 0.15s"};
 
 // ── PIPELINE WIDGETS ─────────────────────────────────────────────────────────
-const MiniPipe=({stage})=>{const pct=Math.round((plIdx(stage)/(PIPELINE.length-1))*100),col=T.sc[stage]||T.sub;return <div style={{height:2,background:"rgba(0,0,0,0.07)",borderRadius:1,marginTop:9}}><div style={{height:2,borderRadius:1,background:col,width:`${pct}%`,transition:"width 0.5s ease"}}/></div>;};
+const MiniPipe=({stage})=>{const pct=Math.round((plIdx(stage)/(PIPELINE.length-1))*100),col=T.sc[stage]||T.sub;return <div style={{height:2,background:"rgba(0,0,0,0.07)",borderRadius:1,marginTop:9}}><motion.div style={{height:2,borderRadius:1,background:col}} animate={{width:`${pct}%`}} transition={{type:"spring",stiffness:220,damping:26}}/></div>;};
 function FullPipe({stage}){
   const idx=plIdx(stage),col=T.sc[stage]||T.sub,GREEN="#34C759";
   // Top/bottom padding keeps the pulse ring and hover lift inside the
@@ -492,19 +532,18 @@ function FullPipe({stage}){
     const done=i<idx,cur=i===idx;
     return(<div key={p.id} style={{display:"flex",alignItems:"flex-start"}}>
       <div className="pipe-node" title={`Stage ${i+1} of ${PIPELINE.length} — ${p.label}${done?" · complete":cur?" · current":""}`} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,minWidth:72}}>
-        <div style={{width:14,height:14,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",
-          background:cur?col:done?GREEN:"#FFFFFF",
+        <motion.div style={{width:14,height:14,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",
           border:done||cur?"none":"1.5px solid rgba(0,0,0,0.14)",
           animation:cur?"pipePulse 2s ease-out infinite":"none",
-          "--pulse-col":`${col}50`,
-          transition:"background 0.3s"}}>
+          "--pulse-col":`${col}50`}}
+          animate={{background:cur?col:done?GREEN:"#FFFFFF"}} transition={{duration:0.3}}>
           {done&&<span style={{color:"#FFF",fontSize:8,fontWeight:700,lineHeight:1}}>✓</span>}
           {cur&&<span style={{width:4,height:4,borderRadius:"50%",background:"#FFF"}}/>}
-        </div>
+        </motion.div>
         <span style={{fontSize:7.5,textAlign:"center",whiteSpace:"nowrap",color:cur?col:done?"#1D1D1F":"rgba(0,0,0,0.30)",fontWeight:cur?700:done?500:400,fontFamily:SF,letterSpacing:"0.01em"}}>{p.label}</span>
         {cur&&<span style={{fontSize:6.5,fontWeight:700,color:col,background:`${col}14`,borderRadius:4,padding:"1px 5px",textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:SF,marginTop:-2}}>Now</span>}
       </div>
-      {i<PIPELINE.length-1&&<div style={{width:18,height:2,borderRadius:1,background:i<idx?GREEN:"rgba(0,0,0,0.08)",marginTop:6,flexShrink:0,transition:"background 0.3s"}}/>}
+      {i<PIPELINE.length-1&&<motion.div style={{width:18,height:2,borderRadius:1,marginTop:6,flexShrink:0}} animate={{background:i<idx?GREEN:"rgba(0,0,0,0.08)"}} transition={{duration:0.3}}/>}
     </div>);
   })}</div></div>);
 }
@@ -512,25 +551,87 @@ function FullPipe({stage}){
 // ── DELIVERABLE MULTISELECT ───────────────────────────────────────────────────
 function DelvSelect({value=[],onChange}){const t=d=>onChange(value.includes(d)?value.filter(x=>x!==d):[...value,d]);return(<div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:2}}>{IM_DELIVERABLES.map(d=>{const on=value.includes(d);return <button key={d} onClick={()=>t(d)} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{d}</button>;})}</div>);}
 
-// ── CAMPAIGN CARD ────────────────────────────────────────────────────────────
-function CampCard({camp,selected,onClick,role}){
+// ── CAMPAIGN CARD (grid tile) ─────────────────────────────────────────────────
+function CampCard({camp,onClick,role}){
   const col=T.sc[camp.stage]||T.sub,pl=PIPELINE.find(p=>p.id===camp.stage)||PIPELINE[0];
   const am=getM(camp.amId),cm=getM(camp.cmId),ea=getM(camp.eaId);
-  const [hovered,setHovered]=useState(false);
+  const es=endStatus(camp.end,camp.stage);
   return(
-    <div onClick={onClick} onMouseEnter={()=>setHovered(true)} onMouseLeave={()=>setHovered(false)} style={{padding:"14px 16px",borderRadius:12,cursor:"pointer",marginBottom:4,background:selected?"#FFFFFF":hovered?"rgba(255,255,255,0.65)":"transparent",border:`1px solid ${selected?"rgba(0,0,0,0.1)":"transparent"}`,boxShadow:selected?"0 2px 12px rgba(0,0,0,0.08)":"none",transition:"all 0.15s"}}>
-      {selected&&<div style={{height:2,background:col,borderRadius:1,marginBottom:10,width:24}}/>}
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:3}}>
-        <span style={{fontSize:12.5,fontWeight:600,color:"#1D1D1F",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,letterSpacing:"-0.02em",fontFamily:SF}}>{camp.name}</span>
-        <span style={{fontSize:9.5,color:"#6E6E73",marginLeft:8,flexShrink:0,fontFamily:SF}}>{camp.progress}%</span>
+    <motion.div
+      layoutId={`card-${camp.id}`}
+      layout
+      initial={{opacity:0,y:10,scale:0.98}}
+      animate={{opacity:1,y:0,scale:1}}
+      exit={{opacity:0,scale:0.96,transition:{duration:0.12}}}
+      whileHover={{y:-3,boxShadow:"0 10px 28px rgba(0,0,0,0.10)"}}
+      whileTap={{scale:0.985}}
+      transition={{type:"spring",stiffness:340,damping:30}}
+      onClick={onClick}
+      style={{padding:"16px 18px 14px",borderRadius:16,cursor:"pointer",background:"#FFFFFF",border:"1px solid rgba(0,0,0,0.07)",boxShadow:"0 1px 2px rgba(0,0,0,0.04)",overflow:"hidden",position:"relative"}}>
+      <div style={{position:"absolute",top:0,left:0,right:0,height:3,background:col}}/>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4,marginTop:2}}>
+        <span style={{fontSize:14,fontWeight:600,color:"#1D1D1F",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,letterSpacing:"-0.02em",fontFamily:SF}}>{camp.name}</span>
+        <span style={{fontSize:10,color:"#6E6E73",marginLeft:8,flexShrink:0,fontFamily:SF}}>{camp.progress}%</span>
       </div>
-      <div style={{fontSize:11,color:"#6E6E73",marginBottom:8,fontFamily:SF}}>{camp.client}{camp.region?` · ${camp.region}`:""}</div>
-      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
-        <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:20,background:`${col}14`,border:`1px solid ${col}28`,fontSize:9.5,fontWeight:500,color:col,fontFamily:SF}}>{pl.label}</span>
-        {canFin(role)&&<span style={{marginLeft:"auto",fontSize:11,color:"#6E6E73",fontFamily:SF,fontWeight:500}}>{fmtINR(camp.budget)}</span>}
+      <div style={{fontSize:11.5,color:"#6E6E73",marginBottom:12,fontFamily:SF}}>{camp.client}{camp.region?` · ${camp.region}`:""}</div>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
+        <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 9px",borderRadius:20,background:`${col}14`,border:`1px solid ${col}28`,fontSize:10,fontWeight:500,color:col,fontFamily:SF}}>{pl.label}</span>
+        <EndPill es={es}/>
+        {canFin(role)&&<span style={{marginLeft:"auto",fontSize:11.5,color:"#1D1D1F",fontFamily:SF,fontWeight:600}}>{fmtINR(camp.budget)}</span>}
       </div>
       <MiniPipe stage={camp.stage}/>
-      {(am||cm||ea)&&<div style={{display:"flex",gap:6,marginTop:9,alignItems:"center"}}>{[{m:am,l:"AM"},{m:cm,l:"CM"},{m:ea,l:"EA"}].filter(x=>x.m).map(({m,l})=><div key={l} style={{display:"flex",alignItems:"center",gap:4}}><Av init={m.avatar} size={16}/><span style={{fontSize:8.5,color:"#6E6E73",fontFamily:SF}}>{l}</span></div>)}</div>}
+      {(am||cm||ea)&&<div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>{[{m:am,l:"AM"},{m:cm,l:"CM"},{m:ea,l:"EA"}].filter(x=>x.m).map(({m,l})=><div key={l} style={{display:"flex",alignItems:"center",gap:4}}><Av init={m.avatar} size={18}/><span style={{fontSize:9,color:"#6E6E73",fontFamily:SF}}>{l}</span></div>)}</div>}
+    </motion.div>
+  );
+}
+
+// ── CAMPAIGN GRID ─────────────────────────────────────────────────────────────
+// Groups the already-filtered `visible` list by brand (same grouping rule the
+// old sidebar used) and lays each group out as a responsive card grid.
+function CampaignGrid({campaigns,role,onSelect,brandName}){
+  if(campaigns.length===0){
+    return <div style={{padding:"64px 16px",textAlign:"center",color:"#86868B",fontSize:13,fontFamily:SF}}>No campaigns match</div>;
+  }
+  const groups={};
+  campaigns.forEach(c=>{
+    const label=brandName(c.brandId)||"Unassigned";
+    (groups[label]=groups[label]||[]).push(c);
+  });
+  const labels=Object.keys(groups).sort((a,b)=>a==="Unassigned"?1:b==="Unassigned"?-1:a.localeCompare(b));
+  return(
+    <div style={{padding:"20px 28px 40px"}}>
+      {labels.map(label=>(
+        <div key={label} style={{marginBottom:28}}>
+          <div style={{padding:"0 0 10px",fontSize:10.5,fontWeight:700,color:"#86868B",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:SF}}>
+            {label} · {groups[label].length}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
+            <AnimatePresence mode="popLayout">
+              {groups[label].map(c=>(
+                <CampCard key={c.id} camp={c} role={role} onClick={()=>onSelect(c.id)}/>
+              ))}
+            </AnimatePresence>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── FILTER TABS (sliding pill indicator) ──────────────────────────────────────
+const STAGE_FILTERS=[["all","All"],["intake","Intake"],["planning","Plan"],["execution","Exec"],["delivery","Done"],["ended","Ended"]];
+function FilterTabs({value,onChange}){
+  return(
+    <div style={{display:"flex",background:"rgba(0,0,0,0.04)",borderRadius:8,padding:2,gap:1}}>
+      {STAGE_FILTERS.map(([id,lbl])=>{
+        const on=value===id;
+        return(
+          <button key={id} onClick={()=>onChange(id)} style={{position:"relative",padding:"5px 10px",borderRadius:6,fontSize:10.5,fontWeight:on?600:400,background:"transparent",cursor:"pointer",fontFamily:SF,border:"none",color:on?"#1D1D1F":"#6E6E73",transition:"color 0.15s"}}>
+            {on&&<motion.div layoutId="filterPill" style={{position:"absolute",inset:0,background:"#FFFFFF",borderRadius:6,boxShadow:"0 1px 3px rgba(0,0,0,0.1)",zIndex:0}} transition={{type:"spring",stiffness:500,damping:38}}/>}
+            <span style={{position:"relative",zIndex:1}}>{lbl}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -543,8 +644,8 @@ function RemoveModal({creator,onConfirm,onCancel}){const [reason,setReason]=useS
 // campaign disappears from every list but stays recoverable in the DB.
 function DeleteCampaignModal({camp,onConfirm,onCancel}){
   return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <div onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
-    <div style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
       <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Delete Campaign</div>
       <div style={{fontSize:11,color:T.sub,marginBottom:16}}>
         Delete <strong style={{color:T.text}}>{camp?.name}</strong> ({camp?.client})? It will be removed from all views. Recovery requires a database restore.
@@ -554,7 +655,7 @@ function DeleteCampaignModal({camp,onConfirm,onCancel}){
         <div style={{flex:1}}/>
         <Btn variant="danger" onClick={onConfirm}>Delete campaign</Btn>
       </div>
-    </div>
+    </motion.div>
   </div>);
 }
 
@@ -563,8 +664,8 @@ function DeleteCampaignModal({camp,onConfirm,onCancel}){
 // pipeline stage — changes are only applied (and synced) after confirmation.
 function ConfirmActionModal({camp,label,onConfirm,onCancel}){
   return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <div onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
-    <div style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
       <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Confirm stage change</div>
       <div style={{fontSize:11,color:T.sub,lineHeight:1.6,marginBottom:16}}>
         <strong style={{color:T.text}}>{label}</strong> — this moves <strong style={{color:T.text}}>{camp?.name}</strong> to a different pipeline stage and is logged on the campaign timeline. Continue?
@@ -574,7 +675,7 @@ function ConfirmActionModal({camp,label,onConfirm,onCancel}){
         <div style={{flex:1}}/>
         <Btn variant="primary" onClick={onConfirm}>Yes, confirm</Btn>
       </div>
-    </div>
+    </motion.div>
   </div>);
 }
 
@@ -582,7 +683,7 @@ function ConfirmActionModal({camp,label,onConfirm,onCancel}){
 // Doubles as the "Edit Creator" form (PERMS.editCreatorDetails): pass `editing` (an existing
 // creator object) to prefill every field; onAdd then receives the merged
 // creator (same _id, status/tracking preserved) instead of a new one.
-// Exported so the Influencers directory reuses it as its founder edit form.
+// Exported so the Creators directory reuses it as its founder edit form.
 export function AddCreatorModal({onAdd,onClose,editing=null}){
   const pd0=editing?.personalDetails||{};
   const [f,setF]=useState({
@@ -973,7 +1074,12 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const canEdit=["ea","cm","am","pcm","founder"].includes(role);
   const sync=next=>{setCreators(next);onUpdateCreators(next);};
   const patch=(id,obj)=>sync(creators.map(c=>c._id===id?{...c,...obj}:c));
-  const generate=()=>{if(flagged||generating)return;setGenerating(true);setTimeout(()=>{const taken=new Set(creators.map(c=>c.dbId).filter(Boolean));const pool=CREATOR_DB.filter(c=>!taken.has(c.id)).slice(0,required*2).map(c=>mkCreator(c));setSuggested(pool);setGenRounds(r=>r+1);setGenerating(false);},900);};
+  const generate=()=>{if(flagged||generating)return;setGenerating(true);setTimeout(()=>{const taken=new Set(creators.map(c=>c.dbId).filter(Boolean));
+    // Restrict suggestions to the campaign's niche (same/similar). If nothing
+    // in the DB matches, fall back to the full pool so Generate is never empty.
+    const inNiche=CREATOR_DB.filter(c=>!taken.has(c.id)&&nicheMatches(camp.niche,c.niche));
+    const base=inNiche.length?inNiche:CREATOR_DB.filter(c=>!taken.has(c.id));
+    const pool=base.slice(0,required*2).map(c=>mkCreator(c));setSuggested(pool);setGenRounds(r=>r+1);setGenerating(false);},900);};
   const confirmRemove=(reason,note)=>{API.removeCreator(camp.id,removeTarget._id,reason,note);sync(creators.filter(c=>c._id!==removeTarget._id));setRemoveTarget(null);};
   const addFromSugg=cr=>{if(creators.length>=required)return;sync([...creators,cr]);setSuggested(p=>p.filter(c=>c._id!==cr._id));};
   const thS={fontSize:9,fontWeight:600,color:T.label,textTransform:"uppercase",letterSpacing:"0.07em",padding:"8px 10px",whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`,textAlign:"left",background:T.raised};
@@ -1255,22 +1361,32 @@ function WorkflowActions({camp, role, onAction}) {
 }
 
 // ── DETAIL ───────────────────────────────────────────────────────────────────
-function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogTimeline}){
+function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogTimeline,onBack,onPrev,onNext,hasPrev,hasNext}){
   const [tab,setTab]=useState("brief");
   const [confirmDelete,setConfirmDelete]=useState(false);
   // Selecting a different campaign resets the panel to Brief — the tab chosen
   // on one campaign shouldn't leak onto the next.
   useEffect(()=>{setTab("brief");setConfirmDelete(false);},[camp.id]);
   const stCol=T.sc[camp.stage]||T.sub,pl=PIPELINE.find(p=>p.id===camp.stage)||PIPELINE[0];
+  const es=endStatus(camp.end,camp.stage);
   const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},{id:"timeline",label:"Timeline"},...(canFin(role)?[{id:"financials",label:"Financials"}]:[])];
-  return(<div style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7"}}>
-    {/* Thin color accent top border */}
-    <div style={{height:2,background:stCol,flexShrink:0}}/>
-    <div style={{padding:"22px 28px 16px",background:"#FFFFFF",flexShrink:0,borderBottom:"1px solid rgba(0,0,0,0.07)"}}>
+  const navBtn={display:"flex",alignItems:"center",gap:4,background:"transparent",border:"none",cursor:"pointer",fontSize:11.5,fontWeight:500,color:"#6E6E73",fontFamily:SF,padding:"5px 8px",borderRadius:6};
+  return(<motion.div initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-6}} transition={{duration:0.22,ease:"easeOut"}} style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7"}}>
+    {/* Thin color accent top border — crossfades between campaigns of different stages */}
+    <motion.div style={{height:2,flexShrink:0}} animate={{backgroundColor:stCol}} transition={{duration:0.3}}/>
+    {/* Drill-in nav: back to grid + step through the filtered list */}
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 24px 0",flexShrink:0,background:"#FFFFFF"}}>
+      <button onClick={onBack} style={navBtn}>← Campaigns</button>
+      <div style={{display:"flex",alignItems:"center",gap:2}}>
+        <button onClick={onPrev} disabled={!hasPrev} style={{...navBtn,opacity:hasPrev?1:0.3,cursor:hasPrev?"pointer":"default"}}>‹ Prev</button>
+        <button onClick={onNext} disabled={!hasNext} style={{...navBtn,opacity:hasNext?1:0.3,cursor:hasNext?"pointer":"default"}}>Next ›</button>
+      </div>
+    </div>
+    <div style={{padding:"14px 28px 16px",background:"#FFFFFF",flexShrink:0,borderBottom:"1px solid rgba(0,0,0,0.07)"}}>
       <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8}}>
         <div style={{flex:1,minWidth:0}}>
           <h2 style={{fontFamily:"'Newsreader',serif",fontSize:24,fontWeight:600,color:"#1D1D1F",margin:"0 0 4px",fontStyle:"italic",letterSpacing:"-0.02em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{camp.name}</h2>
-          <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF}}>{camp.client} · {camp.service} · {camp.region} · {prettyDate(camp.start)}–{prettyDate(camp.end)}{canFin(role)&&<span style={{marginLeft:8,fontWeight:600,color:"#1D1D1F"}}>{fmtINR(camp.budget)}</span>}</div>
+          <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF,display:"flex",alignItems:"center",flexWrap:"wrap",gap:8}}><span>{camp.client} · {camp.service} · {camp.region} · {prettyDate(camp.start)}–{prettyDate(camp.end)}{canFin(role)&&<span style={{marginLeft:8,fontWeight:600,color:"#1D1D1F"}}>{fmtINR(camp.budget)}</span>}</span><EndPill es={es}/></div>
         </div>
         <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,marginLeft:16}}>
           <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:`${stCol}14`,border:`1px solid ${stCol}28`,fontSize:10.5,fontWeight:600,color:stCol,fontFamily:SF}}>{pl.label}</span>
@@ -1278,15 +1394,20 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
           {can(role,"deleteCampaign")&&<Btn variant="danger" onClick={()=>setConfirmDelete(true)} style={{fontSize:10,padding:"4px 10px"}}>Delete</Btn>}
         </div>
       </div>
-      {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
+      <AnimatePresence>
+        {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
+      </AnimatePresence>
       <div style={{fontSize:10.5,color:"#6E6E73",marginBottom:12,fontFamily:SF,fontStyle:"italic"}}>{STAGE_HINT[camp.stage]}</div>
       <WorkflowActions camp={camp} role={role} onAction={onAction}/>
       <FullPipe stage={camp.stage}/>
     </div>
-    {/* Tab strip */}
+    {/* Tab strip — sliding indicator shared across tab switches AND campaign switches */}
     <div style={{display:"flex",padding:"0 28px",background:"#FFFFFF",borderBottom:"1px solid rgba(0,0,0,0.07)",flexShrink:0}}>
       {tabs.map(t=>(
-        <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"11px 0",marginRight:22,background:"transparent",border:"none",borderBottom:`2px solid ${tab===t.id?stCol:"transparent"}`,color:tab===t.id?"#1D1D1F":"#6E6E73",fontSize:12,cursor:"pointer",fontFamily:SF,fontWeight:tab===t.id?600:400,marginBottom:-1,transition:"all 0.15s",letterSpacing:"-0.01em"}}>{t.label}</button>
+        <button key={t.id} onClick={()=>setTab(t.id)} style={{position:"relative",padding:"11px 0",marginRight:22,background:"transparent",border:"none",color:tab===t.id?"#1D1D1F":"#6E6E73",fontSize:12,cursor:"pointer",fontFamily:SF,fontWeight:tab===t.id?600:400,marginBottom:-1,transition:"color 0.15s",letterSpacing:"-0.01em"}}>
+          {t.label}
+          {tab===t.id&&<motion.div layoutId="detailTabIndicator" style={{position:"absolute",left:0,right:0,bottom:-1,height:2,borderRadius:1,background:stCol}} transition={{type:"spring",stiffness:500,damping:40}}/>}
+        </button>
       ))}
     </div>
     <div style={{flex:1,overflowY:"auto",padding:"24px 28px",background:"#F5F5F7"}}>
@@ -1297,13 +1418,13 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
       {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
       {tab==="financials"   &&canFin(role)&&<TabFinancials camp={camp} role={role}/>}
     </div>
-  </div>);
+  </motion.div>);
 }
 
 // ── CREATE MODAL ─────────────────────────────────────────────────────────────
 function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
   const [step,setStep]=useState(0);
-  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",budget:"",numCreators:5,objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
+  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",niche:"",budget:"",numCreators:5,objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
   const [newBrandName,setNewBrandName]=useState("");
   // Staged only — nothing is written to the backend until the campaign is
   // actually submitted, so abandoning this modal never leaves an orphan brand.
@@ -1351,8 +1472,8 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
     }
   };
   // Backdrop is intentionally not clickable — the modal only closes via ✕
-  return(<div style={{position:"fixed",inset:0,zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(6px)"}}/>
-    <div style={{position:"relative",width:"min(500px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
+  return(<div style={{position:"fixed",inset:0,zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}><motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(6px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(500px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
       <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}><div><div style={{fontFamily:"'Newsreader',serif",fontSize:18,color:T.text,fontStyle:"italic",marginBottom:2}}>New Campaign</div><Lbl>{STEPS[step]} — {step+1} of {STEPS.length}</Lbl></div><button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button></div>
       <div style={{height:1.5,background:T.mute}}><div style={{height:1.5,background:T.accent,width:`${((step+1)/STEPS.length)*100}%`,transition:"width 0.25s"}}/></div>
       <div style={{padding:"18px 20px",overflowY:"auto",flex:1}}>
@@ -1378,6 +1499,14 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
           <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Total budget (₹) *</Lbl><MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="e.g. 12,50,000" style={{...INP,resize:"none"}}/></div>
           <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Creators required *</Lbl><input type="number" min={1} value={f.numCreators} onChange={e=>u("numCreators",e.target.value)} placeholder="5" style={{...INP,resize:"none"}}/></div>
           <div style={{marginBottom:14}}>
+            <Lbl style={{display:"block",marginBottom:5}}>Niche</Lbl>
+            <select value={f.niche} onChange={e=>u("niche",e.target.value)} style={{...INP,resize:"none",cursor:"pointer"}}>
+              <option value="">— Any niche —</option>
+              {NICHES.map(n=><option key={n} value={n}>{n}</option>)}
+            </select>
+            <div style={{fontSize:9,color:T.sub,marginTop:4}}>Steers Generate towards same/similar creators.</div>
+          </div>
+          <div style={{marginBottom:14}}>
             <Lbl style={{display:"block",marginBottom:5}}>Timeline *</Lbl>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
               <div><Lbl style={{display:"block",marginBottom:4,fontSize:8.5}}>Start</Lbl><DateInput value={f.timelineStart} onChange={v=>u("timelineStart",v)} max={f.timelineEnd||undefined} placeholder="Start date" style={{...INP,resize:"none"}}/></div>
@@ -1390,7 +1519,7 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
         {step===3&&<div><Lbl color={T.amber} style={{display:"block",marginBottom:5}}>Internal notes — never visible to client</Lbl><textarea value={f.internalNotes} onChange={e=>u("internalNotes",e.target.value)} placeholder="Margin targets, context…" style={{...INP,minHeight:100,borderColor:`${T.amber}30`}}/></div>}
       </div>
       <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>{step>0&&<Btn variant="ghost" onClick={()=>setStep(s=>s-1)}>← Back</Btn>}<div style={{flex:1}}/>{step<STEPS.length-1?<Btn variant="primary" onClick={()=>setStep(s=>s+1)} disabled={!ok}>Next</Btn>:<Btn variant="primary" onClick={handleSubmit} disabled={submitting||!allOk}>{submitting?"Creating…":"Create campaign"}</Btn>}</div>
-    </div>
+    </motion.div>
   </div>);
 }
 
@@ -1429,7 +1558,7 @@ export default function InternalCampaigns(){
       .then(users=>{ const dir=teamFromUsers(users); if(dir.length){ TEAM_DIR=dir; setTeamLoaded(true); } })
       .catch(()=>{});
   },[]);
-  const [selectedId,setSelId]=useState("c1");
+  const [selectedId,setSelId]=useState(null);
   const [search,setSearch]=useState("");
   const [stageFilter,setStageF]=useState("all");
   const [showCreate,setCreate]=useState(false);
@@ -1530,7 +1659,7 @@ export default function InternalCampaigns(){
     const budget = parseInt(f.budget)||0;
     const c={
       id:campId, name:f.name, client:brandName(f.brandId)||"", brandId:f.brandId, service:f.service,
-      region:f.region||"TBD", stage:"draft", progress:0,
+      region:f.region||"TBD", niche:f.niche||"", stage:"draft", progress:0,
       budget, creatorBudget:Math.round(budget*0.6),
       numReq:parseInt(f.numCreators)||5, start:f.timelineStart||today(), end:f.timelineEnd||"TBD",
       createdBy:currentUser.teamId,
@@ -1562,96 +1691,80 @@ export default function InternalCampaigns(){
     }
     setCampaigns(p=>[c,...p]);setSelId(c.id);setCreate(false);showToast("Campaign created");
   },[showToast,role,currentUser,brandName]);
-  const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(brandFilter&&c.brandId!==brandFilter)return false;if(stageFilter!=="all"){const g={intake:["draft","creator_shortlist","po_raised"],planning:["advance_received","execution","brief_sent"],execution:["concept_submitted","concept_approved","production"],delivery:["video_submitted","internal_review","client_approved","live","creator_paid","reporting","completed"]};if(!g[stageFilter]?.includes(c.stage))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search,brandFilter]);
+  const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(brandFilter&&c.brandId!==brandFilter)return false;if(stageFilter==="ended"){if(endStatus(c.end,c.stage)?.key!=="ended")return false;}else if(stageFilter!=="all"){const g={intake:["draft","creator_shortlist","po_raised"],planning:["advance_received","execution","brief_sent"],execution:["concept_submitted","concept_approved","production"],delivery:["video_submitted","internal_review","client_approved","live","creator_paid","reporting","completed"]};if(!g[stageFilter]?.includes(c.stage))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search,brandFilter]);
   // Selection must respect the active filters — resolve against `visible`, not
   // `campaigns`, or the detail panel (and its Creators tab) keeps showing a
   // campaign from another brand after the brand filter changes.
   const selected=visible.find(c=>c.id===selectedId)||null;
+  // Grid-first drill-in: a selection only ever gets *cleared* (back to the
+  // grid) when it drops out of the active filters — it's never replaced with
+  // another campaign automatically, since that'd be jarring in a full
+  // drill-in view (contrast with the old sidebar, where auto-picking a
+  // fallback made sense because the grid stayed visible alongside it).
   useEffect(()=>{
-    if(!loading&&!visible.some(c=>c.id===selectedId)) setSelId(visible[0]?.id??null);
+    if(!loading&&selectedId&&!visible.some(c=>c.id===selectedId)) setSelId(null);
   },[loading,visible,selectedId]);
+  const selIndex=selected?visible.findIndex(c=>c.id===selectedId):-1;
+  const hasPrev=selIndex>0, hasNext=selIndex>=0&&selIndex<visible.length-1;
+  const goPrev=useCallback(()=>{if(selIndex>0)setSelId(visible[selIndex-1].id);},[selIndex,visible]);
+  const goNext=useCallback(()=>{if(selIndex>=0&&selIndex<visible.length-1)setSelId(visible[selIndex+1].id);},[selIndex,visible]);
   const needsAttn=visible.filter(c=>["draft","po_raised","concept_submitted","video_submitted"].includes(c.stage)).length;
   if(loading)return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",background:"#F5F5F7",fontFamily:SF,fontSize:13,color:"#6E6E73"}}>Loading campaigns…</div>);
   if(loadError)return(<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",background:"#F5F5F7",fontFamily:SF,fontSize:13,gap:8,color:"#6E6E73"}}><div>Couldn't reach the campaigns API.</div><div style={{fontSize:11,color:"#86868B"}}>{loadError}</div></div>);
   return(<div style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7",fontFamily:SF,color:"#1D1D1F",overflow:"hidden"}}>
     {/* Toast */}
     {toast&&<div style={{position:"fixed",bottom:24,right:24,zIndex:9999,padding:"11px 18px",background:"rgba(29,29,31,0.92)",backdropFilter:"blur(16px)",borderRadius:12,fontSize:12,color:"#FFFFFF",fontFamily:SF,boxShadow:"0 8px 32px rgba(0,0,0,0.24)",letterSpacing:"-0.01em"}}>{toast}</div>}
-    {/* Header */}
-    <div style={{padding:"16px 20px 14px",borderBottom:"1px solid rgba(0,0,0,0.07)",flexShrink:0,background:"#FFFFFF"}}>
-      <div style={{display:"flex",alignItems:"center",marginBottom:14}}>
-        <div>
-          <h1 style={{fontFamily:"'Newsreader',serif",fontSize:20,fontWeight:600,color:"#1D1D1F",margin:0,fontStyle:"italic",letterSpacing:"-0.02em"}}>IM Campaigns</h1>
-          <div style={{fontSize:10.5,color:"#86868B",fontFamily:SF,marginTop:2}}>5th Avenue · Influencer Marketing</div>
-        </div>
-        <div style={{flex:1}}/>
-        {canCreate(role)&&<Btn variant="primary" onClick={()=>setCreate(true)} style={{padding:"8px 16px",fontSize:12}}>+ New</Btn>}
-      </div>
-      {/* Stats row */}
-      <div style={{display:"flex",gap:0,marginBottom:14,background:"rgba(0,0,0,0.03)",borderRadius:10,padding:"2px",border:"1px solid rgba(0,0,0,0.06)"}}>
-        {[{l:"All",v:visible.length},{l:"Active",v:visible.filter(c=>!["completed","draft"].includes(c.stage)).length},{l:"Live",v:visible.filter(c=>c.stage==="live").length},{l:"Attention",v:needsAttn}].map((s,i)=>(
-          <div key={s.l} style={{flex:1,padding:"8px 12px",textAlign:"center",borderRight:i<3?"1px solid rgba(0,0,0,0.06)":"none"}}>
-            <div style={{fontSize:18,fontWeight:700,color:s.l==="Attention"&&needsAttn>0?T.amber:"#1D1D1F",letterSpacing:"-0.03em",lineHeight:1,fontFamily:SF}}>{s.v}</div>
-            <div style={{fontSize:9.5,color:"#86868B",marginTop:2,fontFamily:SF}}>{s.l}</div>
-          </div>
-        ))}
-      </div>
-      {/* Search + filters */}
-      <div style={{display:"flex",gap:6,alignItems:"center"}}>
-        <div style={{position:"relative",flex:1,maxWidth:200}}>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search…" style={{width:"100%",padding:"7px 10px 7px 28px",borderRadius:8,background:"rgba(0,0,0,0.04)",border:"1px solid rgba(0,0,0,0.08)",color:"#1D1D1F",fontSize:11.5,fontFamily:SF,outline:"none",boxSizing:"border-box"}}/>
-          <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",fontSize:12,color:"#86868B",pointerEvents:"none"}}>⌕</span>
-        </div>
-        <div style={{display:"flex",background:"rgba(0,0,0,0.04)",borderRadius:8,padding:2,gap:1}}>
-          {[["all","All"],["intake","Intake"],["planning","Plan"],["execution","Exec"],["delivery","Done"]].map(([id,lbl])=>(
-            <button key={id} onClick={()=>setStageF(id)} style={{padding:"5px 10px",borderRadius:6,fontSize:10.5,fontWeight:stageFilter===id?600:400,background:stageFilter===id?"#FFFFFF":"transparent",cursor:"pointer",fontFamily:SF,border:"none",color:stageFilter===id?"#1D1D1F":"#6E6E73",boxShadow:stageFilter===id?"0 1px 3px rgba(0,0,0,0.1)":"none",transition:"all 0.12s"}}>{lbl}</button>
-          ))}
-        </div>
-      </div>
-    </div>
-    {/* Body */}
-    <div style={{display:"flex",flex:1,minHeight:0}}>
-      {/* Sidebar */}
-      <div style={{width:290,flexShrink:0,borderRight:"1px solid rgba(0,0,0,0.07)",overflowY:"auto",padding:"8px 8px",background:"#FAFAFA"}}>
-        {visible.length===0
-          ? <div style={{padding:"48px 16px",textAlign:"center",color:"#86868B",fontSize:12,fontFamily:SF}}>No campaigns match</div>
-          : (() => {
-              const groups = {};
-              visible.forEach(c => {
-                const label = brandName(c.brandId) || "Unassigned";
-                (groups[label] = groups[label] || []).push(c);
-              });
-              const labels = Object.keys(groups).sort((a,b) =>
-                a==="Unassigned" ? 1 : b==="Unassigned" ? -1 : a.localeCompare(b));
-              return labels.map(label => (
-                <div key={label} style={{marginBottom:10}}>
-                  <div style={{padding:"6px 8px 4px",fontSize:9.5,fontWeight:700,color:"#86868B",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:SF}}>
-                    {label} · {groups[label].length}
-                  </div>
-                  {groups[label].map(c => (
-                    <CampCard key={c.id} camp={c} selected={selectedId===c.id} onClick={()=>setSelId(c.id)} role={role}/>
-                  ))}
-                </div>
-              ));
-            })()
-        }
-      </div>
-      {/* Detail panel */}
-      <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
-        {selected
-          ? <Detail camp={selected} role={role} onAction={requestAction} onSaveBrief={onSaveBrief} onUpdateCreators={onUpdateCreators} onDelete={onDeleteCampaign} onLogTimeline={onLogTimeline}/>
-          : <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:12,background:"#F5F5F7"}}>
-              <div style={{width:48,height:48,borderRadius:16,background:"rgba(0,0,0,0.05)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,color:"#86868B"}}>◎</div>
-              <div style={{fontSize:14,fontWeight:600,color:"#1D1D1F",fontFamily:SF,letterSpacing:"-0.02em"}}>Select a campaign</div>
-              <div style={{fontSize:11.5,color:"#86868B",fontFamily:SF}}>
-                {needsAttn>0?`${needsAttn} campaign${needsAttn>1?"s":""} need attention`:`${visible.length} campaign${visible.length!==1?"s":""}` }
+    <AnimatePresence mode="wait">
+      {selected ? (
+        <Detail key={selected.id} camp={selected} role={role} onAction={requestAction} onSaveBrief={onSaveBrief}
+          onUpdateCreators={onUpdateCreators} onDelete={onDeleteCampaign} onLogTimeline={onLogTimeline}
+          onBack={()=>setSelId(null)} onPrev={goPrev} onNext={goNext} hasPrev={hasPrev} hasNext={hasNext}/>
+      ) : (
+        <motion.div key="grid" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.18}}
+          style={{display:"flex",flexDirection:"column",flex:1,minHeight:0,overflow:"hidden"}}>
+          {/* Header */}
+          <div style={{padding:"16px 20px 14px",borderBottom:"1px solid rgba(0,0,0,0.07)",flexShrink:0,background:"#FFFFFF"}}>
+            <div style={{display:"flex",alignItems:"center",marginBottom:14}}>
+              <div>
+                <h1 style={{fontFamily:"'Newsreader',serif",fontSize:20,fontWeight:600,color:"#1D1D1F",margin:0,fontStyle:"italic",letterSpacing:"-0.02em"}}>IM Campaigns</h1>
+                <div style={{fontSize:10.5,color:"#86868B",fontFamily:SF,marginTop:2}}>5th Avenue · Influencer Marketing</div>
               </div>
+              <div style={{flex:1}}/>
+              {canCreate(role)&&<Btn variant="primary" onClick={()=>setCreate(true)} style={{padding:"8px 16px",fontSize:12}}>+ New</Btn>}
             </div>
-        }
-      </div>
-    </div>
-    {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand}/>}
-    {pendingAction&&selected&&<ConfirmActionModal camp={selected} label={ACTION_MSGS[pendingAction.action]||pendingAction.action}
-      onConfirm={()=>{onAction(pendingAction.action,pendingAction.data);setPendingAction(null);}}
-      onCancel={()=>setPendingAction(null)}/>}
+            {/* Stats row */}
+            <div style={{display:"flex",gap:0,marginBottom:14,background:"rgba(0,0,0,0.03)",borderRadius:10,padding:"2px",border:"1px solid rgba(0,0,0,0.06)"}}>
+              {[{l:"All",v:visible.length},{l:"Active",v:visible.filter(c=>!["completed","draft"].includes(c.stage)).length},{l:"Live",v:visible.filter(c=>c.stage==="live").length},{l:"Attention",v:needsAttn}].map((s,i)=>(
+                <div key={s.l} style={{flex:1,padding:"8px 12px",textAlign:"center",borderRight:i<3?"1px solid rgba(0,0,0,0.06)":"none"}}>
+                  <div style={{fontSize:18,fontWeight:700,color:s.l==="Attention"&&needsAttn>0?T.amber:"#1D1D1F",letterSpacing:"-0.03em",lineHeight:1,fontFamily:SF}}>{s.v}</div>
+                  <div style={{fontSize:9.5,color:"#86868B",marginTop:2,fontFamily:SF}}>{s.l}</div>
+                </div>
+              ))}
+            </div>
+            {/* Search + filters */}
+            <div style={{display:"flex",gap:10,alignItems:"center"}}>
+              <div style={{position:"relative",flex:"1 1 320px",maxWidth:380}}>
+                <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search campaigns or clients…" style={{width:"100%",padding:"8px 12px 8px 30px",borderRadius:9,background:"rgba(0,0,0,0.04)",border:"1px solid rgba(0,0,0,0.08)",color:"#1D1D1F",fontSize:12,fontFamily:SF,outline:"none",boxSizing:"border-box"}}/>
+                <span style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",fontSize:13,color:"#86868B",pointerEvents:"none"}}>⌕</span>
+              </div>
+              <div style={{flex:1}}/>
+              <FilterTabs value={stageFilter} onChange={setStageF}/>
+            </div>
+          </div>
+          {/* Grid */}
+          <div style={{flex:1,minHeight:0,overflowY:"auto"}}>
+            <CampaignGrid campaigns={visible} role={role} onSelect={setSelId} brandName={brandName}/>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+    <AnimatePresence>
+      {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand}/>}
+    </AnimatePresence>
+    <AnimatePresence>
+      {pendingAction&&selected&&<ConfirmActionModal camp={selected} label={ACTION_MSGS[pendingAction.action]||pendingAction.action}
+        onConfirm={()=>{onAction(pendingAction.action,pendingAction.data);setPendingAction(null);}}
+        onCancel={()=>setPendingAction(null)}/>}
+    </AnimatePresence>
   </div>);
 }

@@ -558,8 +558,6 @@ function CampCard({camp,onClick,role}){
   const es=endStatus(camp.end,camp.stage);
   return(
     <motion.div
-      layoutId={`card-${camp.id}`}
-      layout
       initial={{opacity:0,y:10,scale:0.98}}
       animate={{opacity:1,y:0,scale:1}}
       exit={{opacity:0,scale:0.96,transition:{duration:0.12}}}
@@ -585,6 +583,15 @@ function CampCard({camp,onClick,role}){
   );
 }
 
+// ── BRAND IDENTITY ────────────────────────────────────────────────────────────
+// A stable accent colour + initials per brand, derived from the name so the
+// same brand always reads the same colour without needing a stored field.
+// Gives each group in the grid a visual anchor instead of one uniform grey
+// caps label, which was hard to pinpoint once several brands were on screen.
+const BRAND_COLORS=[T.accent,T.teal,T.purple,T.gold,T.pink,T.green,T.amber];
+const brandAccent=(s="")=>{let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return BRAND_COLORS[h%BRAND_COLORS.length];};
+const brandInitials=(s="")=>s.split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase()||"?";
+
 // ── CAMPAIGN GRID ─────────────────────────────────────────────────────────────
 // Groups the already-filtered `visible` list by brand (same grouping rule the
 // old sidebar used) and lays each group out as a responsive card grid.
@@ -600,10 +607,17 @@ function CampaignGrid({campaigns,role,onSelect,brandName}){
   const labels=Object.keys(groups).sort((a,b)=>a==="Unassigned"?1:b==="Unassigned"?-1:a.localeCompare(b));
   return(
     <div style={{padding:"20px 28px 40px"}}>
-      {labels.map(label=>(
+      {labels.map(label=>{
+        const bcol=brandAccent(label);
+        return(
         <div key={label} style={{marginBottom:28}}>
-          <div style={{padding:"0 0 10px",fontSize:10.5,fontWeight:700,color:"#86868B",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:SF}}>
-            {label} · {groups[label].length}
+          {/* Brand header — colour chip + serif name + count, sticky so the
+              brand you're scrolling through stays identifiable. */}
+          <div style={{position:"sticky",top:0,zIndex:2,display:"flex",alignItems:"center",gap:9,padding:"6px 0 11px",background:"linear-gradient(#F5F5F7 78%,rgba(245,245,247,0))"}}>
+            <div style={{width:24,height:24,borderRadius:7,flexShrink:0,background:`${bcol}16`,border:`1px solid ${bcol}33`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9.5,fontWeight:700,color:bcol,fontFamily:SF,letterSpacing:"-0.02em"}}>{brandInitials(label)}</div>
+            <span style={{fontFamily:"'Newsreader',serif",fontSize:15,fontStyle:"italic",fontWeight:600,color:"#1D1D1F",letterSpacing:"-0.01em",whiteSpace:"nowrap"}}>{label}</span>
+            <span style={{padding:"1.5px 7px",borderRadius:20,background:"rgba(0,0,0,0.05)",fontSize:9.5,fontWeight:600,color:"#6E6E73",fontFamily:SF}}>{groups[label].length}</span>
+            <div style={{flex:1,height:1,background:`linear-gradient(to right,${bcol}26,rgba(0,0,0,0))`}}/>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
             <AnimatePresence mode="popLayout">
@@ -613,26 +627,62 @@ function CampaignGrid({campaigns,role,onSelect,brandName}){
             </AnimatePresence>
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
 // ── FILTER TABS (sliding pill indicator) ──────────────────────────────────────
 const STAGE_FILTERS=[["all","All"],["intake","Intake"],["planning","Plan"],["execution","Exec"],["delivery","Done"],["ended","Ended"]];
-function FilterTabs({value,onChange}){
+function FilterTabs({value,onChange,endedCount=0}){
   return(
     <div style={{display:"flex",background:"rgba(0,0,0,0.04)",borderRadius:8,padding:2,gap:1}}>
       {STAGE_FILTERS.map(([id,lbl])=>{
         const on=value===id;
+        // Ended carries a live count so finished campaigns are noticed without
+        // having to open the tab to find them.
+        const badge=id==="ended"&&endedCount>0;
         return(
           <button key={id} onClick={()=>onChange(id)} style={{position:"relative",padding:"5px 10px",borderRadius:6,fontSize:10.5,fontWeight:on?600:400,background:"transparent",cursor:"pointer",fontFamily:SF,border:"none",color:on?"#1D1D1F":"#6E6E73",transition:"color 0.15s"}}>
             {on&&<motion.div layoutId="filterPill" style={{position:"absolute",inset:0,background:"#FFFFFF",borderRadius:6,boxShadow:"0 1px 3px rgba(0,0,0,0.1)",zIndex:0}} transition={{type:"spring",stiffness:500,damping:38}}/>}
-            <span style={{position:"relative",zIndex:1}}>{lbl}</span>
+            <span style={{position:"relative",zIndex:1,display:"inline-flex",alignItems:"center",gap:5}}>
+              {lbl}
+              {badge&&(
+                <motion.span initial={{scale:0.6,opacity:0}} animate={{scale:1,opacity:1}} transition={{type:"spring",stiffness:520,damping:26}}
+                  style={{minWidth:14,height:14,padding:"0 4px",borderRadius:20,background:`${T.amber}1A`,border:`1px solid ${T.amber}3D`,color:T.amber,fontSize:9,fontWeight:700,display:"inline-flex",alignItems:"center",justifyContent:"center",fontFamily:SF,lineHeight:1}}>
+                  {endedCount}
+                </motion.span>
+              )}
+            </span>
           </button>
         );
       })}
     </div>
+  );
+}
+
+// ── ENDED NOTICE ─────────────────────────────────────────────────────────────
+// Shown once when the Ended tab is opened: says how many campaigns finished and
+// what to do about them. Dismissible, and re-appears if the count changes so a
+// newly-ended campaign isn't silently hidden behind an earlier dismissal.
+function EndedNotice({count,onDismiss}){
+  return(
+    <motion.div initial={{opacity:0,y:-8,height:0}} animate={{opacity:1,y:0,height:"auto"}} exit={{opacity:0,y:-6,height:0}}
+      transition={{duration:0.24,ease:[0.16,1,0.3,1]}} style={{overflow:"hidden",flexShrink:0}}>
+      <div style={{margin:"12px 28px 0",padding:"11px 14px",borderRadius:12,background:`${T.amber}0D`,border:`1px solid ${T.amber}2E`,display:"flex",alignItems:"center",gap:11}}>
+        <div style={{width:22,height:22,borderRadius:"50%",flexShrink:0,background:`${T.amber}1F`,color:T.amber,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,fontFamily:SF}}>!</div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:11.5,fontWeight:600,color:"#1D1D1F",fontFamily:SF,letterSpacing:"-0.01em"}}>
+            {count} campaign{count===1?"":"s"} {count===1?"has":"have"} ended
+          </div>
+          <div style={{fontSize:10.5,color:"#6E6E73",fontFamily:SF,marginTop:1.5}}>
+            Close them out — settle creator payments, file reporting, then mark complete.
+          </div>
+        </div>
+        <button onClick={onDismiss} style={{background:"transparent",border:"none",cursor:"pointer",color:"#86868B",fontSize:14,lineHeight:1,padding:"3px 5px",borderRadius:5,fontFamily:SF,flexShrink:0}}>✕</button>
+      </div>
+    </motion.div>
   );
 }
 
@@ -1371,52 +1421,71 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
   const es=endStatus(camp.end,camp.stage);
   const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},{id:"timeline",label:"Timeline"},...(canFin(role)?[{id:"financials",label:"Financials"}]:[])];
   const navBtn={display:"flex",alignItems:"center",gap:4,background:"transparent",border:"none",cursor:"pointer",fontSize:11.5,fontWeight:500,color:"#6E6E73",fontFamily:SF,padding:"5px 8px",borderRadius:6};
-  return(<motion.div initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-6}} transition={{duration:0.22,ease:"easeOut"}} style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7"}}>
-    {/* Thin color accent top border — crossfades between campaigns of different stages */}
-    <motion.div style={{height:2,flexShrink:0}} animate={{backgroundColor:stCol}} transition={{duration:0.3}}/>
-    {/* Drill-in nav: back to grid + step through the filtered list */}
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 24px 0",flexShrink:0,background:"#FFFFFF"}}>
-      <button onClick={onBack} style={navBtn}>← Campaigns</button>
-      <div style={{display:"flex",alignItems:"center",gap:2}}>
-        <button onClick={onPrev} disabled={!hasPrev} style={{...navBtn,opacity:hasPrev?1:0.3,cursor:hasPrev?"pointer":"default"}}>‹ Prev</button>
-        <button onClick={onNext} disabled={!hasNext} style={{...navBtn,opacity:hasNext?1:0.3,cursor:hasNext?"pointer":"default"}}>Next ›</button>
-      </div>
-    </div>
-    <div style={{padding:"14px 28px 16px",background:"#FFFFFF",flexShrink:0,borderBottom:"1px solid rgba(0,0,0,0.07)"}}>
-      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8}}>
-        <div style={{flex:1,minWidth:0}}>
-          <h2 style={{fontFamily:"'Newsreader',serif",fontSize:24,fontWeight:600,color:"#1D1D1F",margin:"0 0 4px",fontStyle:"italic",letterSpacing:"-0.02em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{camp.name}</h2>
-          <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF,display:"flex",alignItems:"center",flexWrap:"wrap",gap:8}}><span>{camp.client} · {camp.service} · {camp.region} · {prettyDate(camp.start)}–{prettyDate(camp.end)}{canFin(role)&&<span style={{marginLeft:8,fontWeight:600,color:"#1D1D1F"}}>{fmtINR(camp.budget)}</span>}</span><EndPill es={es}/></div>
-        </div>
-        <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,marginLeft:16}}>
-          <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:`${stCol}14`,border:`1px solid ${stCol}28`,fontSize:10.5,fontWeight:600,color:stCol,fontFamily:SF}}>{pl.label}</span>
-          <span style={{fontSize:10,color:"#6E6E73",fontFamily:SF}}>{camp.progress}% complete</span>
-          {can(role,"deleteCampaign")&&<Btn variant="danger" onClick={()=>setConfirmDelete(true)} style={{fontSize:10,padding:"4px 10px"}}>Delete</Btn>}
+  // Card chrome shared by the header and content panels — floating rounded
+  // surfaces on the grey page rather than full-bleed white bands, so the
+  // campaign reads as one object instead of four stacked strips.
+  const card={background:"#FFFFFF",borderRadius:16,border:"1px solid rgba(0,0,0,0.07)",boxShadow:"0 1px 2px rgba(0,0,0,0.04), 0 10px 28px -16px rgba(0,0,0,0.14)"};
+  return(<motion.div initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-6}} transition={{duration:0.26,ease:[0.16,1,0.3,1]}} style={{height:"100%",overflowY:"auto",background:"#F5F5F7"}}>
+    <div style={{maxWidth:1160,margin:"0 auto",padding:"14px 28px 44px"}}>
+      {/* Drill-in nav: back to grid + step through the filtered list */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+        <button onClick={onBack} style={navBtn}>← Campaigns</button>
+        <div style={{display:"flex",alignItems:"center",gap:2}}>
+          <button onClick={onPrev} disabled={!hasPrev} style={{...navBtn,opacity:hasPrev?1:0.3,cursor:hasPrev?"pointer":"default"}}>‹ Prev</button>
+          <button onClick={onNext} disabled={!hasNext} style={{...navBtn,opacity:hasNext?1:0.3,cursor:hasNext?"pointer":"default"}}>Next ›</button>
         </div>
       </div>
-      <AnimatePresence>
-        {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
-      </AnimatePresence>
-      <div style={{fontSize:10.5,color:"#6E6E73",marginBottom:12,fontFamily:SF,fontStyle:"italic"}}>{STAGE_HINT[camp.stage]}</div>
-      <WorkflowActions camp={camp} role={role} onAction={onAction}/>
-      <FullPipe stage={camp.stage}/>
-    </div>
-    {/* Tab strip — sliding indicator shared across tab switches AND campaign switches */}
-    <div style={{display:"flex",padding:"0 28px",background:"#FFFFFF",borderBottom:"1px solid rgba(0,0,0,0.07)",flexShrink:0}}>
-      {tabs.map(t=>(
-        <button key={t.id} onClick={()=>setTab(t.id)} style={{position:"relative",padding:"11px 0",marginRight:22,background:"transparent",border:"none",color:tab===t.id?"#1D1D1F":"#6E6E73",fontSize:12,cursor:"pointer",fontFamily:SF,fontWeight:tab===t.id?600:400,marginBottom:-1,transition:"color 0.15s",letterSpacing:"-0.01em"}}>
-          {t.label}
-          {tab===t.id&&<motion.div layoutId="detailTabIndicator" style={{position:"absolute",left:0,right:0,bottom:-1,height:2,borderRadius:1,background:stCol}} transition={{type:"spring",stiffness:500,damping:40}}/>}
-        </button>
-      ))}
-    </div>
-    <div style={{flex:1,overflowY:"auto",padding:"24px 28px",background:"#F5F5F7"}}>
-      {tab==="brief"        &&<TabBrief        camp={camp} role={role} onAction={onAction} onSaveBrief={onSaveBrief}/>}
-      {tab==="team"         &&<TabTeam         camp={camp} role={role} onAction={onAction}/>}
-      {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
-      {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} onUpdateCreators={onUpdateCreators}/>}
-      {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
-      {tab==="financials"   &&canFin(role)&&<TabFinancials camp={camp} role={role}/>}
+
+      {/* ── HEADER CARD — identity, stage, actions, pipeline, tabs ── */}
+      <div style={{...card,overflow:"hidden",marginBottom:16}}>
+        {/* Stage accent — crossfades between campaigns of different stages */}
+        <motion.div style={{height:3}} animate={{backgroundColor:stCol}} transition={{duration:0.3}}/>
+        <div style={{padding:"18px 22px 16px"}}>
+          <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8}}>
+            <div style={{flex:1,minWidth:0}}>
+              <h2 style={{fontFamily:"'Newsreader',serif",fontSize:24,fontWeight:600,color:"#1D1D1F",margin:"0 0 5px",fontStyle:"italic",letterSpacing:"-0.02em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{camp.name}</h2>
+              <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF,display:"flex",alignItems:"center",flexWrap:"wrap",gap:8}}><span>{camp.client} · {camp.service} · {camp.region} · {prettyDate(camp.start)}–{prettyDate(camp.end)}{canFin(role)&&<span style={{marginLeft:8,fontWeight:600,color:"#1D1D1F"}}>{fmtINR(camp.budget)}</span>}</span><EndPill es={es}/></div>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:5,marginLeft:16,flexShrink:0}}>
+              <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:`${stCol}14`,border:`1px solid ${stCol}28`,fontSize:10.5,fontWeight:600,color:stCol,fontFamily:SF}}>{pl.label}</span>
+              <span style={{fontSize:10,color:"#6E6E73",fontFamily:SF}}>{camp.progress}% complete</span>
+              {can(role,"deleteCampaign")&&<Btn variant="danger" onClick={()=>setConfirmDelete(true)} style={{fontSize:10,padding:"4px 10px"}}>Delete</Btn>}
+            </div>
+          </div>
+          <AnimatePresence>
+            {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
+          </AnimatePresence>
+          <div style={{fontSize:10.5,color:"#6E6E73",marginBottom:12,fontFamily:SF,fontStyle:"italic"}}>{STAGE_HINT[camp.stage]}</div>
+          <WorkflowActions camp={camp} role={role} onAction={onAction}/>
+          {/* 16-stage pipeline scrolls inside its own lane so it never widens the card */}
+          <div style={{overflowX:"auto",margin:"0 -22px",padding:"0 22px"}}>
+            <FullPipe stage={camp.stage}/>
+          </div>
+        </div>
+        {/* Tab strip — sliding indicator shared across tab switches AND campaign switches */}
+        <div style={{display:"flex",padding:"0 22px",borderTop:"1px solid rgba(0,0,0,0.06)",background:"rgba(0,0,0,0.015)",overflowX:"auto"}}>
+          {tabs.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{position:"relative",padding:"11px 0",marginRight:22,background:"transparent",border:"none",color:tab===t.id?"#1D1D1F":"#6E6E73",fontSize:12,cursor:"pointer",fontFamily:SF,fontWeight:tab===t.id?600:400,transition:"color 0.15s",letterSpacing:"-0.01em",whiteSpace:"nowrap",flexShrink:0}}>
+              {t.label}
+              {tab===t.id&&<motion.div layoutId="detailTabIndicator" style={{position:"absolute",left:0,right:0,bottom:0,height:2,borderRadius:1,background:stCol}} transition={{type:"spring",stiffness:500,damping:40}}/>}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── CONTENT CARD — crossfades on tab change ── */}
+      <div style={{...card,padding:"22px 24px"}}>
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div key={tab} initial={{opacity:0,y:5}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-3}} transition={{duration:0.16,ease:"easeOut"}}>
+            {tab==="brief"        &&<TabBrief        camp={camp} role={role} onAction={onAction} onSaveBrief={onSaveBrief}/>}
+            {tab==="team"         &&<TabTeam         camp={camp} role={role} onAction={onAction}/>}
+            {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
+            {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} onUpdateCreators={onUpdateCreators}/>}
+            {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
+            {tab==="financials"   &&canFin(role)&&<TabFinancials camp={camp} role={role}/>}
+          </motion.div>
+        </AnimatePresence>
+      </div>
     </div>
   </motion.div>);
 }
@@ -1709,6 +1778,17 @@ export default function InternalCampaigns(){
   const goPrev=useCallback(()=>{if(selIndex>0)setSelId(visible[selIndex-1].id);},[selIndex,visible]);
   const goNext=useCallback(()=>{if(selIndex>=0&&selIndex<visible.length-1)setSelId(visible[selIndex+1].id);},[selIndex,visible]);
   const needsAttn=visible.filter(c=>["draft","po_raised","concept_submitted","video_submitted"].includes(c.stage)).length;
+  // Ended count deliberately ignores `stageFilter` (but respects role/brand
+  // visibility) so the Ended tab badge reads the same from every other tab.
+  const endedCount=useMemo(()=>campaigns.filter(c=>
+    canSee(c,role,currentUser.teamId)&&
+    (!brandFilter||c.brandId===brandFilter)&&
+    endStatus(c.end,c.stage)?.key==="ended"
+  ).length,[campaigns,role,currentUser.teamId,brandFilter]);
+  // Remembers the count it was dismissed at, so the notice returns when another
+  // campaign ends rather than staying hidden forever after one dismissal.
+  const [noticeAck,setNoticeAck]=useState(-1);
+  const showEndedNotice=stageFilter==="ended"&&endedCount>0&&noticeAck!==endedCount;
   if(loading)return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",background:"#F5F5F7",fontFamily:SF,fontSize:13,color:"#6E6E73"}}>Loading campaigns…</div>);
   if(loadError)return(<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",background:"#F5F5F7",fontFamily:SF,fontSize:13,gap:8,color:"#6E6E73"}}><div>Couldn't reach the campaigns API.</div><div style={{fontSize:11,color:"#86868B"}}>{loadError}</div></div>);
   return(<div style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7",fontFamily:SF,color:"#1D1D1F",overflow:"hidden"}}>
@@ -1748,9 +1828,13 @@ export default function InternalCampaigns(){
                 <span style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",fontSize:13,color:"#86868B",pointerEvents:"none"}}>⌕</span>
               </div>
               <div style={{flex:1}}/>
-              <FilterTabs value={stageFilter} onChange={setStageF}/>
+              <FilterTabs value={stageFilter} onChange={setStageF} endedCount={endedCount}/>
             </div>
           </div>
+          {/* Ended-tab notice */}
+          <AnimatePresence initial={false}>
+            {showEndedNotice&&<EndedNotice key="ended-notice" count={endedCount} onDismiss={()=>setNoticeAck(endedCount)}/>}
+          </AnimatePresence>
           {/* Grid */}
           <div style={{flex:1,minHeight:0,overflowY:"auto"}}>
             <CampaignGrid campaigns={visible} role={role} onSelect={setSelId} brandName={brandName}/>

@@ -46,6 +46,16 @@ export const ClientRequestsAPI = {
     request(`/api/client-requests/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
 };
 
+// ── Creator Requests (founder inbox) ─────────────────────────────────────────
+// landing page "Apply as a creator" POSTs; the Creators > Requests tab uses
+// list/update. Backend fires the founder email on create (mailer.js)
+export const CreatorRequestsAPI = {
+  list: (status) => request(`/api/creator-requests${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  create: (req) => request("/api/creator-requests", { method: "POST", body: JSON.stringify(req) }),
+  update: (id, patch) =>
+    request(`/api/creator-requests/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+};
+
 // Generic CRUD client factory matching the backend's registerCrudRoutes shape.
 function crud(basePath) {
   return {

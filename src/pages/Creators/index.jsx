@@ -11,7 +11,7 @@
  */
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";
-import { CreatorsAPI, InvoicePdfAPI } from "../../lib/api";
+import { CreatorsAPI, InvoicePdfAPI, CreatorRequestsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { fmtCompact } from "../../lib/format";
 import { T } from "../../theme/tokens";
@@ -200,6 +200,99 @@ function CreatorDetail({ inf, canEdit, onEdit }) {
   );
 }
 
+// ── CREATOR REQUESTS PANEL ───────────────────────────────────────────────────
+// Founder inbox for applications from the landing page's "Apply as a creator"
+// form. Same optimistic-update + toast-on-failure pattern as the directory.
+const REQ_STATUS = [
+  { id: "new",       label: "New",       color: T.amber },
+  { id: "reviewed",  label: "Reviewed",  color: T.accent },
+  { id: "contacted", label: "Contacted", color: T.green },
+  { id: "archived",  label: "Archived",  color: T.sub },
+];
+
+function CreatorRequestsPanel({ showToast }) {
+  const [reqs, setReqs]     = useState([]);
+  const [loading, setLoad]  = useState(true);
+  const [error, setError]   = useState(null);
+  const [open, setOpen]     = useState(null);
+
+  useEffect(() => {
+    setLoad(true); setError(null);
+    CreatorRequestsAPI.list()
+      .then(setReqs)
+      .catch(e => setError(e.message))
+      .finally(() => setLoad(false));
+  }, []);
+
+  const setStatus = (id, status) => {
+    setReqs(prev => prev.map(r => (r.id === id ? { ...r, status } : r)));
+    CreatorRequestsAPI.update(id, { status }).catch(() => showToast("Save failed — check connection"));
+    showToast(`Marked ${status}`);
+  };
+
+  if (loading) return <div style={{ padding: 40, fontSize: 12, color: T.sub, textAlign: "center" }}>Loading applications…</div>;
+  if (error) return (
+    <div style={{ padding: "14px 16px", background: `${T.red}0C`, border: `1px solid ${T.red}30`, borderRadius: T.radiusSm, fontSize: 11.5, color: T.red }}>
+      Could not load creator applications: {error}
+    </div>
+  );
+  if (!reqs.length) return (
+    <div style={{ padding: 40, fontSize: 12, color: T.label, textAlign: "center", fontStyle: "italic" }}>
+      No creator applications yet — they arrive from the landing page's “Apply as a creator” form.
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {reqs.map(r => {
+        const st = REQ_STATUS.find(s => s.id === r.status) || REQ_STATUS[0];
+        const isOpen = open === r.id;
+        return (
+          <div key={r.id} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: T.radius, boxShadow: T.shadow, overflow: "hidden" }}>
+            <div onClick={() => setOpen(isOpen ? null : r.id)}
+              style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 16px", cursor: "pointer" }}>
+              <Av name={r.name} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 500, color: T.text }}>{r.name}</div>
+                <div style={{ fontSize: 10, color: T.sub, marginTop: 1 }}>
+                  {r.handle}{r.platform ? ` · ${r.platform}` : ""}{r.followers ? ` · ${r.followers}` : ""}
+                </div>
+              </div>
+              <Pill color={st.color}>{st.label}</Pill>
+              <span style={{ fontSize: 10, color: T.label, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform 0.3s cubic-bezier(0.4,0,0.2,1)" }}>▾</span>
+            </div>
+            {/* 0fr→1fr grid transition, same as the directory's expanded row */}
+            <div style={{ display: "grid", gridTemplateRows: isOpen ? "1fr" : "0fr", transition: "grid-template-rows 0.32s cubic-bezier(0.4,0,0.2,1)" }}>
+              <div style={{ overflow: "hidden" }}>
+                <div style={{ padding: "0 16px 14px", borderTop: `1px solid ${T.border}` }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "10px 28px", padding: "12px 0" }}>
+                    {[["Email", r.email], ["Phone", r.phone], ["State", r.state],
+                      ["Niche", (r.niche || []).join(", ")], ["Languages", (r.languages || []).join(", ")]]
+                      .filter(([, v]) => v).map(([k, v]) => (
+                        <div key={k}>
+                          <div style={{ fontSize: 9, color: T.label, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>{k}</div>
+                          <div style={{ fontSize: 11.5, color: T.text }}>{v}</div>
+                        </div>
+                      ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {REQ_STATUS.filter(s => s.id !== r.status).map(s => (
+                      <button key={s.id} onClick={() => setStatus(r.id, s.id)}
+                        style={{ padding: "5px 11px", borderRadius: 20, fontSize: 10.5, cursor: "pointer", fontFamily: "'Sora'", background: `${s.color}12`, color: s.color, border: `1px solid ${s.color}2E` }}>
+                        Mark {s.label.toLowerCase()}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── PAGE ─────────────────────────────────────────────────────────────────────
 export default function Creators() {
   const { user, brandFilter } = useOutletContext() || {};
@@ -212,6 +305,7 @@ export default function Creators() {
   const [expanded, setExpanded] = useState(null); // creator id
   const [editTarget, setEditTarget] = useState(null); // creator being edited (founder only)
   const [toast, setToast] = useState(null);
+  const [tab, setTab]     = useState("directory"); // directory | requests
   const showToast = useCallback(msg => { setToast(msg); setTimeout(() => setToast(null), 2800); }, []);
   const canEdit = can(role, "editCreator");
 
@@ -260,29 +354,46 @@ export default function Creators() {
             Every creator across all campaigns — profiles, onboarding details and generated invoices.
           </div>
         </div>
-        <input
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          placeholder="Search name, handle, state, campaign…"
-          style={{ ...INP, width: 260 }}
-        />
+        {tab === "directory" && (
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search name, handle, state, campaign…"
+            style={{ ...INP, width: 260 }}
+          />
+        )}
       </div>
 
+      {/* Tabs — directory vs inbound applications */}
+      <div style={{ display: "flex", gap: 22, borderBottom: `1px solid ${T.border}`, marginBottom: 18 }}>
+        {[["directory", "Directory"], ["requests", "Creator Requests"]].map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)}
+            style={{ position: "relative", padding: "0 0 9px", background: "transparent", border: "none", cursor: "pointer",
+              fontFamily: "'Sora'", fontSize: 12, letterSpacing: "-0.01em", marginBottom: -1,
+              fontWeight: tab === id ? 600 : 400, color: tab === id ? T.text : T.sub, transition: "color 0.15s" }}>
+            {label}
+            {tab === id && <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 2, borderRadius: 1, background: T.accent }} />}
+          </button>
+        ))}
+      </div>
+
+      {tab === "requests" && <CreatorRequestsPanel showToast={showToast} />}
+
       {/* States */}
-      {loading && <div style={{ padding: 40, fontSize: 12, color: T.sub, textAlign: "center" }}>Loading creators…</div>}
-      {error && !loading && (
+      {tab === "directory" && loading && <div style={{ padding: 40, fontSize: 12, color: T.sub, textAlign: "center" }}>Loading creators…</div>}
+      {tab === "directory" && error && !loading && (
         <div style={{ padding: "14px 16px", background: `${T.red}0C`, border: `1px solid ${T.red}30`, borderRadius: T.radiusSm, fontSize: 11.5, color: T.red }}>
           Could not load creators from the backend: {error}
         </div>
       )}
-      {!loading && !error && visible.length === 0 && (
+      {tab === "directory" && !loading && !error && visible.length === 0 && (
         <div style={{ padding: 40, fontSize: 12, color: T.label, textAlign: "center", fontStyle: "italic" }}>
           {query ? "No creators match your search." : "No creators found on any campaign yet."}
         </div>
       )}
 
       {/* Table */}
-      {!loading && !error && visible.length > 0 && (
+      {tab === "directory" && !loading && !error && visible.length > 0 && (
         <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: T.radius, boxShadow: T.shadow, overflow: "hidden" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>

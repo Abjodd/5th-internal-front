@@ -43,7 +43,9 @@ export default function LoginPage() {
 
   return (
     <div style={{
-      display: "flex", height: "100vh", width: "100vw",
+      // 100% rather than viewport units — see the note in layout/AppShell.jsx:
+      // vh/vw don't scale with the `zoom` on <html>.
+      display: "flex", height: "100%", width: "100%",
       fontFamily: "'Sora', sans-serif", background: T.bg,
       overflow: "hidden",
     }}>
@@ -54,7 +56,6 @@ export default function LoginPage() {
         @keyframes orbFloat { 0%,100% { transform: translateY(0) translateX(0) rotate(0deg); } 33% { transform: translateY(-22px) translateX(14px) rotate(4deg); } 66% { transform: translateY(14px) translateX(-10px) rotate(-3deg); } }
         @keyframes shimmerLine { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
         @keyframes riseIn { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes softPulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
         @keyframes spin { to { transform: rotate(360deg); } }
         .la-input:focus { box-shadow: 0 0 0 4px ${T.accent}1a; }
       `}</style>
@@ -130,11 +131,11 @@ export default function LoginPage() {
         {/* Logo */}
         <div style={{ position: "relative", animation: "riseIn 0.7s cubic-bezier(0.16,1,0.3,1) both" }}>
           <div style={{
-            fontFamily: "'Newsreader', serif",
-            fontSize: 22, fontStyle: "italic", fontWeight: 600,
-            color: "#FFFFFF", letterSpacing: "-0.02em", marginBottom: 8,
+            fontFamily: "'Sora', sans-serif",
+            fontSize: 16, fontWeight: 300, textTransform: "uppercase",
+            color: "#FFFFFF", letterSpacing: "0.26em", marginBottom: 8,
           }}>
-            5th Avenue
+            Fifth Avenue
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 9.5, color: "rgba(255,255,255,0.45)", letterSpacing: "0.14em", textTransform: "uppercase" }}>
             <span style={{ width: 22, height: 1, background: "rgba(255,255,255,0.3)" }} />
@@ -199,17 +200,6 @@ export default function LoginPage() {
           boxShadow: "0 30px 70px rgba(15,23,42,0.08)",
           animation: "riseIn 0.6s cubic-bezier(0.16,1,0.3,1) both",
         }}>
-          <div style={{
-            display: "inline-flex", alignItems: "center", gap: 6,
-            padding: "4px 10px", borderRadius: 999,
-            border: `1px solid ${T.accent}26`, background: `${T.accent}0f`,
-            fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase",
-            color: T.accent, marginBottom: 14,
-          }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: T.accent, animation: "softPulse 2s ease-in-out infinite" }} />
-            Workspace sign in
-          </div>
-
           <div style={{ marginBottom: 30 }}>
             <div style={{
               fontFamily: "'Newsreader', serif",

@@ -8,11 +8,34 @@
  * Newsreader for display type, Sora for UI. Soft elevation instead of
  * ornament. Styling only; logic below is unchanged from the original.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { motion, AnimatePresence } from "motion/react";
+import {
+  LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck,
+  Building2, Search, ChevronDown, Check, Circle,
+} from "lucide-react";
 import { SECTIONS, canAccess, getRole } from "../routes/sections";
 import { useAuth } from "../context/AuthContext";
 import { ClientsAPI } from "../lib/api";
+
+/**
+ * Section icons are named as strings in routes/sections.js so that registry
+ * stays a plain data file with no React imports.
+ *
+ * Resolved through this explicit map rather than `import * as Icons` — a
+ * namespace import read with a computed key (`Icons[name]`) can't be
+ * tree-shaken, and pulls all ~1500 lucide icons into the bundle. Add an entry
+ * here when you add a section.
+ */
+const SECTION_ICONS = {
+  LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck, Building2,
+};
+
+function SecIcon({ name, size = 16, ...rest }) {
+  const C = SECTION_ICONS[name] || Circle;
+  return <C size={size} strokeWidth={1.9} {...rest} />;
+}
 
 const F = {
   paper:     "#FAFAF9",
@@ -30,6 +53,13 @@ const F = {
   shadowLg:  "0 4px 12px rgba(20,21,26,0.06), 0 24px 48px -12px rgba(20,21,26,0.16)",
 };
 
+/**
+ * One tab inside the nav capsule. The white "pill" behind the active tab is a
+ * single shared element — every tab renders it under the same `layoutId`, so
+ * when the route changes React tears it out of the old tab and into the new
+ * one, and motion tweens the gap. That's what makes the switch read as one
+ * object moving rather than two states swapping.
+ */
 function SectionTab({ section }) {
   const [hovered, setHovered] = useState(false);
   return (
@@ -38,23 +68,40 @@ function SectionTab({ section }) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={({ isActive }) => ({
-        display: "flex", alignItems: "center", gap: 7,
-        padding: "0 16px", height: "100%",
+        position: "relative",
+        display: "flex", alignItems: "center", gap: 8,
+        padding: "0 18px", height: 36, borderRadius: 8,
         background: "transparent", border: "none",
-        borderBottom: `2px solid ${isActive ? F.navy : "transparent"}`,
         cursor: "pointer", fontFamily: "'Sora', sans-serif",
-        fontSize: 12, fontWeight: isActive ? 600 : 500,
+        fontSize: 13, fontWeight: isActive ? 600 : 500,
         color: isActive ? F.ink : hovered ? F.ink : F.inkSoft,
-        transition: "color 0.15s, border-color 0.15s",
+        transition: "color 0.18s",
         whiteSpace: "nowrap", textDecoration: "none",
+        WebkitTapHighlightColor: "transparent",
       })}
     >
       {({ isActive }) => (
         <>
-          <span style={{ fontSize: 12, color: isActive ? F.navy : F.label }}>
-            {section.icon}
+          {isActive && (
+            <motion.span
+              layoutId="nav-pill"
+              transition={{ type: "spring", stiffness: 420, damping: 36, mass: 0.9 }}
+              style={{
+                position: "absolute", inset: 0, borderRadius: 8,
+                background: F.surface, boxShadow: F.shadowSm,
+                zIndex: 0,
+              }}
+            />
+          )}
+          <span style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+            <SecIcon
+              name={section.lucide}
+              size={16}
+              color={isActive ? F.navy : F.label}
+              style={{ transition: "color 0.18s" }}
+            />
+            {section.shortLabel}
           </span>
-          {section.shortLabel}
         </>
       )}
     </NavLink>
@@ -70,31 +117,37 @@ function UserMenu({ user, onLogout }) {
       <button
         onClick={() => setOpen(o => !o)}
         style={{
-          display: "flex", alignItems: "center", gap: 9,
-          padding: "5px 10px 5px 5px",
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "5px 13px 5px 5px",
           background: F.surface, border: `1px solid ${F.hairline}`,
-          borderRadius: 20, cursor: "pointer",
-          fontFamily: "'Sora', sans-serif", fontSize: 11, color: F.ink,
+          borderRadius: 22, cursor: "pointer",
+          fontFamily: "'Sora', sans-serif", fontSize: 12, color: F.ink,
           transition: "box-shadow 0.15s",
         }}
         onMouseOver={e => e.currentTarget.style.boxShadow = F.shadowSm}
         onMouseOut={e => e.currentTarget.style.boxShadow = "none"}
       >
         <div style={{
-          width: 26, height: 26, borderRadius: "50%",
+          width: 30, height: 30, borderRadius: "50%",
           background: F.navy, color: "#FFFFFF",
           display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 10, fontWeight: 600, flexShrink: 0,
+          fontSize: 11, fontWeight: 600, flexShrink: 0,
         }}>
           {user.avatar}
         </div>
         <div style={{ textAlign: "left" }}>
-          <div style={{ fontWeight: 600, fontSize: 11.5, color: F.ink, lineHeight: 1.2 }}>
+          <div style={{ fontWeight: 600, fontSize: 12.5, color: F.ink, lineHeight: 1.25 }}>
             {user.name.split(" ")[0]}
           </div>
-          <div style={{ fontSize: 9.5, color: F.inkSoft, lineHeight: 1.2 }}>{roleLabel}</div>
+          <div style={{ fontSize: 10.5, color: F.inkSoft, lineHeight: 1.25 }}>{roleLabel}</div>
         </div>
-        <span style={{ color: F.label, fontSize: 8, marginLeft: 2 }}>▾</span>
+        <motion.span
+          animate={{ rotate: open ? 180 : 0 }}
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+          style={{ display: "flex", marginLeft: 2 }}
+        >
+          <ChevronDown size={14} color={F.label} strokeWidth={2} />
+        </motion.span>
       </button>
 
       {open && (
@@ -177,48 +230,260 @@ function ReadOnlyBanner() {
   );
 }
 
+const initials = (s) =>
+  (s || "?").split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+
+/**
+ * Brand filter. Was a bare <select>, which gave no visual signal that it held
+ * options — this is a real dropdown: a swatch of the selected brand, its name,
+ * and a chevron that rotates open. Filters as you type once the list is long
+ * enough to need it.
+ */
 function BrandSelect({ brands, value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  useEffect(() => { if (!open) setQ(""); }, [open]);
+
   if (brands.length === 0) return null;
-  return (
-    <div style={{
-      display: "flex", alignItems: "center", gap: 6,
-      paddingLeft: 16, paddingRight: 12,
-      borderRight: `1px solid ${F.hairline}`,
-      height: "100%", flexShrink: 0,
-    }}>
+
+  const selected = brands.find(b => b.id === value);
+  const shown = q
+    ? brands.filter(b => b.name.toLowerCase().includes(q.toLowerCase()))
+    : brands;
+
+  const row = (active, label, sub, onClick, key) => (
+    <button
+      key={key}
+      onClick={onClick}
+      style={{
+        display: "flex", alignItems: "center", gap: 10, width: "100%",
+        padding: "9px 12px", background: active ? F.navyTint : "transparent",
+        border: "none", cursor: "pointer", textAlign: "left",
+        fontFamily: "'Sora', sans-serif", fontSize: 12.5,
+        color: F.ink, transition: "background 0.1s",
+      }}
+      onMouseOver={e => { if (!active) e.currentTarget.style.background = F.paper; }}
+      onMouseOut={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+    >
       <span style={{
-        fontSize: 9, fontWeight: 600, color: F.label,
-        textTransform: "uppercase", letterSpacing: "0.07em",
-        fontFamily: "'Sora', sans-serif", whiteSpace: "nowrap",
-      }}>Brand</span>
-      <select
-        id="brand-filter"
-        value={value || ""}
-        onChange={e => onChange(e.target.value || null)}
+        width: 22, height: 22, borderRadius: 6, flexShrink: 0,
+        background: active ? F.navy : F.hairline,
+        color: active ? "#FFFFFF" : F.inkSoft,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: 9, fontWeight: 600,
+      }}>{sub}</span>
+      <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+      {active && <Check size={15} color={F.navy} strokeWidth={2.2} />}
+    </button>
+  );
+
+  return (
+    <div ref={ref} style={{ position: "relative", flexShrink: 0 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
         style={{
-          fontFamily: "'Sora', sans-serif", fontSize: 11,
+          display: "flex", alignItems: "center", gap: 9,
+          padding: "9px 13px", maxWidth: 210,
+          background: value ? F.navyTint : F.paper,
+          border: `1px solid ${value ? "rgba(30,42,68,0.25)" : F.hairline}`,
+          borderRadius: 9, cursor: "pointer",
+          fontFamily: "'Sora', sans-serif", fontSize: 12.5,
+          fontWeight: value ? 600 : 500,
           color: value ? F.ink : F.inkSoft,
-          fontWeight: value ? 600 : 400,
-          background: value ? F.navyTint : "transparent",
-          border: `1px solid ${value ? F.navy + "40" : F.hairline}`,
-          borderRadius: 6, padding: "4px 8px",
-          cursor: "pointer", outline: "none", maxWidth: 160,
-          transition: "all 0.15s",
+          transition: "background 0.15s, border-color 0.15s",
         }}
       >
-        <option value="">All Brands</option>
-        {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-      </select>
-      {value && (
-        <button onClick={() => onChange(null)} title="Clear filter"
-          style={{
-            background: "none", border: "none", cursor: "pointer",
-            color: F.label, fontSize: 14, padding: "2px 3px",
-            borderRadius: 4, lineHeight: 1,
-          }}
-        >✕</button>
-      )}
+        <span style={{
+          width: 19, height: 19, borderRadius: 5, flexShrink: 0,
+          background: F.navy, color: "#FFFFFF",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 8.5, fontWeight: 600,
+        }}>{selected ? initials(selected.name) : "AB"}</span>
+        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {selected ? selected.name : "All brands"}
+        </span>
+        <motion.span
+          animate={{ rotate: open ? 180 : 0 }}
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+          style={{ display: "flex", flexShrink: 0 }}
+        >
+          <ChevronDown size={15} color={F.label} strokeWidth={2} />
+        </motion.span>
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <>
+            <div style={{ position: "fixed", inset: 0, zIndex: 49 }} onClick={() => setOpen(false)} />
+            <motion.div
+              initial={{ opacity: 0, y: -6, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -4, scale: 0.99 }}
+              transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+              style={{
+                position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 50,
+                minWidth: 250, maxHeight: 340, overflowY: "auto",
+                background: F.surface, border: `1px solid ${F.hairline}`,
+                borderRadius: 12, boxShadow: F.shadowLg, padding: "6px 0",
+              }}
+            >
+              {brands.length > 7 && (
+                <div style={{ padding: "4px 10px 8px" }}>
+                  <input
+                    autoFocus
+                    value={q}
+                    onChange={e => setQ(e.target.value)}
+                    placeholder="Find a brand"
+                    style={{
+                      width: "100%", padding: "7px 10px",
+                      border: `1px solid ${F.hairline}`, borderRadius: 7,
+                      fontFamily: "'Sora', sans-serif", fontSize: 12,
+                      color: F.ink, outline: "none", background: F.paper,
+                    }}
+                  />
+                </div>
+              )}
+              {row(!value, "All brands", "AB", () => { onChange(null); setOpen(false); }, "__all")}
+              {shown.length > 0 && (
+                <div style={{ height: 1, background: F.hairline, margin: "6px 0" }} />
+              )}
+              {shown.map(b =>
+                row(b.id === value, b.name, initials(b.name), () => { onChange(b.id); setOpen(false); }, b.id)
+              )}
+              {shown.length === 0 && (
+                <div style={{ padding: "10px 12px", fontSize: 12, color: F.label }}>No brand matches.</div>
+              )}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
+  );
+}
+
+/** Square icon button in the top-bar's right rail. */
+function RailButton({ label, onClick, children }) {
+  const [h, setH] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      onMouseEnter={() => setH(true)}
+      onMouseLeave={() => setH(false)}
+      style={{
+        width: 36, height: 36, borderRadius: 9,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: h ? F.paper : F.surface,
+        border: `1px solid ${F.hairline}`,
+        color: F.inkSoft, cursor: "pointer",
+        transition: "background 0.15s, color 0.15s",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Command palette — ⌘K / Ctrl-K. Jumps between the sections this user can
+ * reach and switches the brand filter, so both live in one keyboard surface
+ * instead of only being reachable by mouse.
+ */
+function CommandPalette({ open, onClose, sections, brands, onBrand, brandFilter }) {
+  const [q, setQ] = useState("");
+  const [i, setI] = useState(0);
+  const navigate = useNavigate();
+
+  const items = [
+    ...sections.map(s => ({ key: `s:${s.id}`, icon: s.lucide, label: s.label, hint: "Section", run: () => navigate(s.path) })),
+    { key: "b:all", icon: "Building2", label: "All brands", hint: "Brand filter", run: () => onBrand(null) },
+    ...brands.map(b => ({ key: `b:${b.id}`, icon: "Building2", label: b.name, hint: "Brand filter", run: () => onBrand(b.id) })),
+  ].filter(it => !q || it.label.toLowerCase().includes(q.toLowerCase()));
+
+  useEffect(() => { setI(0); }, [q]);
+  useEffect(() => { if (!open) setQ(""); }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") return onClose();
+      if (e.key === "ArrowDown") { e.preventDefault(); setI(v => Math.min(v + 1, items.length - 1)); }
+      if (e.key === "ArrowUp")   { e.preventDefault(); setI(v => Math.max(v - 1, 0)); }
+      if (e.key === "Enter" && items[i]) { e.preventDefault(); items[i].run(); onClose(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, items, i, onClose]);
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 700, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "12vh" }}>
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            onClick={onClose}
+            style={{ position: "absolute", inset: 0, background: "rgba(20,21,26,0.38)", backdropFilter: "blur(3px)" }}
+          />
+          <motion.div
+            initial={{ opacity: 0, y: -10, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.99 }}
+            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+            style={{
+              position: "relative", width: "min(520px, 92vw)",
+              background: F.surface, border: `1px solid ${F.hairline}`,
+              borderRadius: 14, boxShadow: F.shadowLg, overflow: "hidden",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 16px", borderBottom: `1px solid ${F.hairline}` }}>
+              <Search size={17} color={F.label} strokeWidth={1.9} />
+              <input
+                autoFocus value={q} onChange={e => setQ(e.target.value)}
+                placeholder="Jump to a section or brand"
+                style={{ flex: 1, border: "none", outline: "none", fontFamily: "'Sora', sans-serif", fontSize: 13.5, color: F.ink, background: "transparent" }}
+              />
+            </div>
+            <div style={{ maxHeight: 320, overflowY: "auto", padding: "6px 0" }}>
+              {items.map((it, n) => (
+                <button
+                  key={it.key}
+                  onMouseEnter={() => setI(n)}
+                  onClick={() => { it.run(); onClose(); }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 11, width: "100%",
+                    padding: "10px 16px", border: "none", cursor: "pointer", textAlign: "left",
+                    background: n === i ? F.navyTint : "transparent",
+                    fontFamily: "'Sora', sans-serif", fontSize: 13, color: F.ink,
+                  }}
+                >
+                  <SecIcon name={it.icon} size={16} color={n === i ? F.navy : F.label} />
+                  <span style={{ flex: 1 }}>{it.label}</span>
+                  <span style={{ fontSize: 10.5, color: F.label }}>{it.hint}</span>
+                  {it.key === `b:${brandFilter}` || (it.key === "b:all" && !brandFilter)
+                    ? <Check size={14} color={F.navy} strokeWidth={2.2} /> : null}
+                </button>
+              ))}
+              {items.length === 0 && (
+                <div style={{ padding: "16px", fontSize: 13, color: F.label }}>Nothing matches “{q}”.</div>
+              )}
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -226,6 +491,7 @@ export default function AppShell() {
   const { user, logout } = useAuth();
   const location = useLocation();
   const navigate  = useNavigate();
+  const [searchOpen, setSearchOpen] = useState(false);
 
   // ── Brand filter ──────────────────────────────────────────────────────────
   const [brandFilter, setBrandFilter] = useState(() => {
@@ -255,6 +521,18 @@ export default function AppShell() {
     loadBrands();
   }, []);
 
+  // ⌘K / Ctrl-K opens the palette from anywhere in the app.
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen(o => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const handleLogout = () => {
     handleBrandChange(null); // clear brand filter on logout
     logout();
@@ -272,50 +550,67 @@ export default function AppShell() {
   return (
     <div style={{
       display: "flex", flexDirection: "column",
-      height: "100vh", width: "100vw",
+      // 100% not 100vh/vw: viewport units ignore the `zoom` set on <html> in
+      // index.css, so they'd render 10% larger than the layout around them and
+      // put a horizontal scrollbar on every page. html/body/#root are already
+      // sized 100%, so percentages resolve to the same box and do scale.
+      height: "100%", width: "100%",
       background: F.paper, color: F.ink,
       fontFamily: "'Sora', sans-serif", overflow: "hidden",
     }}>
-      {/* ── TOP BAR ── */}
+      {/* ── TOP BAR ──
+          Wordmark · brand filter · nav capsule · right rail. The capsule lifts
+          the tabs off the bar onto their own recessed track, which is what
+          frees the right-hand side for tools rather than crowding the user
+          menu. Nothing here scrolls horizontally: the capsule shrinks before
+          the rail does. */}
       <div style={{
-        height: 56, flexShrink: 0,
-        display: "flex", alignItems: "stretch",
+        height: 68, flexShrink: 0,
+        display: "flex", alignItems: "center", gap: 18,
         background: F.surface,
         borderBottom: `1px solid ${F.hairline}`,
-        padding: "0 0 0 22px",
+        padding: "0 18px",
       }}>
         {/* Wordmark */}
-        <div style={{
-          display: "flex", alignItems: "center",
-          paddingRight: 22, marginRight: 0,
-          borderRight: `1px solid ${F.hairline}`,
+        <span style={{
+          fontFamily: "'Sora', sans-serif",
+          fontSize: 14, fontWeight: 300, textTransform: "uppercase",
+          color: F.ink, letterSpacing: "0.24em",
+          whiteSpace: "nowrap", flexShrink: 0,
         }}>
-          <span style={{
-            fontFamily: "'Newsreader', serif",
-            fontSize: 16, fontStyle: "italic",
-            fontWeight: 600, color: F.ink, letterSpacing: "-0.01em",
-          }}>
-            5th Avenue
-          </span>
-        </div>
+          Fifth Avenue
+        </span>
 
         {/* Brand Filter */}
         <BrandSelect brands={brands} value={brandFilter} onChange={handleBrandChange} />
 
-        {/* Nav tabs */}
-        <div style={{ display: "flex", alignItems: "stretch", flex: 1, overflowX: "auto" }}>
+        {/* Nav capsule */}
+        <div style={{
+          display: "flex", alignItems: "center",
+          background: F.paper, borderRadius: 12,
+          padding: 4, height: 44, gap: 2,
+          minWidth: 0, overflowX: "auto", scrollbarWidth: "none",
+        }}>
           {visibleSections.map(s => <SectionTab key={s.id} section={s} />)}
         </div>
 
-        {/* User menu */}
-        <div style={{
-          display: "flex", alignItems: "center",
-          paddingRight: 18, paddingLeft: 14,
-          borderLeft: `1px solid ${F.hairline}`,
-        }}>
+        {/* Right rail */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flexShrink: 0 }}>
+          <RailButton label="Search  (⌘K)" onClick={() => setSearchOpen(true)}>
+            <Search size={17} strokeWidth={1.9} />
+          </RailButton>
           <UserMenu user={user} onLogout={handleLogout} />
         </div>
       </div>
+
+      <CommandPalette
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        sections={visibleSections}
+        brands={brands}
+        brandFilter={brandFilter}
+        onBrand={handleBrandChange}
+      />
 
       {/* ── PAGE CONTENT ── */}
       <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>

@@ -5,6 +5,57 @@
  */
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&display=swap');
 
+/* ── Tailwind v4 ────────────────────────────────────────────────────────────
+   Added so components authored against Tailwind (21st.dev and friends) drop in
+   without a rewrite, and so this repo matches 5th-avenue-client-front, which is
+   already on the same version.
+
+   Deliberately imported layer-by-layer WITHOUT Tailwind's preflight. Every page
+   here is styled with inline style objects, and preflight would restyle base
+   elements underneath all of them — flattening headings to `font-size: inherit`,
+   stripping list markers, switching images to `display: block`. The reset just
+   below already covers what this app actually needs. New Tailwind components
+   style themselves explicitly with utilities, so they don't depend on it.
+
+   The trade-off: a pasted component that assumes preflight may show native
+   control chrome (a default <button> background, say). Add the utility
+   explicitly on that element rather than turning preflight back on. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* Bridge the design tokens in src/theme/tokens.js into Tailwind's theme, so a
+   Tailwind class and an inline `T.*` value resolve to the same colour. Keep
+   these in sync with tokens.js — that file stays the source of truth for the
+   inline-styled pages, this block mirrors it for the utility-styled ones. */
+@theme {
+  --color-page: #F7F6F2;         /* T.bg */
+  --color-surface: #FFFFFF;      /* T.surface */
+  --color-raised: #FBFAF8;       /* T.raised */
+  --color-wash: rgba(28, 24, 16, 0.035);   /* T.hover */
+  --color-line: rgba(28, 24, 16, 0.09);    /* T.border */
+  --color-line-mid: rgba(28, 24, 16, 0.15);/* T.borderMid */
+  --color-ink: #1C1A15;          /* T.text */
+  --color-sub: #6E6A5C;          /* T.sub */
+  --color-mute: #E8E5DC;         /* T.mute */
+  --color-label: #948E7C;        /* T.label */
+
+  --color-accent: #2F3E6B;       /* T.accent */
+  --color-green: #1E9E5A;        /* T.green */
+  --color-amber: #B5790A;        /* T.amber */
+  --color-red: #C13A3A;          /* T.red */
+  --color-purple: #7860D6;       /* T.purple */
+  --color-teal: #1C9C8C;         /* T.teal */
+  --color-pink: #A8519E;         /* T.pink */
+  --color-gold: #A6862E;         /* T.gold */
+
+  --font-sans: 'Sora', sans-serif;
+  --font-serif: 'Newsreader', serif;
+
+  --shadow-card: 0 1px 2px rgba(28,24,16,0.04), 0 6px 20px rgba(28,24,16,0.06);
+  --shadow-float: 0 12px 40px rgba(28,24,16,0.14);
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -15,6 +66,15 @@ html, body, #root {
   height: 100%;
   width: 100%;
   background: #F7F6F2;
+}
+
+/* Default UI scale. The platform is sized in px through inline style objects
+   (see src/theme/tokens.js), so a rem/font-size bump would miss almost
+   everything — `zoom` scales the whole layout including those px values, and
+   unlike `transform: scale()` it reflows properly and keeps the viewport
+   height honest. Change the one number below to retune the whole app. */
+html {
+  zoom: 1.1;
 }
 
 body {

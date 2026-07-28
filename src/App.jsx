@@ -12,7 +12,7 @@ import Campaigns from "./pages/Campaigns";
 import Billing from "./pages/Billing";
 import Summary from "./pages/Summary";
 import Creators from "./pages/Creators";
-import ClientRequests from "./pages/ClientRequests";
+import Requests from "./pages/Requests";
 import Auth from "./pages/Auth";
 
 export default function App() {
@@ -33,9 +33,13 @@ export default function App() {
             <Route path="/campaigns" element={<Campaigns />} />
             <Route path="/billing"   element={<Billing />} />
             {/* Founder-only — AppShell blocks other roles via sections.js */}
-            <Route path="/creators"        element={<Creators />} />
-            <Route path="/client-requests" element={<ClientRequests />} />
-            <Route path="/auth"            element={<Auth />} />
+            <Route path="/creators"  element={<Creators />} />
+            <Route path="/requests"  element={<Requests />} />
+            <Route path="/auth"      element={<Auth />} />
+            {/* Client Requests was its own section before the two inboxes were
+                merged — keep old bookmarks working rather than bouncing them
+                to Summary via the catch-all below. */}
+            <Route path="/client-requests" element={<Navigate to="/requests" replace />} />
             <Route path="/"          element={<Navigate to="/summary" replace />} />
             <Route path="*"          element={<Navigate to="/summary" replace />} />
           </Route>

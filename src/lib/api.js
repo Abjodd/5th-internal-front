@@ -36,9 +36,9 @@ export const FindingsAPI = {
     request(`/api/findings/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
 };
 
-// ── Client Requests (founder inbox) ──────────────────────────────────────────
-// landing page POSTs; the founder tab uses list/update
-// Backend fires the founder email on create (mailer.js)
+// ── Client Requests (Requests › Client Requests) ─────────────────────────────
+// The landing page's "Start a project" form POSTs; the founder inbox uses
+// list/update. Backend fires the founder email on create (mailer.js).
 export const ClientRequestsAPI = {
   list: (status) => request(`/api/client-requests${status ? `?status=${encodeURIComponent(status)}` : ""}`),
   create: (req) => request("/api/client-requests", { method: "POST", body: JSON.stringify(req) }),
@@ -46,14 +46,25 @@ export const ClientRequestsAPI = {
     request(`/api/client-requests/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
 };
 
-// ── Creator Requests (founder inbox) ─────────────────────────────────────────
-// landing page "Apply as a creator" POSTs; the Creators > Requests tab uses
-// list/update. Backend fires the founder email on create (mailer.js)
+// ── Creator Requests (Requests › Creator Requests) ───────────────────────────
+// The landing page's "Apply as a creator" form POSTs; the founder inbox uses
+// list/update. Backend fires the founder email on create (mailer.js).
 export const CreatorRequestsAPI = {
   list: (status) => request(`/api/creator-requests${status ? `?status=${encodeURIComponent(status)}` : ""}`),
   create: (req) => request("/api/creator-requests", { method: "POST", body: JSON.stringify(req) }),
   update: (id, patch) =>
     request(`/api/creator-requests/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+
+  // Promotion into the creators directory is two calls on purpose: `checkPromote`
+  // is a dry run that reports whether the handle already exists, so the confirm
+  // modal can say what will actually happen; `promote` then writes. Without
+  // `overwrite` the backend refuses to clobber an existing row (409).
+  checkPromote: (id) => request(`/api/creator-requests/${id}/promote`),
+  promote: (id, overwrite = false) =>
+    request(`/api/creator-requests/${id}/promote`, {
+      method: "POST",
+      body: JSON.stringify({ overwrite }),
+    }),
 };
 
 // Generic CRUD client factory matching the backend's registerCrudRoutes shape.

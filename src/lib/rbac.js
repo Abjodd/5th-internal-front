@@ -18,6 +18,10 @@ export const PERMS = {
   seeAgencyFee:       ["founder"],
   createCampaign:     ["founder", "pcm", "cm", "am"],
   deleteCampaign:     ["founder"],
+  // Pushing a campaign's end date out is a commercial decision (it moves the
+  // delivery commitment), so it sits with the roles that own the schedule —
+  // not with CM/EA, who execute against whatever dates they're given.
+  extendCampaignEnd:  ["founder", "pcm", "am"],
   // Creator records are retained: any campaign role can edit
   // details, but only the founder can remove a creator (the underlying
   // record is only ever deleted from the founder's Auth side).
@@ -55,9 +59,13 @@ export const PERMS = {
   seeCampaignPL:     ["founder", "pcm"],
 
   // ── Founder-only pages ──────────────────────────────────────────────────────
-  seeCreators:       ["founder"],   // Creators directory (all creators + invoices)
-  seeClientRequests: ["founder"],   // Client Requests inbox (brand landing-page signups)
-  manageAuth:        ["founder"],   // Auth page: view/add/edit/soft-delete credentials
+  seeCreators:        ["founder"],  // Creators directory (all creators + invoices)
+  manageAuth:         ["founder"],  // Auth page: view/add/edit/soft-delete credentials
+  // Requests inbox — one permission per tab rather than one for the section,
+  // so the two inboxes can be opened to different roles later without
+  // reworking the page (it renders only the tabs the role can see).
+  seeClientRequests:  ["founder"],  // brand signups from "Start a project"
+  seeCreatorRequests: ["founder"],  // creator applications from "Apply as a creator"
 };
 
 /**

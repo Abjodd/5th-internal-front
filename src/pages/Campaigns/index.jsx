@@ -336,9 +336,12 @@ const mkCreator = (src={}, fee) => ({
 
 // ── WORKFLOW ACTION LABELS ───────────────────────────────────────────────────
 // Shared by the confirmation modal and the post-action toast.
-const ACTION_MSGS={advance_to_shortlist:"Move to creator shortlisting",am_request_edit:"Request brief edit",raise_po:"Raise Purchase Order",advance_received:"Confirm advance received",assign_cm:"Assign CM",assign_ea:"Assign EA — start execution",brief_sent:"Mark briefs sent to creators",concept_submitted:"Mark concepts received",cm_approve_concept:"Approve concept",cm_request_changes:"Request concept changes",start_production:"Start production",video_submitted:"Mark video submitted",internal_approved:"Approve internally — send to client",internal_revision:"Request internal revision",client_approved:"Mark client approved",client_revision:"Log client revision request",mark_live:"Mark content live",creator_paid:"Confirm creator payments released",start_reporting:"Start reporting",mark_completed:"Mark campaign completed"};
+const ACTION_MSGS={advance_to_shortlist:"Move to creator shortlisting",am_request_edit:"Request brief edit",raise_po:"Raise Purchase Order",advance_received:"Confirm advance received",assign_cm:"Assign CM",assign_ea:"Assign EA — start execution",brief_sent:"Mark briefs sent to creators",concept_submitted:"Mark concepts received",cm_approve_concept:"Approve concept",cm_request_changes:"Request concept changes",start_production:"Start production",video_submitted:"Mark video submitted",internal_approved:"Approve internally — send to client",internal_revision:"Request internal revision",client_approved:"Mark client approved",client_revision:"Log client revision request",mark_live:"Mark content live",creator_paid:"Confirm creator payments released",start_reporting:"Start reporting",mark_completed:"Mark campaign completed",extend_end_date:"Campaign end date extended"};
 // Actions that don't move the pipeline stage — no confirmation needed.
-const NO_CONFIRM_ACTIONS=new Set(["assign_cm"]);
+// extend_end_date is here because ExtendEndModal is already its own confirm
+// step (it has to be — it collects the new date), so the generic stage-change
+// modal would just be a second dialog saying less.
+const NO_CONFIRM_ACTIONS=new Set(["assign_cm","extend_end_date"]);
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 const fmtINR  = n => !n&&n!==0?"—":n>=100000?`₹${(n/100000).toFixed(1)}L`:`₹${(n/1000).toFixed(0)}K`;
@@ -483,6 +486,15 @@ const endStatus = (iso, stage) => {
   if (days <= 7)  return { tone: T.amber, text: `Ending in ${days}d`, key: "ending" };
   return null;
 };
+// ISO date arithmetic for the end-date extension presets. Parses at local
+// midnight (same as prettyDate/DateInput) so a shift never lands a day off
+// across a DST boundary.
+const addDays = (iso, n) => {
+  if(!ISO_DATE.test(iso||"")) return "";
+  const d=new Date(`${iso}T00:00:00`); d.setDate(d.getDate()+n);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+};
+const daysBetween = (a,b) => Math.round((new Date(`${b}T00:00:00`)-new Date(`${a}T00:00:00`))/86400000);
 // Small inline pill matching the stage-chip styling, used for the end-date nudge.
 // Uses a color dot instead of "!" — reads as a status, not an alarm.
 const EndPill = ({ es, style = {} }) => es ? (
@@ -724,6 +736,61 @@ function ConfirmActionModal({camp,label,onConfirm,onCancel}){
         <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
         <div style={{flex:1}}/>
         <Btn variant="primary" onClick={onConfirm}>Yes, confirm</Btn>
+      </div>
+    </motion.div>
+  </div>);
+}
+
+// ── EXTEND END DATE MODAL ────────────────────────────────────────────────────
+// A campaign that has run past its end date (or is about to) still has work
+// against it — creators mid-production, deliverables not yet live. Rather than
+// force a stage change or leave the card permanently flagged "Ended", the
+// schedule owner pushes the end date out and the move is logged.
+//
+// Only ever moves the date forward: `min` is the day after the current end, so
+// the picker can't quietly shorten a campaign. A reason is required, because
+// six months later the timeline entry is the only record of why the date moved.
+function ExtendEndModal({camp,onConfirm,onCancel}){
+  const cur=camp.end;
+  const [end,setEnd]=useState("");
+  const [reason,setReason]=useState("");
+  const floor=ISO_DATE.test(cur||"")?addDays(cur,1):today();
+  // Presets are relative to the later of the current end and today: extending
+  // a campaign that ended three weeks ago by "+2 weeks" should land two weeks
+  // out, not a week in the past.
+  const base=!ISO_DATE.test(cur||"")||cur<today()?today():cur;
+  const presets=[["+1 week",7],["+2 weeks",14],["+1 month",30]];
+  const delta=ISO_DATE.test(cur||"")&&end?daysBetween(cur,end):null;
+  const ok=!!end&&end>=floor&&!!reason.trim();
+
+  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(420px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
+      <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Extend end date</div>
+      <div style={{fontSize:11,color:T.sub,lineHeight:1.6,marginBottom:14}}>
+        <strong style={{color:T.text}}>{camp.name}</strong> currently ends <strong style={{color:T.text}}>{prettyDate(cur)||"—"}</strong>.
+        The new date is logged on the campaign timeline.
+      </div>
+
+      <Lbl style={{display:"block",marginBottom:5}}>New end date</Lbl>
+      <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
+        {presets.map(([label,n])=>{
+          const v=addDays(base,n),on=end===v;
+          return <button key={label} onClick={()=>setEnd(v)} style={{padding:"4px 10px",borderRadius:20,fontSize:10,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{label}</button>;
+        })}
+      </div>
+      <DateInput value={end} onChange={setEnd} min={floor} placeholder="Pick a new end date" style={{...INP,marginBottom:6}}/>
+      {delta>0&&<div style={{fontSize:10,color:T.sub,marginBottom:10}}>{prettyDate(cur)} → <strong style={{color:"#1D1D1F"}}>{prettyDate(end)}</strong> · {delta} day{delta===1?"":"s"} longer</div>}
+
+      <Lbl style={{display:"block",marginTop:6,marginBottom:5}}>Reason</Lbl>
+      <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={2}
+        placeholder="e.g. two creators re-shooting after client revision"
+        style={{...INP,fontSize:11,marginBottom:14}}/>
+
+      <div style={{display:"flex",gap:8}}>
+        <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
+        <div style={{flex:1}}/>
+        <Btn variant="primary" disabled={!ok} onClick={()=>ok&&onConfirm(end,reason.trim())}>Extend</Btn>
       </div>
     </motion.div>
   </div>);
@@ -1414,9 +1481,10 @@ function WorkflowActions({camp, role, onAction}) {
 function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogTimeline,onBack,onPrev,onNext,hasPrev,hasNext}){
   const [tab,setTab]=useState("brief");
   const [confirmDelete,setConfirmDelete]=useState(false);
+  const [extending,setExtending]=useState(false);
   // Selecting a different campaign resets the panel to Brief — the tab chosen
   // on one campaign shouldn't leak onto the next.
-  useEffect(()=>{setTab("brief");setConfirmDelete(false);},[camp.id]);
+  useEffect(()=>{setTab("brief");setConfirmDelete(false);setExtending(false);},[camp.id]);
   const stCol=T.sc[camp.stage]||T.sub,pl=PIPELINE.find(p=>p.id===camp.stage)||PIPELINE[0];
   const es=endStatus(camp.end,camp.stage);
   const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},{id:"timeline",label:"Timeline"},...(canFin(role)?[{id:"financials",label:"Financials"}]:[])];
@@ -1444,7 +1512,15 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
           <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8}}>
             <div style={{flex:1,minWidth:0}}>
               <h2 style={{fontFamily:"'Newsreader',serif",fontSize:24,fontWeight:600,color:"#1D1D1F",margin:"0 0 5px",fontStyle:"italic",letterSpacing:"-0.02em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{camp.name}</h2>
-              <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF,display:"flex",alignItems:"center",flexWrap:"wrap",gap:8}}><span>{camp.client} · {camp.service} · {camp.region} · {prettyDate(camp.start)}–{prettyDate(camp.end)}{canFin(role)&&<span style={{marginLeft:8,fontWeight:600,color:"#1D1D1F"}}>{fmtINR(camp.budget)}</span>}</span><EndPill es={es}/></div>
+              <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF,display:"flex",alignItems:"center",flexWrap:"wrap",gap:8}}><span>{camp.client} · {camp.service} · {camp.region} · {prettyDate(camp.start)}–{prettyDate(camp.end)}{canFin(role)&&<span style={{marginLeft:8,fontWeight:600,color:"#1D1D1F"}}>{fmtINR(camp.budget)}</span>}</span><EndPill es={es}/>
+                {/* Offered exactly when the end-date nudge is showing — the
+                    campaign is running out of runway, so the fix belongs next
+                    to the warning rather than buried in an edit form. */}
+                {es&&can(role,"extendCampaignEnd")&&(
+                  <button onClick={()=>setExtending(true)} style={{background:"transparent",border:"none",padding:0,cursor:"pointer",fontFamily:SF,fontSize:11,fontWeight:600,color:T.accent,textDecoration:"underline",textUnderlineOffset:2}}>
+                    Extend
+                  </button>
+                )}</div>
             </div>
             <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:5,marginLeft:16,flexShrink:0}}>
               <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:`${stCol}14`,border:`1px solid ${stCol}28`,fontSize:10.5,fontWeight:600,color:stCol,fontFamily:SF}}>{pl.label}</span>
@@ -1454,6 +1530,7 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
           </div>
           <AnimatePresence>
             {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
+            {extending&&<ExtendEndModal camp={camp} onConfirm={(end,reason)=>{setExtending(false);onAction("extend_end_date",{end,reason});}} onCancel={()=>setExtending(false)}/>}
           </AnimatePresence>
           <div style={{fontSize:10.5,color:"#6E6E73",marginBottom:12,fontFamily:SF,fontStyle:"italic"}}>{STAGE_HINT[camp.stage]}</div>
           <WorkflowActions camp={camp} role={role} onAction={onAction}/>
@@ -1661,6 +1738,11 @@ export default function InternalCampaigns(){
         case "creator_paid": next={...c,stage:"creator_paid",timeline:addEv("Creator payments released","Accounts")};break;
         case "start_reporting": next={...c,stage:"reporting",timeline:addEv("Campaign report in progress")};break;
         case "mark_completed": next={...c,stage:"completed",progress:100,timeline:addEv("Campaign marked complete")};break;
+        // Schedule change only — stage and progress are deliberately untouched,
+        // so extending a campaign that ran long doesn't rewind its pipeline.
+        case "extend_end_date": next={...c,end:data.end,timeline:addEv(
+          `End date extended: ${prettyDate(c.end)||"—"} → ${prettyDate(data.end)}${data.reason?` — ${data.reason}`:""}`,
+          currentUser.name||role)};break;
         default: next=c;
       }
       updatedCamp=next;
@@ -1674,7 +1756,7 @@ export default function InternalCampaigns(){
       }
     },0);
     showToast(ACTION_MSGS[action]||action);
-  },[selectedId,showToast,role]);
+  },[selectedId,showToast,role,currentUser]);
   // Double-check gate: stage-changing actions go through a confirmation modal
   // before onAction applies (and persists) anything. Pure assignments skip it.
   const [pendingAction,setPendingAction]=useState(null); // {action,data}

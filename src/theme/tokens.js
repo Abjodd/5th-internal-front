@@ -29,7 +29,7 @@ export const T = {
   mute: "#E8E5DC",
   label: "#948E7C",
 
-  accent: "#2F3E6B", // primary actions, active tabs, links
+  accent: "#1F2C52", // primary actions, active tabs, links (darkened navy)
   green: "#1E9E5A",  // success / live / paid
   amber: "#B5790A",  // pending / needs attention
   red: "#C13A3A",    // error / overdue / critical

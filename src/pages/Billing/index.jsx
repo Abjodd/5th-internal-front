@@ -2,7 +2,7 @@
  * 5th Avenue — Internal Billing · V2 (crash-fixed rewrite)
  * No IIFEs in JSX · All null guards · Clean component structure
  */
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
 import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, RegistryAPI, CampaignsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
@@ -21,6 +21,15 @@ const INP = {
 
 const FY = "2025–26";
 const todayStr = () => new Date().toLocaleDateString("en-IN", { day:"numeric", month:"short", year:"numeric" });
+
+// Document ids. These were minted as `Date.now().toString().slice(-5)`, i.e.
+// the last 5 digits of a millisecond clock — a value space that wraps every
+// 100 seconds, so two POs raised a minute and a half apart could collide and
+// the duplicate _id took the backend down. Full-precision base36 time keeps
+// ids sortable and short, and the random suffix removes same-millisecond
+// collisions (two rapid submits, a retry, a double-fired handler).
+const newId = (prefix) =>
+  `${prefix}-${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
 
 // ── ROLES ─────────────────────────────────────────────────────────────────────
 // NOTE: "pcm" (Partner Category Manager) gets accounts-tier financial
@@ -70,6 +79,66 @@ function calcMargin(clientBudget, marginPct, agencyFeePct, agencyFeeType, isReta
   const grossPct     = clientTotal > 0 ? (grossProfit / clientTotal) * 100 : 0;
   return { margin, agencyFee, opsBudget, clientTotal, grossProfit, grossPct };
 }
+
+// ── PO LEDGER MODEL ───────────────────────────────────────────────────────────
+// A purchase order has two independent axes. The old model jammed both into one
+// enum (pending_approval → approved → work_delivered → matched → closed), which
+// made "matched" something a human asserted with a button rather than something
+// the books proved:
+//
+//   approval    — pending_approval → approved / rejected      (a human decision)
+//   fulfilment  — open → partially_billed → fully_billed      (derived, below)
+//
+// Fulfilment and every money figure are recomputed from the documents that bill
+// against the PO. Nothing is stored. The previous design stored `invoicedAmount`
+// on each client PO and nothing ever incremented it — the real values existed
+// only in seed rows, so every PO raised through the UI sat at 0 forever while
+// the "Remaining" column happily reported the full value as unspent.
+
+// Outbound (us → vendor): the bills are expenses tagged with this PO.
+const billedAgainstPO = (poId, expenses) =>
+  (expenses || []).filter(e => e.poId === poId).reduce((s, e) => s + (e.amount || 0), 0);
+
+// Inbound (client → us): the bills are invoices raised against this PO.
+// Credit notes are excluded — they reverse revenue, they don't consume the PO.
+const invoicedAgainstPO = (poId, invoices) =>
+  (invoices || [])
+    .filter(i => i.clientPO?.id === poId && i.type !== "credit_note")
+    .reduce((s, i) => s + (i.amount || 0), 0);
+
+// Legacy docs used the single enum above. work_delivered/matched really meant
+// "approved, and some billing has happened" — which derived fulfilment now
+// answers on its own, so they collapse back to plain `approved`.
+const APPROVAL_OF = {
+  pending_approval:"pending_approval", approved:"approved", rejected:"rejected",
+  work_delivered:"approved", matched:"approved", closed:"approved",
+};
+const approvalOf = po => APPROVAL_OF[po?.status] || "pending_approval";
+const isPOClosed = po => po?.closed === true || po?.status === "closed";
+
+// One PO's ledger line: value, what has been billed against it, what is left.
+// `billed` comes from billedAgainstPO / invoicedAgainstPO depending on direction.
+function poLedger(po, billed) {
+  const value   = po?.amount || 0;
+  const balance = value - billed;
+  // A PO with no recorded value is NOT over-billed — its value is simply
+  // unknown, and the two must not look the same. The old "Upload PO" flow
+  // captured only a PO number and wrote amount:0, so these exist in the data:
+  // reporting them as "over-billed by the full invoice" would be a false alarm,
+  // while silently backfilling the value from the invoices would invent an
+  // authorisation the client never gave. Both are wrong; this asks for the number.
+  const fulfilment = isPOClosed(po) ? "closed"
+    : value <= 0      ? "unrecorded"
+    : billed <= 0     ? "open"
+    // Sub-rupee slack: a fully-billed PO shouldn't read "partially billed"
+    // because of floating-point drift on a split payment schedule.
+    : balance > 0.5   ? "partially_billed"
+    : "fully_billed";
+  return { value, billed, balance, fulfilment, pct: value > 0 ? Math.min(100, (billed / value) * 100) : 0 };
+}
+
+const FULFILMENT_LABEL = { open:"Open", partially_billed:"Partially billed", fully_billed:"Fully billed", closed:"Closed", unrecorded:"Value not set" };
+const FULFILMENT_COL   = { open:T.sub, partially_billed:T.amber, fully_billed:T.green, closed:T.label, unrecorded:T.red };
 
 // ── QUOTE TOTALS ──────────────────────────────────────────────────────────────
 function calcQuoteTotals(lines, agencyFeePct, agencyFeeType) {
@@ -192,179 +261,13 @@ const readLS  = k => { try { return JSON.parse(localStorage.getItem(k) || "{}");
 const writeLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
 // ── SEED DATA ─────────────────────────────────────────────────────────────────
+// Only CLIENTS and SEED_CAMPS_REF remain. The per-collection seed arrays
+// (invoices, expenses, POs, quotes, registry) were dead: every list is loaded
+// from the API on mount, so they were stale sample rows nobody read — and
+// their stored `invoicedAmount`/`status` fields were the misleading reference
+// that made the old PO balance columns look implemented.
 const CLIENTS = [
   { id:"cl1", name:"FreshBite Foods", isRetainer:true, retainerAmount:350000, agencyFeeExempt:true, creditLimit:1500000, poPreferred:true },
-];
-
-const SEED_INVOICES = [
-  { id:"INV-2026-022", client:"FreshBite Foods", clientId:"cl1", campaign:"c1", type:"campaign",
-    label:"Diwali Festive Push — Creator Batch 2", amount:280000, gstRate:18,
-    raisedDate:"Apr 28, 2026", dueDate:"May 10, 2026", status:"pending",
-    isRetainerClient:true, clientPO:{ id:"CPO-001", poNumber:"PO/FBF/2026/042", amount:1250000, status:"received" },
-    schedule:{ type:"advance_final",
-      advance:{ pct:50, amount:140000, status:"paid", paidDate:"Apr 28", utr:"HDFC2811204", razorpaySettled:true, settledDate:"Apr 30" },
-      final:{ pct:50, amount:140000, status:"pending", dueDate:"May 10" } },
-    gstin:"29AADCB2230M1ZP", sac:"998361", placeOfSupply:"Karnataka",
-    confirmedByAccounts:true, confirmedByFounder:false },
-  { id:"INV-2026-023", client:"FreshBite Foods", clientId:"cl1", campaign:null, type:"retainer",
-    label:"Monthly Retainer — May 2026", amount:350000, gstRate:18,
-    raisedDate:"May 1, 2026", dueDate:"May 15, 2026", status:"pending",
-    isRetainerClient:true, clientPO:null,
-    schedule:{ type:"single" },
-    gstin:"29AADCB2230M1ZP", sac:"998311", placeOfSupply:"Karnataka",
-    confirmedByAccounts:false, confirmedByFounder:false },
-  { id:"INV-2026-020", client:"FreshBite Foods", clientId:"cl1", campaign:null, type:"retainer",
-    label:"Monthly Retainer — April 2026", amount:350000, gstRate:18,
-    raisedDate:"Apr 1, 2026", dueDate:"Apr 15, 2026", status:"overdue",
-    isRetainerClient:true, clientPO:null,
-    schedule:{ type:"single" },
-    gstin:"29AADCB2230M1ZP", sac:"998311", placeOfSupply:"Karnataka",
-    confirmedByAccounts:false, confirmedByFounder:false },
-  { id:"INV-2026-019", client:"FreshBite Foods", clientId:"cl1", campaign:"c3", type:"campaign",
-    label:"Festive Nano Wave — Final Settlement", amount:160000, gstRate:18,
-    raisedDate:"Mar 10, 2026", dueDate:"Mar 25, 2026", status:"paid", paidDate:"Mar 22, 2026",
-    isRetainerClient:true, clientPO:{ id:"CPO-002", poNumber:"PO/FBF/2026/019", amount:320000, status:"exhausted" },
-    schedule:{ type:"advance_final",
-      advance:{ pct:50, amount:80000, status:"paid", paidDate:"Mar 10", utr:"ICICI9920021", razorpaySettled:true, settledDate:"Mar 10" },
-      final:{ pct:50, amount:80000, status:"paid", paidDate:"Mar 22", utr:"ICICI9920098", razorpaySettled:true, settledDate:"Mar 24" } },
-    gstin:"29AADCB2230M1ZP", sac:"998361", placeOfSupply:"Karnataka",
-    confirmedByAccounts:true, confirmedByFounder:true },
-  { id:"CN-2026-003", client:"FreshBite Foods", clientId:"cl1", campaign:"c2", type:"credit_note",
-    label:"Credit Note — Summer Launch (campaign delay)", amount:-45000, gstRate:18,
-    raisedDate:"Apr 5, 2026", dueDate:null, status:"issued",
-    isRetainerClient:true, clientPO:null, schedule:{ type:"single" },
-    gstin:"29AADCB2230M1ZP", sac:"998311", placeOfSupply:"Karnataka",
-    confirmedByAccounts:true, confirmedByFounder:true },
-];
-
-const SEED_CLIENT_POS = [
-  { id:"CPO-001", client:"FreshBite Foods", campaign:"c1", campaignName:"Diwali Festive Push",
-    poNumber:"PO/FBF/2026/042", amount:1250000, receivedDate:"Feb 18, 2026", validTill:"Jun 30, 2026",
-    document:"uploaded", invoicedAmount:280000, status:"partial" },
-  { id:"CPO-002", client:"FreshBite Foods", campaign:"c3", campaignName:"Festive Nano Wave",
-    poNumber:"PO/FBF/2026/019", amount:320000, receivedDate:"Dec 28, 2025", validTill:"Mar 31, 2026",
-    document:"uploaded", invoicedAmount:320000, status:"exhausted" },
-];
-
-const SEED_EXPENSES = [
-  { id:"EXP-R-001", cat:"internal_regular", sub:"salary", payee:"May 2026 Payroll Batch", campaign:null,
-    amount:385000, date:"May 1, 2026", status:"paid", schedule:{ type:"single" },
-    tds:{ applicable:false }, gst:{ applicable:false }, approvedBy:"founder", utr:"AXS_PAYROLL_MAY26",
-    note:"5 employees — batch transfer" },
-  { id:"EXP-R-002", cat:"internal_regular", sub:"bonus", payee:"Q1 Performance Bonus", campaign:null,
-    amount:75000, date:"Apr 28, 2026", status:"pending_approval", schedule:{ type:"single" },
-    tds:{ applicable:false }, gst:{ applicable:false }, requestedBy:"founder" },
-  { id:"EXP-DIR-001", cat:"director", sub:"salary", payee:"Founder — Director Salary", campaign:null,
-    amount:200000, date:"May 1, 2026", status:"paid", schedule:{ type:"single" },
-    tds:{ applicable:true, section:"192", rate:30, deducted:60000 }, gst:{ applicable:false },
-    approvedBy:"founder", utr:"DIR_SAL_MAY26", directorOnly:true },
-  { id:"EXP-DIR-002", cat:"director", sub:"consultancy", payee:"Founder LLP — Consultancy", campaign:null,
-    amount:100000, date:"May 5, 2026", status:"paid", schedule:{ type:"single" },
-    tds:{ applicable:true, section:"194J", rate:10, deducted:10000 }, gst:{ applicable:true, amount:18000 },
-    approvedBy:"founder", utr:"DIR_CON_MAY26", directorOnly:true },
-  { id:"EXP-DIR-003", cat:"director", sub:"drawings", payee:"Founder — Drawings", campaign:null,
-    amount:50000, date:"May 10, 2026", status:"pending", schedule:{ type:"single" },
-    tds:{ applicable:false }, gst:{ applicable:false }, directorOnly:true },
-  { id:"EXP-DIR-004", cat:"director", sub:"profit_distribution", payee:"Founder — Profit Share Q1", campaign:null,
-    amount:350000, date:"Apr 30, 2026", status:"paid", schedule:{ type:"single" },
-    tds:{ applicable:false }, gst:{ applicable:false }, approvedBy:"founder", utr:"DIR_PRF_Q1_26", directorOnly:true },
-  { id:"EXP-V-001", cat:"internal_variable", sub:"reimbursement", payee:"Arjun Reddy", campaign:"c1",
-    amount:4200, date:"May 3, 2026", status:"pending_approval", schedule:{ type:"single" },
-    tds:{ applicable:false }, gst:{ applicable:false }, requestedBy:"ea", note:"Travel to FreshBite HQ" },
-  { id:"EXP-V-002", cat:"internal_variable", sub:"misc", payee:"Office Supplies", campaign:null,
-    amount:8500, date:"Apr 28, 2026", status:"paid", schedule:{ type:"single" },
-    tds:{ applicable:false }, gst:{ applicable:false }, approvedBy:"founder", utr:"MISC_APR26" },
-  { id:"EXP-S-001", cat:"external_subscription", sub:"saas", payee:"Notion", campaign:null,
-    amount:2800, date:"May 1, 2026", status:"paid", schedule:{ type:"single" },
-    tds:{ applicable:false }, gst:{ applicable:true, amount:504 }, approvedBy:"founder" },
-  { id:"EXP-S-002", cat:"external_subscription", sub:"saas", payee:"Adobe CC", campaign:null,
-    amount:5400, date:"May 2, 2026", status:"paid", schedule:{ type:"single" },
-    tds:{ applicable:false }, gst:{ applicable:true, amount:972 }, approvedBy:"founder" },
-  { id:"EXP-S-003", cat:"external_subscription", sub:"saas", payee:"Metricool Pro", campaign:null,
-    amount:1800, date:"May 1, 2026", status:"paid", schedule:{ type:"single" },
-    tds:{ applicable:false }, gst:{ applicable:false }, approvedBy:"founder" },
-  { id:"EXP-C-001", cat:"external_creator", sub:"creator_mcn", payee:"StarTalent MCN", campaign:"c1",
-    amount:85000, date:"Apr 12, 2026", status:"paid",
-    vendorType:"mcn", vendorForCreator:{ creatorName:"Anjali Kitchen", creatorHandle:"@anjalikitchen", creatorId:"r1", followers:820000, platform:"Instagram" },
-    schedule:{ type:"single" }, tds:{ applicable:true, section:"194M", rate:10, deducted:8500 }, gst:{ applicable:false },
-    pan:"STMCN1234A", poId:"PO-2026-001", approvedBy:"founder", utr:"HDFC2811909",
-    eaConfirmed:true, cmConfirmed:true, accConfirmed:true },
-  { id:"EXP-C-002", cat:"external_creator", sub:"creator_mcn", payee:"InfluenceHub Agency", campaign:"c1",
-    amount:180000, date:null, status:"pending_approval",
-    vendorType:"mcn", vendorForCreator:{ creatorName:"South Foodie", creatorHandle:"@southfoodie", creatorId:"r2", followers:1200000, platform:"YouTube" },
-    schedule:{ type:"advance_final", advance:{ amount:90000, status:"pending_approval" }, final:{ amount:90000, status:"pending" } },
-    tds:{ applicable:true, section:"194M", rate:10, deducted:18000 }, gst:{ applicable:false },
-    pan:"IFHUB5678B", poId:"PO-2026-002", requestedBy:"cm", eaConfirmed:false, cmConfirmed:false, accConfirmed:false },
-  { id:"EXP-C-003", cat:"external_creator", sub:"creator_mcn", payee:"NanoNet MCN", campaign:"c3",
-    amount:18000, date:"Feb 10, 2026", status:"paid",
-    vendorType:"mcn", vendorForCreator:{ creatorName:"Mumbai Munchies", creatorHandle:"@mumbaimunch", creatorId:"r3", followers:95000, platform:"Instagram" },
-    schedule:{ type:"single" }, tds:{ applicable:false }, gst:{ applicable:false },
-    pan:"NANO9012C", approvedBy:"founder", utr:"AXIS0029901", eaConfirmed:true, cmConfirmed:true, accConfirmed:true },
-  { id:"EXP-C-004", cat:"external_creator", sub:"creator_mcn", payee:"GoaTalent MCN", campaign:"c3",
-    amount:8000, date:"Feb 15, 2026", status:"paid",
-    vendorType:"mcn", vendorForCreator:{ creatorName:"Goa Vibes", creatorHandle:"@goavibes", creatorId:"r4", followers:32000, platform:"Instagram" },
-    schedule:{ type:"single" }, tds:{ applicable:false }, gst:{ applicable:false },
-    pan:null, approvedBy:"founder", utr:"AXIS0029910", eaConfirmed:true, cmConfirmed:true, accConfirmed:true },
-  { id:"EXP-V-010", cat:"external_vendor", sub:"vendor", payee:"Pixel Studio", campaign:"c2",
-    amount:65000, date:"Apr 20, 2026", status:"paid",
-    vendorType:"production", vendorForCreator:null,
-    schedule:{ type:"advance_final",
-      advance:{ amount:32500, status:"paid", paidDate:"Apr 20", utr:"SBI4481920" },
-      final:{ amount:32500, status:"paid", paidDate:"May 8", utr:"SBI4491222" } },
-    tds:{ applicable:true, section:"194C", rate:2, deducted:1300 }, gst:{ applicable:true, gstin:"27AAACS1234B1ZX", amount:11700 },
-    pan:"PIXEL1234B", poId:"PO-2026-003", approvedBy:"founder", eaConfirmed:true, cmConfirmed:true, accConfirmed:true },
-];
-
-const SEED_POS = [
-  { id:"PO-2026-001", raisedBy:"ea", raisedByName:"Arjun Reddy", vendor:"StarTalent MCN", vendorType:"creator_mcn",
-    campaign:"c1", campaignName:"Diwali Festive Push", scope:"Creator fee via MCN for Anjali Kitchen — 3x Reels + 5x Stories",
-    amount:85000, paymentScheduleType:"single", deliveryDate:"Apr 15, 2026",
-    status:"closed", poDocument:"uploaded", approvedBy:"founder", approvedAt:"Mar 20, 2026",
-    deliveryConfirmed:true, deliveryConfirmedBy:"ea", createdAt:"Mar 18, 2026", notes:"" },
-  { id:"PO-2026-002", raisedBy:"cm", raisedByName:"Priya Nair", vendor:"InfluenceHub Agency", vendorType:"creator_mcn",
-    campaign:"c1", campaignName:"Diwali Festive Push", scope:"Creator fee via MCN for South Foodie — 2x YouTube Shorts + 3x Community Posts",
-    amount:180000, paymentScheduleType:"advance_final", deliveryDate:"May 20, 2026",
-    status:"approved", poDocument:null, approvedBy:"founder", approvedAt:"Apr 25, 2026",
-    deliveryConfirmed:false, deliveryConfirmedBy:null, createdAt:"Apr 23, 2026", notes:"" },
-  { id:"PO-2026-003", raisedBy:"cm", raisedByName:"Priya Nair", vendor:"Pixel Studio", vendorType:"vendor",
-    campaign:"c2", campaignName:"Summer Launch Teaser", scope:"Video production — 4x Reels (filming + editing)",
-    amount:65000, paymentScheduleType:"advance_final", deliveryDate:"Apr 30, 2026",
-    status:"closed", poDocument:"uploaded", approvedBy:"founder", approvedAt:"Apr 5, 2026",
-    deliveryConfirmed:true, deliveryConfirmedBy:"ea", createdAt:"Apr 3, 2026", notes:"" },
-  { id:"PO-2026-004", raisedBy:"cm", raisedByName:"Vikram Das", vendor:"VideoEdge Studio", vendorType:"vendor",
-    campaign:"c2", campaignName:"Summer Launch Teaser", scope:"Post-production — colour grading + subtitle animation for 6 Reels",
-    amount:38000, paymentScheduleType:"single", deliveryDate:"May 28, 2026",
-    status:"pending_approval", poDocument:null, approvedBy:null, approvedAt:null,
-    deliveryConfirmed:false, deliveryConfirmedBy:null, createdAt:todayStr(), notes:"" },
-];
-
-const SEED_REGISTRY = [
-  { id:"r1", type:"creator", mcnVendor:"StarTalent MCN", name:"Anjali Kitchen", handle:"@anjalikitchen", platform:"Instagram", followers:820000, niche:"Cooking", pan:"ABCDE1234F", gstin:null, bank:"Via StarTalent MCN", tdsSection:"194M", tdsRate:10, totalPaid:255000, tdsDeducted:25500, panCollected:true, campaigns:["c1","c3"] },
-  { id:"r2", type:"creator", mcnVendor:"InfluenceHub Agency", name:"South Foodie", handle:"@southfoodie", platform:"YouTube", followers:1200000, niche:"Food", pan:"FGHIJ5678K", gstin:null, bank:"Via InfluenceHub Agency", tdsSection:"194M", tdsRate:10, totalPaid:180000, tdsDeducted:18000, panCollected:true, campaigns:["c1"] },
-  { id:"r3", type:"creator", mcnVendor:"NanoNet MCN", name:"Mumbai Munchies", handle:"@mumbaimunch", platform:"Instagram", followers:95000, niche:"Food", pan:"KLMNO9012P", gstin:null, bank:"Via NanoNet MCN", tdsSection:null, tdsRate:0, totalPaid:18000, tdsDeducted:0, panCollected:true, campaigns:["c3"] },
-  { id:"r4", type:"creator", mcnVendor:"GoaTalent MCN", name:"Goa Vibes", handle:"@goavibes", platform:"Instagram", followers:32000, niche:"Lifestyle", pan:null, gstin:null, bank:"Via GoaTalent MCN", tdsSection:null, tdsRate:0, totalPaid:8000, tdsDeducted:0, panCollected:false, campaigns:["c3"] },
-  { id:"r5", type:"vendor", mcnVendor:null, name:"Pixel Studio", handle:null, platform:null, followers:null, niche:null, pan:"PIXEL1234B", gstin:"27AAACS1234B1ZX", bank:"SBI — CA2229001", tdsSection:"194C", tdsRate:2, totalPaid:65000, tdsDeducted:1300, panCollected:true, campaigns:["c2"] },
-  { id:"r6", type:"vendor", mcnVendor:null, name:"VideoEdge Studio", handle:null, platform:null, followers:null, niche:null, pan:"VIDEG5678C", gstin:"29VIDEG5678C1ZY", bank:"HDFC — CA4412009", tdsSection:"194C", tdsRate:2, totalPaid:0, tdsDeducted:0, panCollected:true, campaigns:["c2"] },
-];
-
-const SEED_QUOTES = [
-  { id:"QT-2026-005", client:"FreshBite Foods", label:"FreshBite — Monsoon Campaign 2026", status:"sent",
-    isAutoGenerated:false, campaignId:null, createdDate:"May 15, 2026", validTill:"May 31, 2026",
-    isRetainerClient:true, marginPct:35, agencyFeePct:0, agencyFeeType:"over_above",
-    lines:[
-      { desc:"Influencer Marketing — 8 Creators (Reels + Stories)", sac:"998361", qty:1, rate:650000, gstRate:18 },
-      { desc:"Campaign Strategy & Brief Development", sac:"998311", qty:1, rate:80000, gstRate:18 },
-      { desc:"Performance Reports (2)", sac:"998312", qty:2, rate:25000, gstRate:18 },
-    ],
-    notes:"Retainer client — agency fee waived. 50% advance on acceptance." },
-  { id:"QT-2026-004", client:"FreshBite Foods", label:"FreshBite — SEO Onboarding", status:"accepted",
-    isAutoGenerated:false, campaignId:null, createdDate:"Apr 20, 2026", validTill:"May 5, 2026",
-    isRetainerClient:true, marginPct:40, agencyFeePct:0, agencyFeeType:"baked_in",
-    lines:[
-      { desc:"SEO Strategy & Audit", sac:"998314", qty:1, rate:120000, gstRate:18 },
-      { desc:"Monthly SEO Retainer (3 months)", sac:"998314", qty:3, rate:45000, gstRate:18 },
-    ],
-    notes:"Retainer client — agency fee waived. 3-month commitment." },
 ];
 
 // SEED_CAMPS_REF is only used as initial fallback — tabs receive live `campsRef` prop from state
@@ -372,15 +275,6 @@ const SEED_CAMPS_REF = [
   { id:"c1", name:"Diwali Festive Push",  client:"FreshBite Foods", budget:1250000, marginPct:35, agencyFeePct:15, agencyFeeType:"over_above", isRetainerClient:true },
   { id:"c2", name:"Summer Launch Teaser", client:"FreshBite Foods", budget:800000,  marginPct:38, agencyFeePct:15, agencyFeeType:"baked_in",   isRetainerClient:true },
   { id:"c3", name:"Festive Nano Wave",    client:"FreshBite Foods", budget:320000,  marginPct:35, agencyFeePct:15, agencyFeeType:"over_above",  isRetainerClient:true },
-];
-
-const GST_CALENDAR = [
-  { id:"g1", type:"GSTR-1",    period:"April 2026", dueDate:"May 11, 2026", status:"due",   filedDate:null },
-  { id:"g2", type:"GSTR-3B",   period:"April 2026", dueDate:"May 20, 2026", status:"due",   filedDate:null },
-  { id:"g3", type:"TDS 194M",  period:"April 2026", dueDate:"May 7, 2026",  status:"due",   filedDate:null },
-  { id:"g4", type:"TDS 194C",  period:"April 2026", dueDate:"May 7, 2026",  status:"due",   filedDate:null },
-  { id:"g5", type:"GSTR-1",    period:"March 2026", dueDate:"Apr 11, 2026", status:"filed", filedDate:"Apr 9, 2026" },
-  { id:"g6", type:"GSTR-3B",   period:"March 2026", dueDate:"Apr 20, 2026", status:"filed", filedDate:"Apr 18, 2026" },
 ];
 
 // ── DESIGN CONSTANTS ─────────────────────────────────────────────────────────
@@ -581,210 +475,125 @@ function InvDetail({ inv, role, onAccConfirm, onFounderConfirm, onUploadPO }) {
   );
 }
 
-// ── EXPENSE DETAIL PANEL ──────────────────────────────────────────────────────
-const CAT_LABEL = { internal_regular:"Internal — Regular", internal_variable:"Internal — Variable", external_subscription:"Subscription", external_creator:"Creator (MCN)", external_vendor:"Vendor", director:"Director" };
-const CAT_COL   = { internal_regular:T.accent, internal_variable:T.purple, external_subscription:T.teal, external_creator:T.pink, external_vendor:T.amber, director:T.gold };
-
-function ExpDetail({ exp, role, pos, anomalies, onApprove, onMarkPaid, onEAConfirm, onCMConfirm }) {
-  if (!exp) return <div style={{ textAlign:"center", paddingTop:60, color:T.label, fontSize:11 }}>Select an expense to view details</div>;
-  const col           = CAT_COL[exp.cat] || T.label;
-  const linkedPO      = (pos || []).find(p => p.id === exp.poId);
-  const deliverables  = readLS("deliverables_status");
-  const dlKey         = `${exp.campaign}_${exp.vendorForCreator ? exp.vendorForCreator.creatorId : ""}`;
-  const dlUploaded    = !!deliverables[dlKey] || exp.status === "paid";
-  const expAnomalies  = (anomalies || []).filter(a => a.payee === exp.payee);
-  const schedType     = exp.schedule && exp.schedule.type;
-
+// ── PO DETAIL PANEL ───────────────────────────────────────────────────────────
+// Shared by both PO directions. `docs` are the bills counted against this PO,
+// so the panel can show WHY the balance is what it is instead of a bare number.
+function POLedgerBar({ led, role }) {
+  const col = FULFILMENT_COL[led.fulfilment] || T.sub;
   return (
-    <div style={{ padding:"20px 24px", overflowY:"auto", height:"100%" }}>
-      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:14 }}>
-        <div>
-          <div style={{ fontFamily:"'Newsreader',serif", fontSize:18, fontWeight:600, color:T.text, fontStyle:"italic", marginBottom:3 }}>{exp.payee}</div>
-          <div style={{ fontSize:10, color:col, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.08em" }}>{CAT_LABEL[exp.cat] || exp.cat}</div>
-          {exp.vendorForCreator && (
-            <div style={{ fontSize:11, color:T.pink, marginTop:3 }}>
-              MCN payment for <strong>{exp.vendorForCreator.creatorName}</strong> ({exp.vendorForCreator.creatorHandle}) · {fmtCompact(exp.vendorForCreator.followers)} followers · {exp.vendorForCreator.platform}
-            </div>
-          )}
-        </div>
-        <Pill status={exp.status} />
+    <div style={{ marginBottom:14 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10, marginBottom:8 }}>
+        {[["PO Value", led.value, T.text], ["Billed", led.billed, col], ["Balance", led.balance, led.balance < 0 ? T.red : T.text]].map(([l, v, c]) => (
+          <div key={l} style={{ padding:"8px 10px", background:T.raised, borderRadius:5 }}>
+            <div style={{ fontSize:9, color:T.label, marginBottom:2 }}>{l}</div>
+            <div style={{ fontSize:13, fontWeight:600, color:c }}>{isAccounts(role) ? fmtFull(v) : "\u20b9 \u2014\u2014"}</div>
+          </div>
+        ))}
       </div>
-
-      {expAnomalies.length > 0 && (
-        <div style={{ background:`${T.red}08`, border:`1px solid ${T.red}25`, borderRadius:6, padding:"10px 12px", marginBottom:12 }}>
-          <Lbl color={T.red} style={{ display:"block", marginBottom:6 }}>Anomalies detected</Lbl>
-          {expAnomalies.map(a => (
-            <div key={a.id} style={{ fontSize:11, color:T.sub, padding:"4px 0", borderTop:`1px solid ${T.border}` }}>
-              <SevDot s={a.severity} /> {a.msg}
-            </div>
-          ))}
-        </div>
-      )}
-
-      <Hr style={{ marginBottom:14 }} />
-
-      <div style={{ fontSize:22, fontWeight:700, color:T.text, marginBottom:8, fontFamily:"'Sora'" }}>
-        {showAmt(exp.amount || 0, role)}
-        {isFounder(role) && exp.tds && exp.tds.applicable && (
-          <span style={{ fontSize:13, color:T.amber, marginLeft:10 }}>
-            – TDS {fmtFull(exp.tds.deducted || 0)} = net {fmtFull((exp.amount || 0) - (exp.tds.deducted || 0))}
-          </span>
-        )}
+      <div style={{ height:5, background:T.mute, borderRadius:3, overflow:"hidden" }}>
+        <div style={{ height:5, borderRadius:3, background:led.balance < 0 ? T.red : col, width:`${led.pct}%`, transition:"width 0.3s" }} />
       </div>
-
-      {linkedPO && (
-        <div style={{ background:T.raised, border:`1px solid ${T.accent}25`, borderRadius:6, padding:"10px 12px", marginBottom:12 }}>
-          <Lbl color={T.accent} style={{ display:"block", marginBottom:4 }}>Linked PO — {linkedPO.id}</Lbl>
-          <div style={{ fontSize:11, color:T.sub }}>{linkedPO.scope}</div>
-          <div style={{ display:"flex", gap:6, marginTop:5 }}>
-            <Pill status={linkedPO.status} />
-            {linkedPO.deliveryConfirmed && <Pill status="work_delivered" />}
-          </div>
+      {led.fulfilment === "unrecorded" ? (
+        <div style={{ fontSize:9.5, color:T.red, marginTop:4 }}>
+          No PO value recorded \u2014 {fmtFull(led.billed)} has been billed against it. Set the value this PO authorises to track a balance.
         </div>
-      )}
-
-      {exp.cat === "external_creator" && schedType === "advance_final" && !dlUploaded && (
-        <div style={{ background:`${T.amber}08`, border:`1px solid ${T.amber}25`, borderRadius:6, padding:"10px 12px", marginBottom:12 }}>
-          <div style={{ fontSize:11, color:T.amber }}>⚑ Final payment locked — waiting for deliverable upload in Campaigns dashboard</div>
+      ) : led.balance < 0 ? (
+        <div style={{ fontSize:9.5, color:T.red, marginTop:4 }}>
+          Over-billed by {fmtFull(Math.abs(led.balance))} \u2014 bills against this PO exceed its approved value.
         </div>
-      )}
-
-      <Lbl style={{ display:"block", marginBottom:8 }}>Payment Schedule</Lbl>
-      {schedType === "single" ? (
-        <div style={{ padding:"10px 12px", background:T.raised, borderRadius:6, marginBottom:14 }}>
-          <div style={{ display:"flex", justifyContent:"space-between" }}>
-            <span style={{ fontSize:11.5, color:T.text }}>Single payment</span>
-            <span style={{ fontSize:11.5, color:T.text }}>{showAmt(exp.amount || 0, role)}</span>
-          </div>
-          {exp.utr && <div style={{ fontSize:9.5, color:T.green, marginTop:3 }}>UTR: {exp.utr}</div>}
-        </div>
-      ) : (
-        <div style={{ marginBottom:14 }}>
-          {["advance","final"].map(t => {
-            const s = exp.schedule && exp.schedule[t];
-            if (!s) return null;
-            const locked = t === "final" && !dlUploaded;
-            return (
-              <div key={t} style={{ padding:"10px 12px", background:T.raised, borderRadius:6, marginBottom:6, border:`1px solid ${s.status === "paid" ? `${T.green}25` : locked ? `${T.amber}25` : T.border}` }}>
-                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
-                  <span style={{ fontSize:11, fontWeight:500, color:T.text, textTransform:"capitalize" }}>{t}{locked ? " 🔒" : ""}</span>
-                  <span style={{ fontSize:11, color:T.text }}>{showAmt(s.amount || 0, role)}</span>
-                </div>
-                {s.utr && <div style={{ fontSize:9.5, color:T.green }}>UTR: {s.utr}</div>}
-                <Pill status={locked ? "pending" : (s.status || "pending")} />
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {isAccounts(role) && (exp.cat === "external_creator" || exp.cat === "external_vendor") && (
-        <div style={{ marginBottom:14 }}>
-          <Lbl style={{ display:"block", marginBottom:6 }}>Payee Details</Lbl>
-          <div style={{ background:T.raised, borderRadius:6, overflow:"hidden" }}>
-            {[
-              ["PAN",        exp.pan || "Not collected", !exp.pan ? T.red : T.text],
-              ["Payment mode", exp.vendorType === "mcn" ? "MCN Transfer" : "Vendor Transfer", T.text],
-              ["TDS",        exp.tds && exp.tds.applicable ? `${exp.tds.section} @ ${exp.tds.rate}%` : "Not applicable", T.text],
-            ].map(([l, v, c]) => (
-              <div key={l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 12px", borderBottom:`1px solid ${T.border}` }}>
-                <span style={{ fontSize:11, color:T.sub }}>{l}</span>
-                <span style={{ fontSize:11, color:c }}>{v}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {exp.cat === "external_creator" && (
-        <div style={{ marginBottom:14 }}>
-          <Lbl style={{ display:"block", marginBottom:8 }}>Confirmation Chain</Lbl>
-          <div style={{ display:"flex", gap:5 }}>
-            {[
-              { l:"EA",         done:exp.eaConfirmed,   who:"ea" },
-              { l:"CM",         done:exp.cmConfirmed,   who:"cm" },
-              { l:"Accounts",   done:exp.accConfirmed,  who:"accounts" },
-              { l:"Closed",     done:exp.status === "paid", who:"founder" },
-            ].map(item => (
-              <div key={item.l} style={{ flex:1, padding:"6px 8px", background:item.done ? `${T.green}10` : T.raised, border:`1px solid ${item.done ? `${T.green}30` : T.border}`, borderRadius:5, textAlign:"center" }}>
-                <div style={{ fontSize:8.5, fontWeight:600, color:item.done ? T.green : T.label }}>{item.done ? "✓" : ""} {item.l}</div>
-              </div>
-            ))}
-          </div>
-          <div style={{ display:"flex", gap:8, marginTop:8 }}>
-            {role === "ea" && !exp.eaConfirmed && <Btn variant="amber" style={{ fontSize:10 }} onClick={() => onEAConfirm && onEAConfirm(exp.id)}>Confirm creator received payment</Btn>}
-            {role === "cm" && exp.eaConfirmed && !exp.cmConfirmed && <Btn variant="amber" style={{ fontSize:10 }} onClick={() => onCMConfirm && onCMConfirm(exp.id)}>CM review — confirm</Btn>}
-          </div>
-        </div>
-      )}
-
-      <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-        {isFounder(role) && exp.status === "pending_approval" && <Btn variant="success" onClick={() => onApprove && onApprove(exp.id)}>Approve payment</Btn>}
-        {isAccounts(role) && exp.status === "approved" && <Btn variant="primary" onClick={() => onMarkPaid && onMarkPaid(exp.id)}>Mark paid + log UTR</Btn>}
-      </div>
+      ) : null}
     </div>
   );
 }
 
-// ── PO DETAIL PANEL ───────────────────────────────────────────────────────────
-const PO_FLOW = ["pending_approval","approved","work_delivered","matched","closed"];
+// Bills counted against a PO, so the balance is auditable rather than asserted.
+function POLinkedDocs({ docs, role, emptyText }) {
+  return (
+    <div style={{ marginBottom:14 }}>
+      <Lbl style={{ display:"block", marginBottom:6 }}>Billed against this PO ({docs.length})</Lbl>
+      {docs.length === 0
+        ? <div style={{ fontSize:11, color:T.label, fontStyle:"italic" }}>{emptyText}</div>
+        : docs.map(d => (
+            <div key={d.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"7px 0", borderBottom:`1px solid ${T.border}` }}>
+              <div style={{ minWidth:0 }}>
+                <div style={{ fontSize:11, color:T.text }}>{d.label || d.payee || d.id}</div>
+                <div style={{ fontSize:9, color:T.label, fontFamily:"monospace" }}>{d.id}{d.date || d.raisedDate ? ` \u00b7 ${d.date || d.raisedDate}` : ""}</div>
+              </div>
+              <span style={{ fontSize:11, fontWeight:500, color:T.text, flexShrink:0, marginLeft:10 }}>{isAccounts(role) ? fmtFull(d.amount || 0) : "\u20b9 \u2014\u2014"}</span>
+            </div>
+          ))}
+    </div>
+  );
+}
 
-function PODetail({ po, role, canRaise, onApprove, onDeliver, onMatch, onClose }) {
+function PODetail({ po, role, canRaise, led, docs, direction, onApprove, onReject, onReopen, onClose, onSetValue }) {
   if (!po) return <div style={{ textAlign:"center", paddingTop:60, color:T.label, fontSize:11 }}>Select a PO{canRaise ? " or create new" : ""}</div>;
-  const stepIdx = PO_FLOW.indexOf(po.status);
+  const approval = approvalOf(po);
+  const outbound = direction === "outbound";
   return (
     <div style={{ padding:"20px 24px", overflowY:"auto", height:"100%" }}>
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:14 }}>
-        <div>
-          <div style={{ fontFamily:"'Newsreader',serif", fontSize:18, fontWeight:600, color:T.text, fontStyle:"italic", marginBottom:3 }}>{po.vendor}</div>
-          <div style={{ fontSize:10, color:T.label, fontFamily:"monospace" }}>{po.id} · {po.campaignName} · {po.createdAt}</div>
-          <div style={{ fontSize:10.5, color:T.sub, marginTop:3 }}>Raised by {po.raisedByName}</div>
-        </div>
-        <Pill status={po.status} />
-      </div>
-
-      <div style={{ display:"flex", gap:0, marginBottom:16, overflow:"hidden", borderRadius:6 }}>
-        {PO_FLOW.map((s, i) => (
-          <div key={s} style={{ flex:1, padding:"5px 6px", background:i <= stepIdx ? `${T.accent}20` : T.raised, borderRight:i < PO_FLOW.length-1 ? `1px solid ${T.border}` : "none", textAlign:"center" }}>
-            <div style={{ fontSize:8.5, color:i <= stepIdx ? T.accent : T.label, fontWeight:i === stepIdx ? 600 : 400, textTransform:"capitalize" }}>
-              {s.replace(/_/g," ")}
-            </div>
+        <div style={{ minWidth:0 }}>
+          <div style={{ fontFamily:"'Newsreader',serif", fontSize:18, fontWeight:600, color:T.text, fontStyle:"italic", marginBottom:3 }}>
+            {outbound ? po.vendor : po.poNumber}
           </div>
-        ))}
+          <div style={{ fontSize:10, color:T.label, fontFamily:"monospace" }}>
+            {po.id}{po.campaignName ? ` \u00b7 ${po.campaignName}` : ""}{po.createdAt || po.receivedDate ? ` \u00b7 ${po.createdAt || po.receivedDate}` : ""}
+          </div>
+          <div style={{ fontSize:10.5, color:T.sub, marginTop:3 }}>
+            {outbound ? `Raised by ${po.raisedByName || "\u2014"}` : `Issued by ${po.client || "client"}`}
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+          {outbound && <Pill status={approval} />}
+          <span style={{ fontSize:9, fontWeight:600, padding:"3px 8px", borderRadius:10, whiteSpace:"nowrap",
+            color:FULFILMENT_COL[led.fulfilment], border:`1px solid ${FULFILMENT_COL[led.fulfilment]}35`, background:`${FULFILMENT_COL[led.fulfilment]}12` }}>
+            {FULFILMENT_LABEL[led.fulfilment]}
+          </span>
+        </div>
       </div>
 
+      <POLedgerBar led={led} role={role} />
       <Hr style={{ marginBottom:14 }} />
 
-      <div style={{ marginBottom:12 }}>
-        <Lbl style={{ display:"block", marginBottom:6 }}>Scope of work</Lbl>
-        <div style={{ fontSize:12, color:T.text, lineHeight:1.6 }}>{po.scope}</div>
-      </div>
+      {po.scope && (
+        <div style={{ marginBottom:12 }}>
+          <Lbl style={{ display:"block", marginBottom:6 }}>Scope of work</Lbl>
+          <div style={{ fontSize:12, color:T.text, lineHeight:1.6 }}>{po.scope}</div>
+        </div>
+      )}
 
       <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:10, marginBottom:14 }}>
-        {[
-          ["Amount",   showAmt(po.amount, role)],
-          ["Schedule", po.paymentScheduleType === "advance_final" ? "Advance + Final" : "Single"],
-          ["Delivery", po.deliveryDate || "TBD"],
-        ].map(([l, v]) => (
+        {(outbound
+          ? [["Schedule", po.paymentScheduleType === "advance_final" ? "Advance + Final" : "Single"], ["Delivery", po.deliveryDate || "TBD"], ["Approval", approval.replace(/_/g," ")]]
+          : [["PO Number", po.poNumber || "\u2014"], ["Received", po.receivedDate || "\u2014"], ["Valid till", po.validTill || "\u2014"]]
+        ).map(([l, v]) => (
           <div key={l} style={{ padding:"8px 10px", background:T.raised, borderRadius:5 }}>
             <div style={{ fontSize:9, color:T.label, marginBottom:2 }}>{l}</div>
-            <div style={{ fontSize:12, fontWeight:500, color:T.text }}>{v}</div>
+            <div style={{ fontSize:12, fontWeight:500, color:T.text, textTransform:l === "Approval" ? "capitalize" : "none" }}>{v}</div>
           </div>
         ))}
       </div>
 
-      <div style={{ marginBottom:12 }}>
-        <div style={{ fontSize:10, color:po.poDocument ? T.green : T.amber }}>
-          {po.poDocument ? "✓ PO document uploaded" : "⚑ PO document not uploaded"}
-        </div>
-        {!po.poDocument && <Btn variant="ghost" style={{ fontSize:10, marginTop:6 }}>↑ Upload PO PDF</Btn>}
+      <POLinkedDocs docs={docs} role={role}
+        emptyText={outbound
+          ? "No vendor bills recorded against this PO yet."
+          : "No invoices raised against this PO yet."} />
+
+      <div style={{ marginBottom:12, fontSize:10, color:(po.poDocument || po.document === "uploaded") ? T.green : T.amber }}>
+        {(po.poDocument || po.document === "uploaded") ? "\u2713 PO document uploaded" : "\u26a1 PO document not uploaded"}
       </div>
 
       <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-        {can(role,"approvePO") && po.status === "pending_approval" && <Btn variant="success" onClick={() => onApprove && onApprove(po.id)}>Approve PO</Btn>}
-        {["ea","cm"].includes(role) && po.status === "approved" && !po.deliveryConfirmed && <Btn variant="teal" onClick={() => onDeliver && onDeliver(po.id)}>Mark work delivered</Btn>}
-        {isAccounts(role) && po.status === "work_delivered" && <Btn variant="amber" onClick={() => onMatch && onMatch(po.id)}>Match vendor invoice</Btn>}
-        {isAccounts(role) && po.status === "matched" && <Btn variant="ghost" onClick={() => onClose && onClose(po.id)}>Close PO</Btn>}
+        {outbound && can(role,"approvePO") && approval === "pending_approval" && <>
+          <Btn variant="success" onClick={() => onApprove && onApprove(po.id)}>Approve PO</Btn>
+          <Btn variant="danger"  onClick={() => onReject  && onReject(po.id)}>Reject</Btn>
+        </>}
+        {/* Closing is the only manual override left: it freezes a PO whose
+            remaining balance will never be billed (job descoped, PO expired). */}
+        {isAccounts(role) && led.fulfilment === "unrecorded" && <Btn variant="amber" onClick={() => onSetValue && onSetValue(po.id, po.amount)}>Set PO value</Btn>}
+        {isAccounts(role) && !isPOClosed(po) && !["open","unrecorded"].includes(led.fulfilment) && <Btn variant="ghost" onClick={() => onClose && onClose(po.id)}>Close PO</Btn>}
+        {isAccounts(role) && isPOClosed(po) && <Btn variant="ghost" onClick={() => onReopen && onReopen(po.id)}>Reopen PO</Btn>}
       </div>
     </div>
   );
@@ -798,8 +607,6 @@ function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, ano
   const spent   = expenses.filter(e => e.status === "paid" && !e.directorOnly).reduce((s, e) => s + e.amount, 0);
   const pendingApproval = expenses.filter(e => e.status === "pending_approval").length;
   const posPending      = (pos || []).filter(p => p.status === "pending_approval").length;
-  const gstCollected    = invoices.filter(i => i.status === "paid" && i.type !== "credit_note").reduce((s, i) => s + i.amount * ((i.gstRate || 18) / 100), 0);
-  const tdsDeducted     = expenses.reduce((s, e) => s + ((e.tds && e.tds.deducted) || 0), 0);
   const retainer        = CLIENTS[0];
   const campFees        = invoices.filter(i => i.type === "campaign").reduce((s, i) => s + i.amount, 0);
   const outstanding     = pending + overdue;
@@ -813,11 +620,10 @@ function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, ano
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
         <div>
           <div style={{ fontFamily:"'Newsreader',serif", fontSize:20, fontWeight:600, color:T.text, fontStyle:"italic" }}>Financial Dashboard</div>
-          <div style={{ fontSize:10, color:T.sub, marginTop:2 }}>FY {FY} · Monthly GST · April–March</div>
+          <div style={{ fontSize:10, color:T.sub, marginTop:2 }}>FY {FY} · April–March</div>
         </div>
         <div style={{ display:"flex", gap:8 }}>
           <Btn variant="ghost" style={{ fontSize:10 }} onClick={() => exportTally(invoices, expenses)}>↓ Tally CSV</Btn>
-          <Btn variant="ghost" style={{ fontSize:10 }}>↓ GST JSON</Btn>
         </div>
       </div>
 
@@ -825,7 +631,6 @@ function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, ano
         <div style={{ background:`${T.red}08`, border:`1px solid ${T.red}25`, borderRadius:7, padding:"12px 14px", marginBottom:16 }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
             <Lbl color={T.red}>⚑ {criticalAnoms.length} Anomaly Alert{criticalAnoms.length > 1 ? "s" : ""}</Lbl>
-            <Btn variant="ghost" style={{ fontSize:9 }} onClick={() => setTab("spending")}>View in Spending →</Btn>
           </div>
           {criticalAnoms.slice(0, 3).map(a => (
             <div key={a.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 0", borderTop:`1px solid ${T.border}` }}>
@@ -850,22 +655,17 @@ function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, ano
         <StatCard role={role} label="Total Spent MTD"       value={fmtFull(spent)}           sub={`${pendingApproval} pending approval`}                                                              permission="seeTotalSpend" />
         <StatCard role={role} label="Net MTD"               value={fmtFull(paid - spent)}    sub={can(role,"seeMargins") ? fmtPct(((paid-spent)/Math.max(paid,1))*100)+" margin" : null} col={(paid-spent)>0?T.green:T.red} permission="seeNetMTD" />
       </div>
+      {/* GST Collected / TDS Deducted / Filings Due lived here and went with
+          the GST tab — they were driven by a hardcoded filing calendar. */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:20 }}>
-        <StatCard role={role} label="GST Collected MTD" value={fmtFull(gstCollected)} col={T.accent}  permission="seeGST" />
-        <StatCard role={role} label="TDS Deducted MTD"  value={fmtFull(tdsDeducted)}  col={T.purple}  permission="seeTDS" />
-        <div style={{ background:T.raised, border:`1px solid ${pendingApproval > 0 ? T.amber : T.border}`, borderRadius:7, padding:"12px 14px" }}>
-          <div style={{ fontSize:8.5, color:T.label, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:4 }}>Pending Approvals</div>
-          <div style={{ fontSize:18, fontWeight:600, color:pendingApproval > 0 ? T.amber : T.text }}>{pendingApproval}</div>
-          <div style={{ fontSize:9.5, color:T.label, marginTop:2 }}>{posPending} POs pending</div>
-        </div>
-        <div style={{ background:T.raised, border:`1px solid ${GST_CALENDAR.filter(g => g.status === "due").length > 0 ? T.red : T.border}`, borderRadius:7, padding:"12px 14px" }}>
-          <div style={{ fontSize:8.5, color:T.label, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:4 }}>Filings Due</div>
-          <div style={{ fontSize:18, fontWeight:600, color:GST_CALENDAR.filter(g => g.status === "due").length > 0 ? T.red : T.text }}>{GST_CALENDAR.filter(g => g.status === "due").length}</div>
-          <div style={{ fontSize:9.5, color:T.label, marginTop:2 }}>this month</div>
+        <div style={{ background:T.raised, border:`1px solid ${posPending > 0 ? T.amber : T.border}`, borderRadius:7, padding:"12px 14px" }}>
+          <div style={{ fontSize:8.5, color:T.label, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:4 }}>POs Awaiting Approval</div>
+          <div style={{ fontSize:18, fontWeight:600, color:posPending > 0 ? T.amber : T.text }}>{posPending}</div>
+          <div style={{ fontSize:9.5, color:T.label, marginTop:2 }}>{posPending === 0 ? "nothing pending" : "needs founder sign-off"}</div>
         </div>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:20 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr", gap:14, marginBottom:20 }}>
         <div style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:7, padding:"14px" }}>
           <Lbl style={{ display:"block", marginBottom:10 }}>Aged Receivables (DSO)</Lbl>
           {overdue === 0 ? (
@@ -884,27 +684,6 @@ function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, ano
               <div key={i.id} style={{ fontSize:10, color:T.sub, padding:"2px 0" }}>{i.id} — {(i.label || "").slice(0, 32)}…</div>
             ))}
           </div>
-        </div>
-        <div style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:7, padding:"14px" }}>
-          <Lbl style={{ display:"block", marginBottom:10 }}>GST & TDS Filing Calendar</Lbl>
-          {GST_CALENDAR.filter(g => g.status === "due").map(g => (
-            <div key={g.id} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${T.border}` }}>
-              <div>
-                <div style={{ fontSize:11.5, fontWeight:500, color:T.text }}>{g.type} — {g.period}</div>
-                <div style={{ fontSize:9.5, color:T.label }}>Due {g.dueDate}</div>
-              </div>
-              <Pill status="due" />
-            </div>
-          ))}
-          {GST_CALENDAR.filter(g => g.status === "filed").slice(0, 2).map(g => (
-            <div key={g.id} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${T.border}` }}>
-              <div>
-                <div style={{ fontSize:11, color:T.sub }}>{g.type} — {g.period}</div>
-                <div style={{ fontSize:9.5, color:T.label }}>Filed {g.filedDate}</div>
-              </div>
-              <Pill status="filed" />
-            </div>
-          ))}
         </div>
       </div>
 
@@ -972,8 +751,11 @@ function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, ano
 }
 
 // ── TAB: INCOME ───────────────────────────────────────────────────────────────
-function TabIncome({ role, invoices, setInvoices, clientPOs, setClientPOs, campsRef }) {
-  const [subTab, setSubTab] = useState("invoices");
+// Invoices and retainers. Client POs used to live here as a second sub-tab;
+// they moved to the POs tab so both directions share one value/balance model.
+// What stays here is the part that belongs to an invoice: attaching the client
+// PO it bills against.
+function TabIncome({ role, invoices, setInvoices, setClientPOs, campsRef }) {
   const [filter, setFilter] = useState("all");
   const [selId,  setSelId]  = useState(null);
 
@@ -990,79 +772,26 @@ function TabIncome({ role, invoices, setInvoices, clientPOs, setClientPOs, camps
 
   const handleAccConfirm    = useCallback(id => setInvoices(p => p.map(i => i.id !== id ? i : { ...i, confirmedByAccounts:true })), [setInvoices]);
   const handleFounderConfirm= useCallback(id => setInvoices(p => p.map(i => i.id !== id ? i : { ...i, confirmedByFounder:true, status:"paid", paidDate:todayStr() })), [setInvoices]);
+  // The PO's approved value has to be captured here: with balances derived,
+  // a PO recorded at 0 would read as over-billed the moment its first invoice
+  // lands. Defaults to the invoice amount, which is the common single-invoice
+  // case — override it when the client's PO covers several invoices.
   const handleUploadPO      = useCallback(id => {
-    const poNum = window.prompt("Enter Client PO number:");
-    if (!poNum) return;
     const inv = invoices.find(i => i.id === id);
-    const newPO = { id:`CPO-${Date.now()}`, poNumber:poNum, amount:0, receivedDate:todayStr(), document:"uploaded", status:"received" };
+    const poNum = window.prompt("Client PO number:");
+    if (!poNum) return;
+    const raw = window.prompt("PO value (₹) — the total this PO authorises:", String(inv?.amount || 0));
+    if (raw === null) return;
+    const amount = parseFloat(String(raw).replace(/[^\d.]/g, "")) || 0;
+    const newPO = { id:newId("CPO"), poNumber:poNum.trim(), amount, receivedDate:todayStr(), document:"uploaded" };
     setInvoices(p => p.map(i => i.id !== id ? i : { ...i, clientPO:newPO }));
-    setClientPOs(p => [...p, { ...newPO, client:inv?.client || "", brandId:inv?.brandId || null, campaign:inv?.campaign || null, invoicedAmount:0, campaignName:"" }]);
-  }, [invoices, setInvoices, setClientPOs]);
+    // Invoices carry `campaign` (an id) but no campaign name — resolve it here
+    // so the POs tab can label the row without another lookup.
+    const campName = campsRef.find(c => c.id === inv?.campaign)?.name || "";
+    setClientPOs(p => [...p, { ...newPO, client:inv?.client || "", brandId:inv?.brandId || null, campaign:inv?.campaign || null, campaignName:campName, closed:false }]);
+  }, [invoices, setInvoices, setClientPOs, campsRef]);
 
   return (
-    <div style={{ display:"flex", flexDirection:"column", height:"100%" }}>
-      <div style={{ display:"flex", gap:0, padding:"0 16px", borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
-        {[["invoices","Invoices & Retainers"],["client_pos","Client POs"]].map(([id, lbl]) => (
-          <button key={id} onClick={() => setSubTab(id)} style={{ padding:"9px 0", marginRight:18, background:"transparent", border:"none", borderBottom:`1.5px solid ${subTab === id ? T.accent : "transparent"}`, color:subTab === id ? T.text : T.sub, fontSize:11, cursor:"pointer", fontFamily:"'Sora'", fontWeight:subTab === id ? 500 : 400, marginBottom:-1 }}>
-            {lbl}
-            {id === "client_pos" && invoices.filter(i => !i.clientPO && i.type === "campaign").length > 0 && (
-              <span style={{ marginLeft:5, fontSize:8, background:T.amber, color:"#06060A", padding:"1px 5px", borderRadius:8 }}>
-                {invoices.filter(i => !i.clientPO && i.type === "campaign").length} no PO
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
-
-      {subTab === "client_pos" ? (
-        <div style={{ padding:"20px 24px", overflowY:"auto", flex:1 }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
-            <div>
-              <div style={{ fontFamily:"'Newsreader',serif", fontSize:17, fontWeight:600, color:T.text, fontStyle:"italic" }}>Client Purchase Orders</div>
-              <div style={{ fontSize:10, color:T.sub, marginTop:2 }}>POs issued by clients to 5th Avenue</div>
-            </div>
-            <Btn variant="amber" style={{ fontSize:10 }}>+ Upload PO</Btn>
-          </div>
-          {invoices.filter(i => !i.clientPO && i.type === "campaign").length > 0 && (
-            <div style={{ background:`${T.amber}08`, border:`1px solid ${T.amber}25`, borderRadius:6, padding:"10px 14px", marginBottom:14 }}>
-              <Lbl color={T.amber} style={{ display:"block", marginBottom:6 }}>⚑ Best Practice — campaign invoices without a Client PO</Lbl>
-              {invoices.filter(i => !i.clientPO && i.type === "campaign").map(i => (
-                <div key={i.id} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"5px 0", borderTop:`1px solid ${T.border}` }}>
-                  <span style={{ fontSize:11, color:T.sub }}>{i.id} — {i.label}</span>
-                  <Btn variant="amber" style={{ fontSize:9 }} onClick={() => handleUploadPO(i.id)}>Upload PO</Btn>
-                </div>
-              ))}
-            </div>
-          )}
-          {clientPOs.map(po => (
-            <div key={po.id} style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:6, padding:"12px 14px", marginBottom:8 }}>
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
-                <div>
-                  <div style={{ fontSize:12, fontWeight:500, color:T.text }}>{po.poNumber}</div>
-                  <div style={{ fontSize:10, color:T.sub }}>{po.client}{po.campaignName ? ` · ${po.campaignName}` : ""}</div>
-                </div>
-                <Pill status={po.status} />
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8 }}>
-                {[
-                  ["PO Amount",  isAccounts(role) ? fmtFull(po.amount) : "₹ ——"],
-                  ["Invoiced",   isAccounts(role) ? fmtFull(po.invoicedAmount || 0) : "₹ ——"],
-                  ["Remaining",  isAccounts(role) ? fmtFull((po.amount || 0) - (po.invoicedAmount || 0)) : "₹ ——"],
-                  ["Valid Till", po.validTill || "—"],
-                ].map(([l, v]) => (
-                  <div key={l} style={{ padding:"6px 8px", background:T.bg, borderRadius:4 }}>
-                    <div style={{ fontSize:9, color:T.label, marginBottom:2 }}>{l}</div>
-                    <div style={{ fontSize:11.5, fontWeight:500, color:T.text }}>{v}</div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ marginTop:6, fontSize:9.5, color:po.document === "uploaded" ? T.green : T.amber }}>
-                {po.document === "uploaded" ? "✓ Document uploaded" : "⚑ Document not uploaded"}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
         <div style={{ display:"flex", flex:1, minHeight:0 }}>
           <div style={{ width:320, flexShrink:0, borderRight:`1px solid ${T.border}`, display:"flex", flexDirection:"column" }}>
             <div style={{ padding:"10px", borderBottom:`1px solid ${T.border}`, display:"flex", gap:4, flexWrap:"wrap" }}>
@@ -1094,154 +823,125 @@ function TabIncome({ role, invoices, setInvoices, clientPOs, setClientPOs, camps
             <InvDetail inv={inv} role={role} onAccConfirm={handleAccConfirm} onFounderConfirm={handleFounderConfirm} onUploadPO={handleUploadPO} />
           </div>
         </div>
-      )}
-    </div>
   );
 }
-
-// ── TAB: SPENDING ─────────────────────────────────────────────────────────────
-function TabSpending({ role, expenses, setExpenses, anomalies, pos, campsRef }) {
-  const [cat,    setCat]    = useState("all");
-  const [selId,  setSelId]  = useState(null);
-  const [dupWarn,setDupWarn]= useState(null);
-
-  const visible = useMemo(() => expenses.filter(e => {
-    if (e.directorOnly && !isFounder(role)) return false;
-    if (cat === "all")      return true;
-    if (cat === "approval") return e.status === "pending_approval";
-    if (cat === "anomaly")  return anomalies.some(a => a.payee === e.payee && a.campaign === e.campaign);
-    return e.cat === cat;
-  }), [expenses, cat, role, anomalies]);
-
-  const exp = expenses.find(e => e.id === selId) || null;
-
-  const handleApprove = useCallback(id => {
-    const e    = expenses.find(x => x.id === id);
-    const dups = anomalies.filter(a => a.type === "duplicate" && a.payee === (e && e.payee));
-    if (dups.length > 0) { setDupWarn({ id, dups }); return; }
-    setExpenses(p => p.map(e => e.id !== id ? e : { ...e, status:"approved", approvedBy:"founder", approvedAt:todayStr() }));
-  }, [expenses, anomalies, setExpenses]);
-
-  const handleMarkPaid = useCallback(id => setExpenses(p => p.map(e => e.id !== id ? e : { ...e, status:"paid", date:todayStr(), utr:`UTR${Date.now().toString().slice(-8)}`, accConfirmed:true })), [setExpenses]);
-  const handleEAConfirm= useCallback(id => setExpenses(p => p.map(e => e.id !== id ? e : { ...e, eaConfirmed:true })), [setExpenses]);
-  const handleCMConfirm= useCallback(id => setExpenses(p => p.map(e => e.id !== id ? e : { ...e, cmConfirmed:true })), [setExpenses]);
-
-  const cats = [["all","All"],["approval","⚑ Approval"],["anomaly","Anomalies"],["internal_regular","Reg"],["internal_variable","Var"],["external_subscription","Subs"],["external_creator","MCN"],["external_vendor","Vendors"]];
-  if (isFounder(role)) cats.push(["director","Director"]);
-
-  return (
-    <div style={{ display:"flex", height:"100%" }}>
-      {dupWarn && (
-        <div style={{ position:"fixed", inset:0, zIndex:500, display:"flex", alignItems:"center", justifyContent:"center" }}>
-          <div onClick={() => setDupWarn(null)} style={{ position:"absolute", inset:0, background:"rgba(4,5,10,0.88)" }} />
-          <div style={{ position:"relative", width:420, background:T.surface, border:`1px solid ${T.red}50`, borderRadius:10, padding:24 }}>
-            <div style={{ fontFamily:"'Newsreader',serif", fontSize:17, color:T.red, fontStyle:"italic", marginBottom:8 }}>Duplicate Payment Alert</div>
-            {dupWarn.dups.map(d => <div key={d.id} style={{ fontSize:11.5, color:T.sub, padding:"6px 0", borderBottom:`1px solid ${T.border}` }}>{d.msg}</div>)}
-            <div style={{ display:"flex", gap:8, marginTop:14 }}>
-              <Btn variant="danger" onClick={() => { setExpenses(p => p.map(e => e.id !== dupWarn.id ? e : { ...e, status:"approved", approvedBy:"founder" })); setDupWarn(null); }}>Approve anyway</Btn>
-              <Btn variant="ghost" onClick={() => setDupWarn(null)}>Cancel</Btn>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div style={{ width:320, flexShrink:0, borderRight:`1px solid ${T.border}`, display:"flex", flexDirection:"column" }}>
-        <div style={{ padding:"10px", borderBottom:`1px solid ${T.border}`, display:"flex", gap:4, flexWrap:"wrap" }}>
-          {cats.map(([id, lbl]) => (
-            <button key={id} onClick={() => setCat(id)} style={{ padding:"3px 8px", borderRadius:4, fontSize:9, background:cat === id ? `${id === "anomaly" ? T.red : T.accent}18` : "transparent", border:`1px solid ${cat === id ? (id === "anomaly" ? T.red : T.accent) : T.border}`, color:cat === id ? (id === "anomaly" ? T.red : T.accent) : T.sub, cursor:"pointer", fontFamily:"'Sora'" }}>
-              {lbl}
-              {id === "anomaly" && anomalies.length > 0 && <span style={{ marginLeft:3, fontSize:8, background:T.red, color:"#fff", padding:"0 4px", borderRadius:8 }}>{anomalies.length}</span>}
-            </button>
-          ))}
-        </div>
-        <div style={{ flex:1, overflowY:"auto", padding:"8px" }}>
-          {visible.map(e => {
-            const col        = CAT_COL[e.cat] || T.label;
-            const hasAnomaly = anomalies.some(a => a.payee === e.payee && a.campaign === e.campaign);
-            return (
-              <div key={e.id} onClick={() => setSelId(e.id)} style={{ padding:"10px 12px", borderRadius:6, cursor:"pointer", marginBottom:3, background:selId === e.id ? T.raised : "transparent", border:`1px solid ${hasAnomaly ? `${T.red}30` : selId === e.id ? T.borderMid : "transparent"}` }}>
-                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
-                  <span style={{ fontSize:9, fontWeight:600, color:col }}>{e.cat === "director" ? "Director" : CAT_LABEL[e.cat] || e.cat}</span>
-                  <Pill status={e.status} />
-                </div>
-                <div style={{ fontSize:11.5, fontWeight:500, color:T.text, marginBottom:2 }}>{e.payee}</div>
-                {e.vendorForCreator && <div style={{ fontSize:10, color:T.pink, marginBottom:2 }}>for {e.vendorForCreator.creatorName} ({e.vendorForCreator.creatorHandle})</div>}
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                  <span style={{ fontSize:10, color:T.label }}>{e.campaign ? (campsRef.find(c => c.id === e.campaign) || {}).name || e.campaign : "No campaign"}</span>
-                  <span style={{ fontSize:11.5, fontWeight:600, color:T.text }}>{showAmt(e.amount || 0, role)}</span>
-                </div>
-                {hasAnomaly && <div style={{ fontSize:9, color:T.red, marginTop:3 }}>🔴 Anomaly detected</div>}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div style={{ flex:1, minWidth:0 }}>
-        <ExpDetail exp={exp} role={role} pos={pos} anomalies={anomalies} onApprove={handleApprove} onMarkPaid={handleMarkPaid} onEAConfirm={handleEAConfirm} onCMConfirm={handleCMConfirm} />
-      </div>
-    </div>
-  );
-}
-
 // ── TAB: PURCHASE ORDERS ──────────────────────────────────────────────────────
-function TabPurchaseOrders({ role, currentUser, pos, setPos, campsRef }) {
+// Both directions live here now. They are the same document with the arrow
+// reversed — an approved value, bills drawn against it, a balance — so splitting
+// them across two tabs (vendor POs here, client POs buried inside Income) meant
+// neither got the value/balance treatment. Every money figure is derived; see
+// the PO LEDGER MODEL block near the top of this file.
+function TabPurchaseOrders({ role, currentUser, pos, setPos, clientPOs, setClientPOs, invoices, expenses, campsRef }) {
+  const [direction, setDirection] = useState("outbound");
   const [filter, setFilter] = useState("all");
   const [selId,  setSelId]  = useState(null);
   const [showNew,setNew]    = useState(false);
-  const [draft,  setDraft]  = useState({ vendor:"", vendorType:"creator_mcn", campaign:"c1", scope:"", amount:"", paymentScheduleType:"single", deliveryDate:"", notes:"" });
+  const [draft,  setDraft]  = useState({ vendor:"", vendorType:"creator_mcn", campaign:"", scope:"", amount:"", paymentScheduleType:"single", deliveryDate:"", notes:"" });
 
-  const filtered = useMemo(() => pos.filter(p => {
-    if (filter === "pending_approval") return p.status === "pending_approval";
-    if (filter === "approved")         return p.status === "approved";
-    if (filter === "closed")           return ["closed","matched"].includes(p.status);
+  const outbound = direction === "outbound";
+  const source   = outbound ? pos : clientPOs;
+
+  // One ledger per PO, computed from the documents that bill against it.
+  const rows = useMemo(() => (source || []).map(po => {
+    const docs = outbound
+      ? (expenses || []).filter(e => e.poId === po.id)
+      : (invoices || []).filter(i => i.clientPO?.id === po.id && i.type !== "credit_note");
+    const billed = outbound ? billedAgainstPO(po.id, expenses) : invoicedAgainstPO(po.id, invoices);
+    return { po, docs, led: poLedger(po, billed) };
+  }), [source, outbound, expenses, invoices]);
+
+  const filtered = useMemo(() => rows.filter(({ po, led }) => {
+    if (filter === "pending_approval") return outbound && approvalOf(po) === "pending_approval";
+    if (filter === "open")             return ["open","partially_billed"].includes(led.fulfilment);
+    if (filter === "closed")           return ["fully_billed","closed"].includes(led.fulfilment);
     return true;
-  }), [pos, filter]);
+  }), [rows, filter, outbound]);
 
-  const po = pos.find(p => p.id === selId) || null;
+  const sel = rows.find(r => r.po.id === selId) || null;
 
-  const handleApprove = id => setPos(p => p.map(o => o.id !== id ? o : { ...o, status:"approved", approvedBy:currentUser?.name || "founder", approvedAt:todayStr() }));
-  const handleDeliver = id => setPos(p => p.map(o => o.id !== id ? o : { ...o, status:"work_delivered", deliveryConfirmed:true, deliveryConfirmedBy:currentUser?.name || role }));
-  const handleMatch   = id => setPos(p => p.map(o => o.id !== id ? o : { ...o, status:"matched" }));
-  const handleClose   = id => setPos(p => p.map(o => o.id !== id ? o : { ...o, status:"closed" }));
+  // Totals across whatever is on screen — the number a finance lead opens this
+  // tab for: how much is committed, and how much of it is still unbilled.
+  const totals = useMemo(() => filtered.reduce((t, { led }) => ({
+    value: t.value + led.value, billed: t.billed + led.billed, balance: t.balance + led.balance,
+  }), { value:0, billed:0, balance:0 }), [filtered]);
+
+  const patchPO = (id, obj) => (outbound ? setPos : setClientPOs)(p => p.map(o => o.id !== id ? o : { ...o, ...obj }));
+  const handleApprove = id => patchPO(id, { status:"approved", approvedBy:currentUser?.name || "founder", approvedAt:todayStr() });
+  const handleReject  = id => patchPO(id, { status:"rejected", approvedBy:currentUser?.name || "founder", approvedAt:todayStr() });
+  const handleClose   = id => patchPO(id, { closed:true,  closedAt:todayStr() });
+  const handleReopen  = id => patchPO(id, { closed:false, closedAt:null });
+  const handleSetValue = (id, current) => {
+    const raw = window.prompt("PO value (₹) — the total this PO authorises:", String(current || 0));
+    if (raw === null) return;
+    const amount = parseFloat(String(raw).replace(/[^\d.]/g, "")) || 0;
+    if (amount > 0) patchPO(id, { amount });
+  };
 
   const submitNew = () => {
     const camp = campsRef.find(c => c.id === draft.campaign) || {};
     // raisedBy = the logged-in user's teamId (the same t-id campaigns use for
     // amId/cmId/eaId), raisedByName = their real name — not just a role label.
-    const n = { ...draft, id:`PO-${Date.now().toString().slice(-5)}`, raisedBy:currentUser?.teamId || role, raisedByRole:role, raisedByName:currentUser?.name || ROLES.find(r => r.id === role)?.label || role, campaignName:camp.name || "", brandId:camp.brandId || null, status:"pending_approval", poDocument:null, approvedBy:null, approvedAt:null, deliveryConfirmed:false, deliveryConfirmedBy:null, createdAt:todayStr(), amount:parseFloat(draft.amount) || 0, deliveryDate:prettyDate(draft.deliveryDate) };
+    const n = { ...draft, id:newId("PO"), raisedBy:currentUser?.teamId || role, raisedByRole:role,
+      raisedByName:currentUser?.name || ROLES.find(r => r.id === role)?.label || role,
+      campaign:draft.campaign || null, campaignName:camp.name || "", brandId:camp.brandId || null,
+      status:"pending_approval", closed:false, poDocument:null, approvedBy:null, approvedAt:null,
+      createdAt:todayStr(), amount:parseFloat(draft.amount) || 0, deliveryDate:prettyDate(draft.deliveryDate) };
     setPos(p => [n, ...p]);
     setSelId(n.id);
     setNew(false);
-    setDraft({ vendor:"", vendorType:"creator_mcn", campaign:"c1", scope:"", amount:"", paymentScheduleType:"single", deliveryDate:"", notes:"" });
+    setDraft({ vendor:"", vendorType:"creator_mcn", campaign:"", scope:"", amount:"", paymentScheduleType:"single", deliveryDate:"", notes:"" });
   };
 
   const ud = (k, v) => setDraft(prev => ({ ...prev, [k]:v }));
+  const switchDir = d => { setDirection(d); setSelId(null); setNew(false); setFilter("all"); };
+
+  const FILTERS = outbound
+    ? [["all","All"],["pending_approval","⚑ Approval"],["open","Open"],["closed","Settled"]]
+    : [["all","All"],["open","Open"],["closed","Settled"]];
 
   return (
     <div style={{ display:"flex", height:"100%" }}>
-      <div style={{ width:300, flexShrink:0, borderRight:`1px solid ${T.border}`, display:"flex", flexDirection:"column" }}>
-        <div style={{ padding:"10px 12px", borderBottom:`1px solid ${T.border}`, display:"flex", gap:8, alignItems:"center" }}>
-          <span style={{ flex:1, fontSize:11, color:T.text, fontWeight:500 }}>Purchase Orders</span>
-          {canRaisePO(role) && <Btn variant="primary" style={{ fontSize:10 }} onClick={() => { setNew(true); setSelId(null); }}>+ New PO</Btn>}
+      <div style={{ width:320, flexShrink:0, borderRight:`1px solid ${T.border}`, display:"flex", flexDirection:"column" }}>
+        <div style={{ padding:"10px 12px 8px", borderBottom:`1px solid ${T.border}` }}>
+          <div style={{ display:"flex", gap:2, padding:2, borderRadius:7, background:T.mute, marginBottom:8 }}>
+            {[["outbound","To vendors"],["inbound","From clients"]].map(([id, lbl]) => (
+              <button key={id} onClick={() => switchDir(id)} style={{ flex:1, padding:"5px 8px", borderRadius:5, fontSize:10, fontWeight:600, cursor:"pointer", border:"none", fontFamily:"'Sora'",
+                background:direction === id ? T.surface : "transparent", color:direction === id ? T.text : T.sub,
+                boxShadow:direction === id ? "0 1px 2px rgba(0,0,0,0.08)" : "none" }}>{lbl}</button>
+            ))}
+          </div>
+          <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+            <span style={{ flex:1, fontSize:10, color:T.sub }}>
+              {filtered.length} PO{filtered.length === 1 ? "" : "s"} · {isAccounts(role) ? fmtINR(totals.balance) : "₹ ——"} unbilled
+            </span>
+            {outbound && canRaisePO(role) && <Btn variant="primary" style={{ fontSize:10 }} onClick={() => { setNew(true); setSelId(null); }}>+ New PO</Btn>}
+          </div>
         </div>
         <div style={{ padding:"8px 10px", borderBottom:`1px solid ${T.border}`, display:"flex", gap:4 }}>
-          {[["all","All"],["pending_approval","⚑ Pending"],["approved","Active"],["closed","Closed"]].map(([id, lbl]) => (
+          {FILTERS.map(([id, lbl]) => (
             <button key={id} onClick={() => setFilter(id)} style={{ padding:"3px 8px", borderRadius:4, fontSize:9, background:filter === id ? `${T.accent}18` : "transparent", border:`1px solid ${filter === id ? T.accent : T.border}`, color:filter === id ? T.accent : T.sub, cursor:"pointer", fontFamily:"'Sora'" }}>{lbl}</button>
           ))}
         </div>
         <div style={{ flex:1, overflowY:"auto", padding:"8px" }}>
-          {filtered.map(p => (
-            <div key={p.id} onClick={() => { setSelId(p.id); setNew(false); }} style={{ padding:"10px 12px", borderRadius:6, cursor:"pointer", marginBottom:3, background:selId === p.id ? T.raised : "transparent", border:`1px solid ${selId === p.id ? T.borderMid : p.status === "pending_approval" ? `${T.amber}30` : "transparent"}` }}>
-              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
-                <span style={{ fontSize:9, color:T.label, fontFamily:"monospace" }}>{p.id}</span>
-                <Pill status={p.status} />
+          {filtered.length === 0 && (
+            <div style={{ padding:"24px 12px", textAlign:"center", fontSize:10.5, color:T.label, fontStyle:"italic" }}>
+              {outbound ? "No purchase orders raised yet." : "No client POs recorded. Attach one from an invoice in the Income tab."}
+            </div>
+          )}
+          {filtered.map(({ po, led }) => (
+            <div key={po.id} onClick={() => { setSelId(po.id); setNew(false); }} style={{ padding:"10px 12px", borderRadius:6, cursor:"pointer", marginBottom:3, background:selId === po.id ? T.raised : "transparent", border:`1px solid ${selId === po.id ? T.borderMid : outbound && approvalOf(po) === "pending_approval" ? `${T.amber}30` : "transparent"}` }}>
+              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3, gap:8 }}>
+                <span style={{ fontSize:9, color:T.label, fontFamily:"monospace", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{outbound ? po.id : po.poNumber || po.id}</span>
+                <span style={{ fontSize:8.5, fontWeight:600, color:FULFILMENT_COL[led.fulfilment], flexShrink:0 }}>{FULFILMENT_LABEL[led.fulfilment]}</span>
               </div>
-              <div style={{ fontSize:11.5, fontWeight:500, color:T.text, marginBottom:2 }}>{p.vendor}</div>
-              <div style={{ fontSize:10, color:T.sub, marginBottom:2 }}>{p.campaignName}</div>
+              <div style={{ fontSize:11.5, fontWeight:500, color:T.text, marginBottom:2 }}>{outbound ? po.vendor : po.client}</div>
+              <div style={{ fontSize:10, color:T.sub, marginBottom:5 }}>{po.campaignName || "—"}</div>
+              <div style={{ height:3, background:T.mute, borderRadius:2, marginBottom:4 }}>
+                <div style={{ height:3, borderRadius:2, background:led.balance < 0 ? T.red : FULFILMENT_COL[led.fulfilment], width:`${led.pct}%` }} />
+              </div>
               <div style={{ display:"flex", justifyContent:"space-between" }}>
-                <span style={{ fontSize:9.5, color:T.label }}>{p.raisedByName}</span>
-                <span style={{ fontSize:11, fontWeight:600, color:T.text }}>{showAmt(p.amount, role)}</span>
+                <span style={{ fontSize:9.5, color:T.label }}>{isAccounts(role) ? `${fmtINR(led.billed)} of ${fmtINR(led.value)}` : ""}</span>
+                <span style={{ fontSize:11, fontWeight:600, color:led.balance < 0 ? T.red : T.text }}>{isAccounts(role) ? fmtINR(led.balance) : "₹ ——"} left</span>
               </div>
             </div>
           ))}
@@ -1255,7 +955,7 @@ function TabPurchaseOrders({ role, currentUser, pos, setPos, campsRef }) {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:12 }}>
               <div><Lbl style={{ display:"block", marginBottom:4 }}>Vendor / MCN name *</Lbl><input value={draft.vendor} onChange={e => ud("vendor", e.target.value)} placeholder="e.g. StarTalent MCN" style={{ ...INP }} /></div>
               <div><Lbl style={{ display:"block", marginBottom:4 }}>Type</Lbl><select value={draft.vendorType} onChange={e => ud("vendorType", e.target.value)} style={{ ...INP }}><option value="creator_mcn">Creator MCN</option><option value="vendor">Production Vendor</option></select></div>
-              <div><Lbl style={{ display:"block", marginBottom:4 }}>Campaign</Lbl><select value={draft.campaign} onChange={e => ud("campaign", e.target.value)} style={{ ...INP }}>{campsRef.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+              <div><Lbl style={{ display:"block", marginBottom:4 }}>Campaign</Lbl><select value={draft.campaign} onChange={e => ud("campaign", e.target.value)} style={{ ...INP }}><option value="">— None —</option>{campsRef.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
               <div><Lbl style={{ display:"block", marginBottom:4 }}>Expected delivery</Lbl><DateInput value={draft.deliveryDate} onChange={v => ud("deliveryDate", v)} placeholder="Pick a date" style={{ ...INP }} /></div>
             </div>
             <div style={{ marginBottom:12 }}><Lbl style={{ display:"block", marginBottom:4 }}>Scope of work *</Lbl><textarea value={draft.scope} onChange={e => ud("scope", e.target.value)} rows={3} placeholder="Describe deliverables…" style={{ ...INP, resize:"vertical" }} /></div>
@@ -1276,7 +976,9 @@ function TabPurchaseOrders({ role, currentUser, pos, setPos, campsRef }) {
             </div>
           </div>
         ) : (
-          <PODetail po={po} role={role} canRaise={canRaisePO(role)} onApprove={handleApprove} onDeliver={handleDeliver} onMatch={handleMatch} onClose={handleClose} />
+          <PODetail po={sel?.po} led={sel?.led} docs={sel?.docs || []} direction={direction}
+            role={role} canRaise={outbound && canRaisePO(role)}
+            onApprove={handleApprove} onReject={handleReject} onClose={handleClose} onReopen={handleReopen} onSetValue={handleSetValue} />
         )}
       </div>
     </div>
@@ -1329,14 +1031,14 @@ function TabQuotations({ role, quotes, setQuotes, campsRef }) {
   const simulateBriefLock = () => {
     const camp = campsRef[1] || campsRef[0];
     if (!camp) return;
-    const newQ = { id:`QT-AUTO-${Date.now().toString().slice(-5)}`, client:camp.client, brandId:camp.brandId || null, label:`${camp.name} — Auto-Generated Quote`, status:"pending_review", isAutoGenerated:true, campaignId:camp.id, createdDate:todayStr(), validTill:"", isRetainerClient:true, marginPct:35, agencyFeePct:0, agencyFeeType:"baked_in", lines:[{ desc:`Influencer Marketing — ${camp.name}`, sac:"998361", qty:1, rate:camp.budget, gstRate:18 }], notes:"Auto-generated on brief lock. Review and edit before sending." };
+    const newQ = { id:newId("QT-AUTO"), client:camp.client, brandId:camp.brandId || null, label:`${camp.name} — Auto-Generated Quote`, status:"pending_review", isAutoGenerated:true, campaignId:camp.id, createdDate:todayStr(), validTill:"", isRetainerClient:true, marginPct:35, agencyFeePct:0, agencyFeeType:"baked_in", lines:[{ desc:`Influencer Marketing — ${camp.name}`, sac:"998361", qty:1, rate:camp.budget, gstRate:18 }], notes:"Auto-generated on brief lock. Review and edit before sending." };
     setQuotes(p => [newQ, ...p]);
     setSelId(newQ.id);
   };
 
   const saveQuote = () => {
     const brandId = campsRef.find(c => c.client === draft.client)?.brandId || null;
-    const newQ = { ...draft, id:`QT-${Date.now().toString().slice(-5)}`, brandId, status:"draft", createdDate:todayStr(), isAutoGenerated:false, campaignId:null };
+    const newQ = { ...draft, id:newId("QT"), brandId, status:"draft", createdDate:todayStr(), isAutoGenerated:false, campaignId:null };
     setQuotes(p => [newQ, ...p]);
     setSelId(newQ.id);
     setShowBuild(false);
@@ -1592,101 +1294,6 @@ function TabRegistry({ role }) {
   );
 }
 
-// ── TAB: GST & COMPLIANCE ─────────────────────────────────────────────────────
-function TabGST({ role, invoices, expenses }) {
-  const [registry,setRegistry]=useState([]);
-  useEffect(()=>{
-    RegistryAPI.list().then(setRegistry).catch(()=>{});
-  },[]);
-  const paidInv      = invoices.filter(i => i.status === "paid" && i.type !== "credit_note");
-  const gstOut       = paidInv.reduce((s, i) => s + (i.amount || 0) * ((i.gstRate || 18) / 100), 0);
-  const itc          = expenses.filter(e => e.gst && e.gst.applicable && e.status === "paid").reduce((s, e) => s + (e.gst.amount || 0), 0);
-  const tds          = expenses.reduce((s, e) => s + ((e.tds && e.tds.deducted) || 0), 0);
-  const dirTds       = expenses.filter(e => e.directorOnly && e.tds && e.tds.applicable).reduce((s, e) => s + (e.tds.deducted || 0), 0);
-  const netGST       = gstOut - itc;
-
-  return (
-    <div style={{ padding:"20px 24px", overflowY:"auto", height:"100%" }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20 }}>
-        <div>
-          <div style={{ fontFamily:"'Newsreader',serif", fontSize:20, fontWeight:600, color:T.text, fontStyle:"italic" }}>GST & Compliance</div>
-          <div style={{ fontSize:10, color:T.sub, marginTop:2 }}>Monthly filing · FY {FY} · April–March</div>
-        </div>
-        <div style={{ display:"flex", gap:8 }}>
-          {isAccounts(role) && <Btn variant="ghost" style={{ fontSize:10 }} onClick={() => exportTally(invoices, expenses)}>↓ Tally CSV</Btn>}
-          {isAccounts(role) && <Btn variant="ghost" style={{ fontSize:10 }}>↓ GSTR-1 JSON</Btn>}
-          {isAccounts(role) && <Btn variant="ghost" style={{ fontSize:10 }}>↓ GSTR-3B Summary</Btn>}
-        </div>
-      </div>
-
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:20 }}>
-        {[["GST Collected", gstOut, T.green], ["ITC Eligible", itc, T.accent], ["Net GST Payable", netGST, netGST > 0 ? T.amber : T.green], ["TDS Deducted", tds, T.purple]].map(([l, v, c]) => (
-          <div key={l} style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:7, padding:"12px 14px" }}>
-            <div style={{ fontSize:8.5, color:T.label, textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:4 }}>{l}</div>
-            <div style={{ fontSize:18, fontWeight:600, color:c }}>{fmtINR(v)}</div>
-          </div>
-        ))}
-      </div>
-
-      {isFounder(role) && dirTds > 0 && (
-        <div style={{ background:`${T.gold}08`, border:`1px solid ${T.gold}25`, borderRadius:7, padding:"12px 14px", marginBottom:16 }}>
-          <Lbl color={T.gold} style={{ display:"block", marginBottom:4 }}>Director TDS — Founder only</Lbl>
-          <div style={{ fontSize:12, color:T.text }}>TDS on director remuneration: {fmtFull(dirTds)} · Sec 192 (salary) + 194J (consultancy)</div>
-        </div>
-      )}
-
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:16 }}>
-        <div style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:7, padding:"14px" }}>
-          <Lbl style={{ display:"block", marginBottom:10 }}>GSTR-1 — Outward Supplies</Lbl>
-          {paidInv.slice(0, 4).map(inv => (
-            <div key={inv.id} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:`1px solid ${T.border}` }}>
-              <div>
-                <div style={{ fontSize:10.5, color:T.text }}>{inv.id}</div>
-                <div style={{ fontSize:9, color:T.label }}>{inv.gstin} · SAC {inv.sac}</div>
-              </div>
-              <div style={{ textAlign:"right" }}>
-                <div style={{ fontSize:10.5, color:T.text }}>{isAccounts(role) ? fmtFull(inv.amount || 0) : "₹ ——"}</div>
-                <div style={{ fontSize:9, color:T.sub }}>GST: {isAccounts(role) ? fmtFull((inv.amount||0)*((inv.gstRate||18)/100)) : "₹ ——"}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:7, padding:"14px" }}>
-          <Lbl style={{ display:"block", marginBottom:10 }}>TDS Register — 194C/J/M</Lbl>
-          {registry.filter(r => r.tdsSection && r.tdsDeducted > 0).map(r => (
-            <div key={r.id} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:`1px solid ${T.border}` }}>
-              <div>
-                <div style={{ fontSize:10.5, color:T.text }}>{r.name}</div>
-                <div style={{ fontSize:9, color:T.label }}>{r.tdsSection} · PAN: {isAccounts(role) ? r.pan || "⚑ Missing" : "*****"}</div>
-              </div>
-              <div style={{ textAlign:"right" }}>
-                <div style={{ fontSize:10.5, color:T.amber }}>{fmtFull(r.tdsDeducted)}</div>
-                <div style={{ fontSize:9, color:T.sub }}>{r.tdsRate}%</div>
-              </div>
-            </div>
-          ))}
-          <div style={{ fontSize:9.5, color:T.sub, marginTop:8 }}>Deposit by 7th of following month</div>
-        </div>
-      </div>
-
-      <Lbl style={{ display:"block", marginBottom:10 }}>Filing Calendar</Lbl>
-      <div style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:7, overflow:"hidden" }}>
-        <div style={{ display:"grid", gridTemplateColumns:"130px 1fr 130px 110px", padding:"7px 12px", borderBottom:`1px solid ${T.border}` }}>
-          {["Type","Period","Due Date","Status"].map(h => <Lbl key={h}>{h}</Lbl>)}
-        </div>
-        {GST_CALENDAR.map(g => (
-          <div key={g.id} style={{ display:"grid", gridTemplateColumns:"130px 1fr 130px 110px", padding:"9px 12px", borderBottom:`1px solid ${T.border}`, alignItems:"center" }}>
-            <span style={{ fontSize:11.5, fontWeight:500, color:T.text }}>{g.type}</span>
-            <span style={{ fontSize:11, color:T.sub }}>{g.period}</span>
-            <span style={{ fontSize:11, color:g.status==="due"?T.amber:T.sub }}>{g.dueDate}</span>
-            <Pill status={g.status} />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ── TAB: CAMPAIGN P&L (Founder — full; PCM — their event, no director pay) ──
 function TabCampaignPL({ role, advMap, setAdvMap, expenses, invoices, campsRef }) {
   const [selC, setSelC]     = useState("c1");
@@ -1891,8 +1498,8 @@ export default function InternalBilling() {
   // Each item in these arrays is a full object (no nested merges from
   // children), so on every setState we diff against the previous list and
   // PATCH/POST whichever ids changed or are new. Keeps every child
-  // component (TabIncome, TabSpending, etc.) completely unchanged — they
-  // just call setInvoices(prev => ...) like before.
+  // component (TabIncome, TabPurchaseOrders, etc.) completely unchanged —
+  // they just call setInvoices(prev => ...) like before.
   const syncCollection = useCallback((prevList, nextList, api) => {
     const prevById = new Map(prevList.map(x => [x.id, x]));
     for (const item of nextList) {
@@ -1906,22 +1513,48 @@ export default function InternalBilling() {
     }
   }, [showToast]);
 
-  const setInvoices  = useCallback(updater => setInvoicesRaw(prev => { const next = typeof updater === "function" ? updater(prev) : updater; syncCollection(prev, next, InvoicesAPI); return next; }), [syncCollection]);
-  const setExpenses  = useCallback(updater => setExpensesRaw(prev => { const next = typeof updater === "function" ? updater(prev) : updater; syncCollection(prev, next, ExpensesAPI); return next; }), [syncCollection]);
-  const setQuotes    = useCallback(updater => setQuotesRaw(prev => { const next = typeof updater === "function" ? updater(prev) : updater; syncCollection(prev, next, QuotesAPI); return next; }), [syncCollection]);
-  const setPos       = useCallback(updater => setPosRaw(prev => { const next = typeof updater === "function" ? updater(prev) : updater; syncCollection(prev, next, PurchaseOrdersAPI); return next; }), [syncCollection]);
-  const setClientPOs = useCallback(updater => setClientPOsRaw(prev => { const next = typeof updater === "function" ? updater(prev) : updater; syncCollection(prev, next, ClientPOsAPI); return next; }), [syncCollection]);
+  // These refs mirror the latest list so a setter can resolve `next` OUTSIDE
+  // the state updater.
+  //
+  // React state updaters must be pure. These setters used to call
+  // syncCollection() from inside setXxxRaw(prev => ...), and because <App/>
+  // renders inside <React.StrictMode> (main.jsx), React deliberately
+  // double-invokes updaters in development. Every create therefore fired the
+  // SAME POST twice in the same millisecond — which is exactly the duplicate
+  // _id that crashed the backend (E11000 on client_pos: "CPO-1785781224336").
+  // Every edit likewise fired two PATCHes.
+  //
+  // Writing the ref synchronously (rather than syncing it in an effect) keeps
+  // consecutive setter calls in one tick chaining off each other correctly.
+  const invoicesRef = useRef([]), expensesRef = useRef([]), quotesRef = useRef([]);
+  const posRef = useRef([]), clientPOsRef = useRef([]);
+  const makeSetter = useCallback((ref, setRaw, api) => (updater) => {
+    const prev = ref.current;
+    const next = typeof updater === "function" ? updater(prev) : updater;
+    ref.current = next;
+    syncCollection(prev, next, api);
+    setRaw(next);
+  }, [syncCollection]);
+
+  const setInvoices  = useMemo(() => makeSetter(invoicesRef,  setInvoicesRaw,  InvoicesAPI),        [makeSetter]);
+  const setExpenses  = useMemo(() => makeSetter(expensesRef,  setExpensesRaw,  ExpensesAPI),        [makeSetter]);
+  const setQuotes    = useMemo(() => makeSetter(quotesRef,    setQuotesRaw,    QuotesAPI),          [makeSetter]);
+  const setPos       = useMemo(() => makeSetter(posRef,       setPosRaw,       PurchaseOrdersAPI),  [makeSetter]);
+  const setClientPOs = useMemo(() => makeSetter(clientPOsRef, setClientPOsRaw, ClientPOsAPI),       [makeSetter]);
 
   useEffect(() => {
     let cancelled = false;
     Promise.all([InvoicesAPI.list(), ExpensesAPI.list(), QuotesAPI.list(), PurchaseOrdersAPI.list(), ClientPOsAPI.list(), CampaignsAPI.list()])
       .then(([inv, exp, qts, posList, cpos, camps]) => {
         if (cancelled) return;
-        setInvoicesRaw(inv);
-        setExpensesRaw(exp);
-        setQuotesRaw(qts);
-        setPosRaw(posList);
-        setClientPOsRaw(cpos);
+        // Seed both the state and the mirror refs the setters diff against —
+        // a ref left at [] would make the next edit look like a create and
+        // re-POST every row.
+        setInvoicesRaw(invoicesRef.current   = inv);
+        setExpensesRaw(expensesRef.current   = exp);
+        setQuotesRaw(quotesRef.current       = qts);
+        setPosRaw(posRef.current             = posList);
+        setClientPOsRaw(clientPOsRef.current = cpos);
         // Map real campaigns into the billing reference shape
         setCampsRef(camps.map(c => ({
           id: c.id,
@@ -1966,26 +1599,26 @@ export default function InternalBilling() {
   const anomalies = useMemo(() => detectAnomalies(displayExpenses), [displayExpenses]);
 
   const overdueCount     = displayInvoices.filter(i => i.status === "overdue").length;
-  const pendingApproval  = displayExpenses.filter(e => e.status === "pending_approval").length;
   const pendingPOs       = displayPos.filter(p => p.status === "pending_approval").length;
-  const filingsDue       = GST_CALENDAR.filter(g => g.status === "due").length;
   const autoQuotesPending= displayQuotes.filter(q => q.isAutoGenerated && q.status === "pending_review").length;
   const noPOInvoices     = displayInvoices.filter(i => !i.clientPO && i.type === "campaign").length;
-  const criticalAnoms    = anomalies.filter(a => a.severity === "critical").length;
 
   // Per spec: CM and EA must not see any financial billing data.
-  // AM gets read-only access to campaign budget info only (no income/spending/GST/TDS).
+  // AM gets read-only access to campaign budget info only.
   const hasFullBilling = can(role, "seeRevenue");       // founder + pcm
   const hasOpsBilling  = can(role, "seeCampaignBudgetInBilling"); // + am + accounts
 
+  // Spending and GST were removed pending a rework — neither modelled its
+  // domain correctly (Spending had no link from an expense back to the PO that
+  // authorised it; GST ran off a hardcoded filing calendar). The `expenses`
+  // collection is deliberately still loaded and synced: Campaign P&L reads it
+  // for creator/vendor spend and the director's remuneration block.
   const TABS = [
     { id:"dashboard",       lbl:"Dashboard",    badge:null,                                          show: hasOpsBilling },
     { id:"income",          lbl:"Income",        badge:overdueCount + noPOInvoices || null, col:overdueCount > 0 ? T.red : T.amber, show: hasFullBilling },
-    { id:"spending",        lbl:"Spending",      badge:pendingApproval + criticalAnoms || null, col:criticalAnoms > 0 ? T.red : T.amber, show: hasFullBilling },
     { id:"purchase_orders", lbl:"POs",           badge:pendingPOs || null, col:T.amber,            show: hasFullBilling },
     { id:"quotations",      lbl:"Quotations",    badge:autoQuotesPending || null, col:T.teal,       show: hasFullBilling },
     { id:"registry",        lbl:"Registry",      badge:null,                                          show: can(role, "seeRegistry") },
-    { id:"gst",             lbl:"GST",           badge:filingsDue || null, col:T.amber,             show: can(role, "seeGST") },
     ...(can(role, "seeCampaignPL") ? [{ id:"campaign_pl", lbl:"Campaign P&L", badge:null, show: true }] : []),
   ].filter(t => t.show);
 
@@ -2016,7 +1649,7 @@ export default function InternalBilling() {
           <div>
             <h1 style={{ fontFamily:"'Newsreader',serif", fontSize:20, fontWeight:600, color:"#1D1D1F", margin:0, fontStyle:"italic", letterSpacing:"-0.02em" }}>Billing</h1>
             <div style={{ fontSize:10.5, color:"#86868B", fontFamily:SF, marginTop:2 }}>
-              5th Avenue · FY {FY} · Monthly GST
+              5th Avenue · FY {FY}
             </div>
           </div>
           <div style={{ flex:1 }} />
@@ -2024,8 +1657,12 @@ export default function InternalBilling() {
           <div style={{ display:"flex", gap:20, marginRight:8 }}>
             {[
               { l:"Outstanding", v:fmtINR(displayInvoices.filter(i => ["pending","overdue"].includes(i.status) && i.type !== "credit_note").reduce((s,i)=>s+i.amount,0)), c:overdueCount > 0 ? T.red : "#1D1D1F" },
-              { l:"Approval needed", v:pendingApproval, c:pendingApproval > 0 ? T.amber : "#6E6E73" },
-              { l:"Anomalies", v:anomalies.length, c:anomalies.length > 0 ? T.red : "#6E6E73" },
+              // These two used to read `pendingApproval` (expense approvals) and
+              // `anomalies` (expense outliers). Both were Spending-tab concepts
+              // with no input path left, so they now track what Billing actually
+              // owns: PO sign-off and campaign invoices raised without a client PO.
+              { l:"POs to approve", v:pendingPOs, c:pendingPOs > 0 ? T.amber : "#6E6E73" },
+              { l:"Invoices w/o PO", v:noPOInvoices, c:noPOInvoices > 0 ? T.amber : "#6E6E73" },
             ].map(s => (
               <div key={s.l} style={{ textAlign:"right" }}>
                 <div style={{ fontSize:17, fontWeight:700, color:s.c, lineHeight:1, letterSpacing:"-0.03em", fontFamily:SF }}>{s.v}</div>
@@ -2060,12 +1697,10 @@ export default function InternalBilling() {
 
       <div style={{ flex:1, minHeight:0, overflow:"hidden" }}>
         {tab === "dashboard"      && <TabDashboard      role={role} invoices={displayInvoices} expenses={displayExpenses} advMap={advMap} setAdvMap={setAdvMap} setTab={setTab} anomalies={anomalies} pos={displayPos} campsRef={displayCampsRef} />}
-        {tab === "income"         && <TabIncome         role={role} invoices={displayInvoices} setInvoices={setInvoices} clientPOs={displayClientPOs} setClientPOs={setClientPOs} campsRef={displayCampsRef} />}
-        {tab === "spending"       && <TabSpending       role={role} expenses={displayExpenses} setExpenses={setExpenses} anomalies={anomalies} pos={displayPos} campsRef={displayCampsRef} />}
-        {tab === "purchase_orders"&& <TabPurchaseOrders role={role} currentUser={currentUser} pos={displayPos} setPos={setPos} campsRef={displayCampsRef} />}
+        {tab === "income"         && <TabIncome         role={role} invoices={displayInvoices} setInvoices={setInvoices} setClientPOs={setClientPOs} campsRef={displayCampsRef} />}
+        {tab === "purchase_orders"&& <TabPurchaseOrders role={role} currentUser={currentUser} pos={displayPos} setPos={setPos} clientPOs={displayClientPOs} setClientPOs={setClientPOs} invoices={displayInvoices} expenses={displayExpenses} campsRef={displayCampsRef} />}
         {tab === "quotations"     && <TabQuotations     role={role} quotes={displayQuotes} setQuotes={setQuotes} campsRef={displayCampsRef} />}
         {tab === "registry"       && <TabRegistry       role={role} />}
-        {tab === "gst"            && <TabGST            role={role} invoices={displayInvoices} expenses={displayExpenses} />}
         {tab === "campaign_pl"    && <TabCampaignPL     role={role} advMap={advMap} setAdvMap={setAdvMap} expenses={displayExpenses} invoices={displayInvoices} campsRef={displayCampsRef} />}
       </div>
 

@@ -154,11 +154,33 @@ const NICHE_SIMILAR = {
   Tech:      ["Tech","Gaming"],
   Gaming:    ["Gaming","Tech"],
 };
-// Creators whose niche shares an audience with the campaign's chosen niche.
-const nicheMatches = (campNiche, creatorNiche) => {
-  if (!campNiche) return true; // no niche picked → don't filter
-  return (NICHE_SIMILAR[campNiche] || [campNiche]).includes(creatorNiche);
+// Free-typed niches are normalised to the same shape as the NICHES list above —
+// trimmed, single-spaced, Title Case — so "  home  decor" and "Home Decor"
+// can't both land on one campaign, and a typed "food" resolves to the existing
+// "Food" preset instead of creating a near-duplicate the matcher would miss.
+// Words already typed in caps are left alone so acronyms (DIY, UGC) survive.
+// \p{M} keeps combining marks so Indic scripts survive ("हिंदी" isn't stripped
+// down to its consonants); hyphens capitalise on both sides ("pet-care" →
+// "Pet-Care") while apostrophes don't ("mom's" → "Mom's", not "Mom'S").
+const titleNicheWord = (w) => w.split("-")
+  .map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+  .join("-");
+const normalizeNiche = (s) => String(s || "")
+  .replace(/[’‘]/g, "'")
+  .replace(/[^\p{L}\p{M}\p{N}&'\- ]/gu, " ")
+  .trim().replace(/\s+/g, " ")
+  .split(" ")
+  .map(w => /^[\p{Lu}\p{N}&]{2,4}$/u.test(w) ? w : titleNicheWord(w))
+  .join(" ");
+
+// Creators whose niche shares an audience with ANY niche the campaign picked.
+const nicheMatches = (campNiches, creatorNiche) => {
+  if (!campNiches?.length) return true; // no niche picked → don't filter
+  return campNiches.some(n => (NICHE_SIMILAR[n] || [n]).includes(creatorNiche));
 };
+// Campaigns created before the field went multi-select stored a single `niche`
+// string — read both shapes so their Generate results don't silently change.
+const nichesOf = (c) => c?.niches?.length ? c.niches : (c?.niche ? [c.niche] : []);
 // Profile auto-fetch per platform. Add an entry here when the backend grows a
 // lookup endpoint for another platform.
 const PROFILE_LOOKUP = {
@@ -336,12 +358,19 @@ const mkCreator = (src={}, fee) => ({
 
 // ── WORKFLOW ACTION LABELS ───────────────────────────────────────────────────
 // Shared by the confirmation modal and the post-action toast.
-const ACTION_MSGS={advance_to_shortlist:"Move to creator shortlisting",am_request_edit:"Request brief edit",raise_po:"Raise Purchase Order",advance_received:"Confirm advance received",assign_cm:"Assign CM",assign_ea:"Assign EA — start execution",brief_sent:"Mark briefs sent to creators",concept_submitted:"Mark concepts received",cm_approve_concept:"Approve concept",cm_request_changes:"Request concept changes",start_production:"Start production",video_submitted:"Mark video submitted",internal_approved:"Approve internally — send to client",internal_revision:"Request internal revision",client_approved:"Mark client approved",client_revision:"Log client revision request",mark_live:"Mark content live",creator_paid:"Confirm creator payments released",start_reporting:"Start reporting",mark_completed:"Mark campaign completed",extend_end_date:"Campaign end date extended"};
+const ACTION_MSGS={advance_to_shortlist:"Move to creator shortlisting",am_request_edit:"Request brief edit",raise_po:"Raise Purchase Order",advance_received:"Confirm advance received",assign_am:"Assign Account Manager",assign_cm:"Assign Category Manager",assign_ea:"Assign Executive Associate",brief_sent:"Mark briefs sent to creators",concept_submitted:"Mark concepts received",cm_approve_concept:"Approve concept",cm_request_changes:"Request concept changes",start_production:"Start production",video_submitted:"Mark video submitted",internal_approved:"Approve internally — send to client",internal_revision:"Request internal revision",client_approved:"Mark client approved",client_revision:"Log client revision request",mark_live:"Mark content live",creator_paid:"Confirm creator payments released",start_reporting:"Start reporting",mark_completed:"Mark campaign completed",extend_end_date:"Campaign end date extended"};
 // Actions that don't move the pipeline stage — no confirmation needed.
 // extend_end_date is here because ExtendEndModal is already its own confirm
 // step (it has to be — it collects the new date), so the generic stage-change
 // modal would just be a second dialog saying less.
-const NO_CONFIRM_ACTIONS=new Set(["assign_cm","extend_end_date"]);
+const NO_CONFIRM_ACTIONS=new Set(["assign_am","assign_cm","extend_end_date"]);
+// assign_ea is the one conditional case: the first EA assignment out of
+// `advance_received` starts Execution (a real stage change → confirm), while
+// swapping the EA later only rewrites the assignment (no stage change → no
+// "Confirm stage change" dialog for something that doesn't change a stage).
+const needsConfirm=(action,camp)=>
+  action==="assign_ea" ? camp?.stage==="advance_received"&&!camp?.eaId
+                       : !NO_CONFIRM_ACTIONS.has(action);
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 const fmtINR  = n => !n&&n!==0?"—":n>=100000?`₹${(n/100000).toFixed(1)}L`:`₹${(n/1000).toFixed(0)}K`;
@@ -349,6 +378,15 @@ const fmtNum  = fmtCompact; // shared compact formatter — lib/format.js
 const getM    = id => TEAM_DIR.find(t=>t.id===id)||TEAM.find(t=>t.id===id)||null;
 const getR    = id => ROLES.find(r=>r.id===id)||ROLES[0];
 const plIdx   = id => PL_IDS.indexOf(id);
+// Creator budget — the slice of the total budget that pays creators. It's set
+// explicitly on the Commercial step of the New Campaign wizard; campaigns
+// created before that step existed fall back to the 60% split that used to be
+// hardcoded at creation, so their financials read the same as they always did.
+const creatorBudgetOf = c => c?.creatorBudget || Math.round((c?.budget||0)*0.6);
+const numReqOf        = c => c?.numReq || 5;
+// Even per-head slice of the creator budget — an "approx" planning number, not
+// a commitment: the real per-creator fee is negotiated on the Creators tab.
+const perCreatorOf    = c => Math.round(creatorBudgetOf(c)/numReqOf(c));
 
 function amtInWords(n) {
   const ones = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
@@ -462,6 +500,11 @@ function generateInvoiceHTML(creator, camp, invoiceNo, dated) {
 // Per spec: AM sees execution budget but NOT revenue/margins in billing.
 // In campaigns: AM sees campaign budget (needed for execution). CM/EA: no financials.
 const canFin    = r => can(r, "seeCampaignBudget");  // budget in campaign card/detail
+// Creator-side money — the creator budget pot + per-creator fees. Wider than
+// canFin on purpose: CM/AM/EA run the shortlist and the negotiation, so they
+// need the pot they're spending against, while the client-facing total budget,
+// agency fee and margin stay behind canFin/canFF.
+const canCrFin  = r => can(r, "seeCreatorFees");
 const canFF     = r => can(r, "seeMargins");          // margins — founder only
 const canCreate = r => can(r, "createCampaign");
 // Visibility: founder sees all; everyone else only sees own campaigns
@@ -562,6 +605,115 @@ function FullPipe({stage}){
 
 // ── DELIVERABLE MULTISELECT ───────────────────────────────────────────────────
 function DelvSelect({value=[],onChange}){const t=d=>onChange(value.includes(d)?value.filter(x=>x!==d):[...value,d]);return(<div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:2}}>{IM_DELIVERABLES.map(d=>{const on=value.includes(d);return <button key={d} onClick={()=>t(d)} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{d}</button>;})}</div>);}
+
+// ── NICHE MULTISELECT ────────────────────────────────────────────────────────
+// Same chip pattern as DelvSelect, plus a free-text row for niches we don't
+// have a preset for. Anything typed goes through normalizeNiche() first, and a
+// typed value that matches an existing preset or an already-picked custom niche
+// (case-insensitively) selects that one rather than adding a twin — the
+// Generate matcher compares niches by exact string, so near-duplicates would
+// quietly stop matching creators.
+function NicheSelect({value=[],onChange}){
+  const [draft,setDraft]=useState("");
+  const norm=normalizeNiche(draft);
+  const all=[...NICHES,...value.filter(n=>!NICHES.includes(n))];
+  const existing=norm?all.find(n=>n.toLowerCase()===norm.toLowerCase()):null;
+  const already=!!existing&&value.includes(existing);
+  const toggle=n=>onChange(value.includes(n)?value.filter(x=>x!==n):[...value,n]);
+  const add=()=>{
+    if(!norm)return;
+    const n=existing||norm;
+    if(!value.includes(n))onChange([...value,n]);
+    setDraft("");
+  };
+  return(<div>
+    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:2}}>
+      {all.map(n=>{
+        const on=value.includes(n),custom=!NICHES.includes(n);
+        return <button key={n} onClick={()=>toggle(n)} title={custom?"Custom niche — click to remove":undefined} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{n}{custom&&on&&<span style={{marginLeft:5,opacity:0.6}}>×</span>}</button>;
+      })}
+    </div>
+    <div style={{display:"flex",gap:8,marginTop:8,alignItems:"center"}}>
+      <input value={draft} maxLength={24}
+        onChange={e=>setDraft(e.target.value)}
+        onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();add();}}}
+        placeholder="+ Other niche…" style={{...INP,resize:"none",flex:1}}/>
+      <Btn variant="ghost" onClick={add} disabled={!norm||already}>Add</Btn>
+    </div>
+    {norm&&(already
+      ? <div style={{fontSize:9,color:T.sub,marginTop:4}}>"{existing}" is already selected.</div>
+      : norm!==draft.trim()&&<div style={{fontSize:9,color:T.sub,marginTop:4}}>Will be added as "{norm}".</div>)}
+  </div>);
+}
+
+// ── CREATOR BUDGET FIELD (New Campaign → Commercial) ─────────────────────────
+// The creator budget is the slice of the total that actually pays creators;
+// whatever is left is the agency's. Teams arrive at it both ways — "60% of the
+// budget" when pricing off a rate card, a fixed rupee number when the client
+// has already carved it out — so the field accepts either and always shows the
+// other, plus the per-head split the shortlist will be built against.
+const clampPct = v => Math.min(100, Math.max(0, parseFloat(v) || 0));
+// Resolve the two input modes down to the one number that gets stored.
+const resolveCreatorBudget = (f, budget) =>
+  f.creatorBudgetMode === "amount"
+    ? (parseInt(f.creatorBudgetAmt) || 0)
+    : Math.round(budget * clampPct(f.creatorBudgetPct) / 100);
+
+function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAgency}){
+  const isPct = mode === "pct";
+  const value = resolveCreatorBudget({creatorBudgetMode:mode,creatorBudgetPct:pct,creatorBudgetAmt:amount}, budget);
+  const effPct = budget > 0 ? (value / budget) * 100 : 0;
+  const per    = numCreators > 0 ? Math.round(value / numCreators) : 0;
+  const over   = value > budget;
+  const agency = budget - value;
+  // One slice per creator up to 12 — past that the hairlines read as noise,
+  // so the bar collapses to a single block and the "× N" label carries it.
+  const slices = numCreators > 0 && numCreators <= 12 ? numCreators : 1;
+  const seg = on => ({padding:"4px 12px",borderRadius:6,fontSize:10,fontWeight:600,fontFamily:SF,cursor:"pointer",border:"none",transition:"all 0.15s",background:on?T.surface:"transparent",color:on?T.text:T.label,boxShadow:on?"0 1px 2px rgba(0,0,0,0.08)":"none"});
+  return(<div style={{marginBottom:14}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+      <Lbl>Creator budget *</Lbl>
+      <div style={{display:"flex",gap:2,padding:2,borderRadius:8,background:T.mute}}>
+        <button onClick={()=>onChange({creatorBudgetMode:"pct"})}    style={seg(isPct)}>% of budget</button>
+        <button onClick={()=>onChange({creatorBudgetMode:"amount"})} style={seg(!isPct)}>₹ amount</button>
+      </div>
+    </div>
+    <div style={{display:"flex",alignItems:"center",gap:10}}>
+      {isPct
+        ? <div style={{position:"relative",width:120,flexShrink:0}}>
+            <input type="number" min={0} max={100} step={5} value={pct} onChange={e=>onChange({creatorBudgetPct:e.target.value})} style={{...INP,resize:"none",paddingRight:26}}/>
+            <span style={{position:"absolute",right:11,top:"50%",transform:"translateY(-50%)",fontSize:11,color:T.label,pointerEvents:"none"}}>%</span>
+          </div>
+        : <MoneyInput value={amount} onChange={v=>onChange({creatorBudgetAmt:v})} placeholder="e.g. 7,50,000" style={{...INP,resize:"none",width:150,flexShrink:0}}/>}
+      <span style={{fontSize:11,color:budget>0?T.text:T.label,fontFamily:SF}}>
+        {budget>0
+          ? (isPct ? `= ${fmtINR(value)} of ${fmtINR(budget)}` : `= ${effPct.toFixed(1)}% of ${fmtINR(budget)}`)
+          : "Enter the total budget first"}
+      </span>
+    </div>
+    {isPct&&<div style={{display:"flex",gap:6,marginTop:8}}>{[50,60,70,75].map(p=>{
+      const on=clampPct(pct)===p;
+      return <button key={p} onClick={()=>onChange({creatorBudgetPct:p})} style={{padding:"3px 10px",borderRadius:20,fontSize:10,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:T.sub,border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{p}%</button>;
+    })}</div>}
+    {/* Allocation bar — the creator share split into one block per creator,
+        with the agency remainder trailing it. Makes "where does the money go"
+        legible at a glance instead of only as two numbers. */}
+    {budget>0&&!over&&<div style={{marginTop:10}}>
+      <div style={{display:"flex",height:8,borderRadius:4,overflow:"hidden",background:T.mute}}>
+        <div style={{width:`${effPct}%`,flexShrink:0,display:"flex",gap:2,overflow:"hidden",transition:"width 0.25s"}}>
+          {Array.from({length:slices}).map((_,i)=><div key={i} style={{flex:1,background:T.accent,borderRadius:2,minWidth:2}}/>)}
+        </div>
+        <div style={{flex:1,minWidth:0,marginLeft:2,background:`${T.gold}55`,borderRadius:2}}/>
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:9.5,fontFamily:SF}}>
+        <span style={{color:T.sub}}>≈ <strong style={{color:T.text,fontWeight:600}}>{fmtINR(per)}</strong> per creator × {numCreators||0}</span>
+        {showAgency&&<span style={{color:T.label}}>Agency {fmtINR(agency)} · {(100-effPct).toFixed(0)}%</span>}
+      </div>
+    </div>}
+    {over&&<div style={{fontSize:9.5,color:T.red,marginTop:6}}>Creator budget can't exceed the total budget of {fmtINR(budget)}.</div>}
+    {budget>0&&!over&&value===0&&<div style={{fontSize:9.5,color:T.red,marginTop:6}}>Set how much of the budget goes to creators.</div>}
+  </div>);
+}
 
 // ── CAMPAIGN CARD (grid tile) ─────────────────────────────────────────────────
 function CampCard({camp,onClick,role}){
@@ -1184,8 +1336,8 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const [showAdd,setShowAdd]=useState(false);
   const [editTarget,setEditTarget]=useState(null);       // creator being edited (see PERMS.editCreatorDetails)
   const [invoiceTarget,setInvoiceTarget]=useState(null); // creator to invoice
-  const required=camp.numReq||5,flagged=genRounds>=4;
-  const cb=camp.creatorBudget||camp.budget*0.6;
+  const required=numReqOf(camp),flagged=genRounds>=4;
+  const cb=creatorBudgetOf(camp),perCr=perCreatorOf(camp);
   const totalFee=creators.reduce((s,c)=>s+(c.fee||0),0);
   const over=totalFee>cb;
   const canEdit=["ea","cm","am","pcm","founder"].includes(role);
@@ -1194,7 +1346,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const generate=()=>{if(flagged||generating)return;setGenerating(true);setTimeout(()=>{const taken=new Set(creators.map(c=>c.dbId).filter(Boolean));
     // Restrict suggestions to the campaign's niche (same/similar). If nothing
     // in the DB matches, fall back to the full pool so Generate is never empty.
-    const inNiche=CREATOR_DB.filter(c=>!taken.has(c.id)&&nicheMatches(camp.niche,c.niche));
+    const inNiche=CREATOR_DB.filter(c=>!taken.has(c.id)&&nicheMatches(nichesOf(camp),c.niche));
     const base=inNiche.length?inNiche:CREATOR_DB.filter(c=>!taken.has(c.id));
     const pool=base.slice(0,required*2).map(c=>mkCreator(c));setSuggested(pool);setGenRounds(r=>r+1);setGenerating(false);},900);};
   const confirmRemove=(reason,note)=>{API.removeCreator(camp.id,removeTarget._id,reason,note);sync(creators.filter(c=>c._id!==removeTarget._id));setRemoveTarget(null);};
@@ -1202,7 +1354,16 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const thS={fontSize:9,fontWeight:600,color:T.label,textTransform:"uppercase",letterSpacing:"0.07em",padding:"8px 10px",whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`,textAlign:"left",background:T.raised};
   const tdS={padding:"8px 10px",borderBottom:`1px solid ${T.border}`,fontSize:11,color:T.sub,verticalAlign:"middle",whiteSpace:"nowrap"};
   return(<div>
-    {canFin(role)&&<div style={{marginBottom:18}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}><Lbl>Creator Budget</Lbl><span style={{fontSize:10.5,color:over?T.red:T.sub}}>{fmtINR(totalFee)} of {fmtINR(cb)}</span></div><div style={{height:2,background:T.mute,borderRadius:1}}><div style={{height:2,borderRadius:1,background:over?T.red:T.green,width:`${Math.min((totalFee/cb)*100,100)}%`,transition:"width 0.3s"}}/></div>{over&&<div style={{fontSize:9.5,color:T.red,marginTop:3}}>{fmtINR(totalFee-cb)} over budget</div>}</div>}
+    {canCrFin(role)&&<div style={{marginBottom:18}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}><Lbl>Creator Budget</Lbl><span style={{fontSize:10.5,color:over?T.red:T.sub}}>{fmtINR(totalFee)} of {fmtINR(cb)}</span></div>
+      <div style={{height:2,background:T.mute,borderRadius:1}}><div style={{height:2,borderRadius:1,background:over?T.red:T.green,width:`${cb>0?Math.min((totalFee/cb)*100,100):0}%`,transition:"width 0.3s"}}/></div>
+      {/* The per-head target set at creation — what a shortlister needs in view
+          while negotiating, next to what's actually been committed so far. */}
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:4,fontSize:9.5}}>
+        <span style={{color:T.label}}>≈ {fmtINR(perCr)} per creator target · {required} required</span>
+        <span style={{color:over?T.red:T.sub}}>{over?`${fmtINR(totalFee-cb)} over budget`:`${fmtINR(cb-totalFee)} left`}</span>
+      </div>
+    </div>}
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
       <div><Lbl>Creators</Lbl><span style={{fontSize:9,color:T.sub,marginLeft:8}}>{creators.length} of {required} required</span>{camp.sentToClient&&<span style={{fontSize:9,color:T.green,marginLeft:8}}>&middot; sent to client</span>}</div>
       <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -1216,7 +1377,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
     <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}>
       <table style={{width:"100%",borderCollapse:"collapse",minWidth:1080}}>
         <thead><tr>
-          {CREATOR_COLS.filter(c=>c.key!=="fee"||canFin(role)).filter(c=>!["payType","payId"].includes(c.key)||canFin(role)).map(col=>(
+          {CREATOR_COLS.filter(c=>c.key!=="fee"||canCrFin(role)).filter(c=>!["payType","payId"].includes(c.key)||canFin(role)).map(col=>(
             <th key={col.key} title={col.cv?undefined:"Internal only"} style={{...thS,width:col.w,minWidth:col.w}}>{col.label}</th>
           ))}
           {(canEdit||canFin(role))&&<th style={{...thS,width:130}}></th>}
@@ -1236,7 +1397,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
               <td style={tdS}>{canEdit?<select value={cr.status} onChange={e=>patch(cr._id,{status:e.target.value})} style={{background:"transparent",border:"none",color:stCol,fontSize:10.5,fontFamily:"'Sora'",outline:"none",cursor:"pointer",appearance:"none",WebkitAppearance:"none",padding:"2px 4px"}}>{CR_JOURNEY.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>:<span style={{fontSize:10.5,color:stCol}}>{CR_JOURNEY.find(s=>s.id===cr.status)?.label}</span>}</td>
               <td style={tdS}><span style={{fontSize:10,color:ASSET_COLOR[cSt],fontWeight:500}}>{ASSET_STATUSES.find(s=>s.id===cSt)?.label}</span></td>
               <td style={tdS}><span style={{fontSize:10,color:ASSET_COLOR[dSt],fontWeight:500}}>{ASSET_STATUSES.find(s=>s.id===dSt)?.label}</span></td>
-              {canFin(role)&&<td style={tdS}>{canEdit?<MoneyInput value={cr.fee||0} onChange={v=>patch(cr._id,{fee:parseInt(v)||0})} style={{width:76,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}/>:fmtINR(cr.fee)}</td>}
+              {canCrFin(role)&&<td style={tdS}>{canEdit?<MoneyInput value={cr.fee||0} onChange={v=>patch(cr._id,{fee:parseInt(v)||0})} style={{width:76,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}/>:fmtINR(cr.fee)}</td>}
               {canFin(role)&&<td style={tdS}>{canEdit?<select value={cr.payType||""} onChange={e=>patch(cr._id,{payType:e.target.value||null,payId:null})} style={{background:"transparent",border:`1px solid ${T.border}`,color:cr.payType?T.text:T.label,fontSize:10,fontFamily:"'Sora'",outline:"none",cursor:"pointer",borderRadius:4,padding:"3px 5px"}}>{PAYMENT_TYPES.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select>:<span style={{fontSize:10,color:T.text}}>{PAYMENT_TYPES.find(p=>p.id===cr.payType)?.label||"—"}</span>}</td>}
               {(canEdit||canFin(role))&&<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}>
                 {can(role,"editCreatorDetails")&&<button onClick={()=>setEditTarget(cr)} title="Edit all creator details" style={{fontSize:9,color:T.sub,background:"transparent",border:`1px solid ${T.borderMid}`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Edit</button>}
@@ -1252,7 +1413,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
     </div>
     {canEdit&&creators.length>=required&&!camp.sentToClient&&<div style={{marginTop:14}}><Hr style={{marginBottom:12}}/><Btn variant="primary" onClick={()=>onUpdateCreators(creators,"send_to_client")}>Send creator list to client</Btn></div>}
     {suggested.length>0&&<div style={{marginTop:20}}><Hr style={{marginBottom:14}}/><div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}><Lbl>Suggested — Round {genRounds}</Lbl><span style={{fontSize:9,color:T.sub}}>{required-creators.length} spots remaining</span></div>
-      <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:500}}><thead><tr>{["Creator","Platform","Followers","Avg ER%","Niche","Est. Fee",""].map(h=><th key={h} style={{...thS}}>{h}</th>)}</tr></thead><tbody>{suggested.map((cr,i)=><tr key={cr._id} style={{opacity:creators.length>=required?0.35:1}}><td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={20}/><div><div style={{fontSize:11,fontWeight:500}}>{cr.name}</div><div style={{fontSize:9,color:T.label}}>{cr.handle}</div></div></div></td><td style={tdS}>{cr.platform}</td><td style={tdS}>{fmtNum(cr.followers)}</td><td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td><td style={tdS}>{cr.niche||"—"}</td>{canFin(role)&&<td style={tdS}>{fmtINR(cr.fee)}</td>}<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}><Btn variant="ghost" onClick={()=>addFromSugg(cr)} disabled={creators.length>=required} style={{fontSize:9,padding:"3px 9px"}}>Add</Btn><Btn variant="subtle" onClick={()=>setSuggested(p=>p.filter(c=>c._id!==cr._id))} style={{fontSize:9,padding:"3px 9px"}}>Skip</Btn></div></td></tr>)}</tbody></table></div>
+      <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:500}}><thead><tr>{["Creator","Platform","Followers","Avg ER%","Niche",...(canCrFin(role)?["Est. Fee"]:[]),""].map(h=><th key={h} style={{...thS}}>{h}</th>)}</tr></thead><tbody>{suggested.map((cr,i)=><tr key={cr._id} style={{opacity:creators.length>=required?0.35:1}}><td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={20}/><div><div style={{fontSize:11,fontWeight:500}}>{cr.name}</div><div style={{fontSize:9,color:T.label}}>{cr.handle}</div></div></div></td><td style={tdS}>{cr.platform}</td><td style={tdS}>{fmtNum(cr.followers)}</td><td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td><td style={tdS}>{cr.niche||"—"}</td>{canCrFin(role)&&<td style={tdS}>{fmtINR(cr.fee)}</td>}<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}><Btn variant="ghost" onClick={()=>addFromSugg(cr)} disabled={creators.length>=required} style={{fontSize:9,padding:"3px 9px"}}>Add</Btn><Btn variant="subtle" onClick={()=>setSuggested(p=>p.filter(c=>c._id!==cr._id))} style={{fontSize:9,padding:"3px 9px"}}>Skip</Btn></div></td></tr>)}</tbody></table></div>
     </div>}
     {removeTarget&&<RemoveModal creator={removeTarget} onConfirm={confirmRemove} onCancel={()=>setRemoveTarget(null)}/>}
     {showAdd&&<AddCreatorModal onAdd={cr=>sync([...creators,cr])} onClose={()=>setShowAdd(false)}/>}
@@ -1297,7 +1458,7 @@ function TabDeliverables({camp,role,onUpdateCreators}){
   const agg=[
     {l:"Total Views",v:fmtNum(totV||null),show:true},
     {l:"Total Likes",v:fmtNum(totL||null),show:true},
-    {l:"CPV",v:cpv!=null?`₹${cpv.toFixed(2)}`:"—",show:canFin(role)},
+    {l:"CPV",v:cpv!=null?`₹${cpv.toFixed(2)}`:"—",show:canCrFin(role)},  // creator fees ÷ views — creator-side, same band as the fees themselves
     {l:"Avg ER",v:er!=null?`${er.toFixed(1)}%`:"—",show:true},
     {l:"Forwards",v:fmtNum(totF||null),show:true},
     {l:"% Positive",v:avgPos!=null?`${avgPos}%`:"—",show:true},
@@ -1396,28 +1557,101 @@ function TabBrief({camp,role,onSaveBrief,onAction}){
 }
 
 // ── TEAM TAB ─────────────────────────────────────────────────────────────────
+// One rule: an EMPTY slot can be filled by anyone with PERMS.assignUsers; a
+// FILLED slot is static here. Reassignment is deliberately not offered from the
+// IM page — moving a campaign off someone mid-flight also revokes their access
+// to it (see canSee), so it's a governance decision, not an inline edit.
+//
+// Initial assignment can't be locked away though, because these slots ARE the
+// access key: canSee() only shows a campaign to its amId/cmId/eaId, and
+// assign_ea is the only transition into Execution. The old code gated the two
+// forms on narrow stage windows — CM only in draft/shortlist/po_raised, EA only
+// at advance_received — so a campaign that moved past them could never be
+// staffed, leaving it invisible to the very people meant to run it.
+//
+// With those windows gone, the stage side-effect has to be conditional: filling
+// an empty EA slot only starts Execution when the campaign is actually sitting
+// at advance_received (see the assign_ea case in onAction). Otherwise assigning
+// an EA on a draft would vault it past PO Raised and Advance Received.
+const TEAM_SLOTS=[
+  {key:"am",label:"Account Manager", campKey:"amId",action:"assign_am",roles:["am","pcm","founder"]},
+  {key:"cm",label:"Category Manager",campKey:"cmId",action:"assign_cm",roles:["cm","pcm"]},
+  {key:"ea",label:"Exec Associate",  campKey:"eaId",action:"assign_ea",roles:["ea"]},
+];
 function TabTeam({camp,role,onAction}){
-  const [selCM,setSelCM]=useState(camp.cmId||"");
-  const [selEA,setSelEA]=useState(camp.eaId||"");
+  const [editing,setEditing]=useState(null); // slot key currently being edited
+  const [sel,setSel]=useState("");
   const [justif,setJustif]=useState("");
-  const isAM=["am","founder","pcm"].includes(role),isCM=["cm","pcm","founder"].includes(role);
-  const canAssignCM=isAM&&["draft","creator_shortlist","po_raised"].includes(camp.stage);
-  const canAssignEA=isCM&&camp.stage==="advance_received"&&!camp.eaId;
-  const cms=TEAM_DIR.filter(t=>["cm","pcm"].includes(t.role)),eas=TEAM_DIR.filter(t=>t.role==="ea");
+  const canAssign=can(role,"assignUsers");
+  const startsExecution=camp.stage==="advance_received"&&!camp.eaId;
+  const open=slot=>{setEditing(slot.key);setSel("");setJustif("");};
+  const save=slot=>{
+    if(!sel)return;
+    onAction(slot.action,{[slot.campKey]:sel,...(slot.key==="ea"&&startsExecution?{justif}:{})});
+    setEditing(null);
+  };
   return(<div>
-    {[{label:"Account Manager",id:camp.amId},{label:"Category Manager",id:camp.cmId},{label:"Exec Associate",id:camp.eaId}].map(({label,id},i)=>{const m=getM(id);return(<div key={label}><div style={{padding:"12px 0"}}><Lbl style={{display:"block",marginBottom:5}}>{label}</Lbl><div style={{display:"flex",alignItems:"center",gap:7}}>{m&&<Av init={m.avatar} size={20}/>}<span style={{fontSize:12,color:m?T.text:T.label,fontStyle:m?"normal":"italic"}}>{m?m.name:"Unassigned"}</span>{m&&<span style={{fontSize:9,color:T.label}}>{m.jobTitle}</span>}</div></div>{i<2&&<Hr/>}</div>);})}
-    {canAssignCM&&<div style={{marginTop:20}}><Hr style={{marginBottom:16}}/><Lbl style={{display:"block",marginBottom:8}}>Assign Category Manager</Lbl><select value={selCM} onChange={e=>setSelCM(e.target.value)} style={{...INP,resize:"none",marginBottom:10}}><option value="">Select CM…</option>{cms.map(cm=><option key={cm.id} value={cm.id}>{cm.name}</option>)}</select><Btn variant="primary" onClick={()=>selCM&&onAction("assign_cm",{cmId:selCM})} disabled={!selCM}>Assign CM</Btn></div>}
-    {canAssignEA&&<div style={{marginTop:20}}><Hr style={{marginBottom:16}}/><Lbl style={{display:"block",marginBottom:8}}>Assign EA</Lbl><select value={selEA} onChange={e=>setSelEA(e.target.value)} style={{...INP,resize:"none",marginBottom:8}}><option value="">Select EA…</option>{eas.map(ea=><option key={ea.id} value={ea.id}>{ea.name} ({ea.jobTitle})</option>)}</select><textarea value={justif} onChange={e=>setJustif(e.target.value)} placeholder="Justification…" style={{...INP,minHeight:48,marginBottom:10}}/><Btn variant="primary" onClick={()=>selEA&&onAction("assign_ea",{eaId:selEA,justif})} disabled={!selEA}>Assign</Btn></div>}
+    {TEAM_SLOTS.map((slot,i)=>{
+      const m=getM(camp[slot.campKey]),isEditing=editing===slot.key;
+      const pool=TEAM_DIR.filter(t=>slot.roles.includes(t.role));
+      return(<div key={slot.key}>
+        <div style={{padding:"12px 0"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
+            <Lbl>{slot.label}</Lbl>
+            {canAssign&&!m&&!isEditing&&<button onClick={()=>open(slot)} style={{background:"transparent",border:"none",padding:0,cursor:"pointer",fontFamily:SF,fontSize:10.5,fontWeight:600,color:T.accent,textDecoration:"underline",textUnderlineOffset:2}}>Assign</button>}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:7}}>
+            {m&&<Av init={m.avatar} size={20}/>}
+            <span style={{fontSize:12,color:m?T.text:T.label,fontStyle:m?"normal":"italic"}}>{m?m.name:"Unassigned"}</span>
+            {m&&<span style={{fontSize:9,color:T.label}}>{m.jobTitle}</span>}
+          </div>
+          {isEditing&&<div style={{marginTop:10,padding:"12px 14px",background:T.raised,borderRadius:6,border:`1px solid ${T.border}`}}>
+            <select value={sel} onChange={e=>setSel(e.target.value)} style={{...INP,resize:"none",marginBottom:8}}>
+              <option value="">Select {slot.label}…</option>
+              {pool.map(t=><option key={t.id} value={t.id}>{t.name} — {t.jobTitle}</option>)}
+            </select>
+            {!pool.length&&<div style={{fontSize:9.5,color:T.amber,marginBottom:8}}>No one with this role yet — add them on the Access &amp; Credentials page (they need a Team ID).</div>}
+            {/* Justification only when this assignment starts Execution —
+                staffing an empty slot at any other stage isn't a gate. */}
+            {slot.key==="ea"&&startsExecution&&<>
+              <textarea value={justif} onChange={e=>setJustif(e.target.value)} placeholder="Justification…" style={{...INP,minHeight:48,marginBottom:8}}/>
+              <div style={{fontSize:9.5,color:T.sub,marginBottom:8}}>Assigning an EA now moves this campaign into Execution.</div>
+            </>}
+            <div style={{display:"flex",gap:8}}>
+              <Btn variant="primary" onClick={()=>save(slot)} disabled={!sel}>Assign</Btn>
+              <Btn variant="subtle" onClick={()=>setEditing(null)}>Cancel</Btn>
+            </div>
+          </div>}
+        </div>
+        {i<TEAM_SLOTS.length-1&&<Hr/>}
+      </div>);
+    })}
+    <div style={{marginTop:14,fontSize:10,color:T.label}}>{canAssign
+      ? "Assigned roles are fixed here — changing one is done outside the campaign, since it also changes who can see it."
+      : "Assignments are managed by the Account Manager, Category Manager or Founder."}</div>
     {camp.stage==="po_raised"&&<div style={{marginTop:20}}><Hr style={{marginBottom:16}}/><div style={{padding:"12px 14px",background:T.raised,borderRadius:6,border:`1px solid ${T.amber}22`,marginBottom:12}}><Lbl color={T.amber} style={{display:"block",marginBottom:4}}>Advance Pending</Lbl><div style={{fontSize:11.5,color:T.sub,lineHeight:1.5}}>Waiting for Finance to confirm advance payment received.</div></div>{(role==="accounts"||role==="founder"||role==="pcm")&&<Btn variant="success" onClick={()=>onAction("advance_received")}>Confirm advance received</Btn>}</div>}
   </div>);
 }
 
 // ── FINANCIALS TAB ───────────────────────────────────────────────────────────
+// Three visibility bands, widest to narrowest:
+//   canCrFin — creator budget, per-head target, committed/remaining (CM/AM/EA)
+//   canFin   — the client-facing total budget on top of that
+//   canFF    — agency fee and margin (founder only)
 function TabFinancials({camp,role}){
-  const cb=camp.creatorBudget||camp.budget*0.6,af=camp.budget-cb;
+  const cb=creatorBudgetOf(camp),af=(camp.budget||0)-cb;
   const cmt=(camp.creators||[]).reduce((s,c)=>s+(c.fee||0),0);
-  const rows=[{label:"Total budget",value:fmtINR(camp.budget),color:T.text,show:true},{label:"Creator budget",value:fmtINR(cb),color:T.sub,show:true},{label:"Creator fees committed",value:fmtINR(cmt),color:cmt>cb?T.red:T.green,show:true},{label:"Creator budget remaining",value:fmtINR(cb-cmt),color:T.sub,show:true},{label:"Agency fee",value:fmtINR(af),color:T.accent,show:canFF(role)},{label:"Margin",value:`${((af/camp.budget)*100).toFixed(1)}%`,color:((af/camp.budget)*100)>=30?T.green:T.amber,show:canFF(role)}].filter(r=>r.show);
-  return(<div><div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}><Lbl>Financial overview</Lbl><span style={{fontSize:9,color:T.amber,border:`1px solid ${T.amber}25`,borderRadius:3,padding:"1px 6px"}}>Internal only</span></div>{rows.map(({label,value,color},i)=><div key={label}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 0"}}><span style={{fontSize:11.5,color:T.sub}}>{label}</span><span style={{fontSize:12,fontWeight:500,color}}>{value}</span></div>{i<rows.length-1&&<Hr/>}</div>)}{!canFF(role)&&<div style={{marginTop:10,fontSize:10,color:T.label}}>Agency fee and margin visible to Founders only.</div>}</div>);
+  const marginPct=camp.budget>0?(af/camp.budget)*100:0;
+  const rows=[
+    {label:"Total budget",value:fmtINR(camp.budget),color:T.text,show:canFin(role)},
+    {label:"Creator budget",value:fmtINR(cb),color:T.sub,show:true},
+    {label:"Per-creator target",value:`≈ ${fmtINR(perCreatorOf(camp))} × ${numReqOf(camp)}`,color:T.sub,show:true},
+    {label:"Creator fees committed",value:fmtINR(cmt),color:cmt>cb?T.red:T.green,show:true},
+    {label:"Creator budget remaining",value:fmtINR(cb-cmt),color:T.sub,show:true},
+    {label:"Agency fee",value:fmtINR(af),color:T.accent,show:canFF(role)},
+    {label:"Margin",value:`${marginPct.toFixed(1)}%`,color:marginPct>=30?T.green:T.amber,show:canFF(role)},
+  ].filter(r=>r.show);
+  return(<div><div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}><Lbl>Financial overview</Lbl><span style={{fontSize:9,color:T.amber,border:`1px solid ${T.amber}25`,borderRadius:3,padding:"1px 6px"}}>Internal only</span></div>{rows.map(({label,value,color},i)=><div key={label}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 0"}}><span style={{fontSize:11.5,color:T.sub}}>{label}</span><span style={{fontSize:12,fontWeight:500,color}}>{value}</span></div>{i<rows.length-1&&<Hr/>}</div>)}{!canFF(role)&&<div style={{marginTop:10,fontSize:10,color:T.label}}>{canFin(role)?"Agency fee and margin visible to Founders only.":"Creator-side budget only — total budget, agency fee and margin are not shown for your role."}</div>}</div>);
 }
 
 // ── TIMELINE TAB ─────────────────────────────────────────────────────────────
@@ -1487,7 +1721,7 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
   useEffect(()=>{setTab("brief");setConfirmDelete(false);setExtending(false);},[camp.id]);
   const stCol=T.sc[camp.stage]||T.sub,pl=PIPELINE.find(p=>p.id===camp.stage)||PIPELINE[0];
   const es=endStatus(camp.end,camp.stage);
-  const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},{id:"timeline",label:"Timeline"},...(canFin(role)?[{id:"financials",label:"Financials"}]:[])];
+  const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},{id:"timeline",label:"Timeline"},...(canFin(role)||canCrFin(role)?[{id:"financials",label:"Financials"}]:[])];
   const navBtn={display:"flex",alignItems:"center",gap:4,background:"transparent",border:"none",cursor:"pointer",fontSize:11.5,fontWeight:500,color:"#6E6E73",fontFamily:SF,padding:"5px 8px",borderRadius:6};
   // Card chrome shared by the header and content panels — floating rounded
   // surfaces on the grey page rather than full-bleed white bands, so the
@@ -1559,7 +1793,7 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
             {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
             {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} onUpdateCreators={onUpdateCreators}/>}
             {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
-            {tab==="financials"   &&canFin(role)&&<TabFinancials camp={camp} role={role}/>}
+            {tab==="financials"   &&(canFin(role)||canCrFin(role))&&<TabFinancials camp={camp} role={role}/>}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -1568,9 +1802,11 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
 }
 
 // ── CREATE MODAL ─────────────────────────────────────────────────────────────
-function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
+function CreateModal({onClose,onSubmit,brands,onCreateBrand,role}){
   const [step,setStep]=useState(0);
-  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",niche:"",budget:"",numCreators:5,objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
+  // creatorBudgetMode decides which of the two creator-budget inputs is live —
+  // the other is kept around so toggling back doesn't lose what was typed.
+  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",niches:[],budget:"",numCreators:5,creatorBudgetMode:"pct",creatorBudgetPct:60,creatorBudgetAmt:"",objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
   const [newBrandName,setNewBrandName]=useState("");
   // Staged only — nothing is written to the backend until the campaign is
   // actually submitted, so abandoning this modal never leaves an orphan brand.
@@ -1578,13 +1814,16 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
   const [submitting,setSubmitting]=useState(false);
   const [brandErr,setBrandErr]=useState(null);
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  const merge=patch=>setF(p=>({...p,...patch}));
   const STEPS=["Basics","Brief","Commercial","Internal"];
+  const budgetNum=parseInt(f.budget)||0;
+  const creatorBudget=resolveCreatorBudget(f,budgetNum);
   // Per-step required fields — Next/Create stay disabled until the current
   // step's required inputs are filled (Brief + Internal have none).
   const stepOk=[
     !!(f.name.trim()&&f.service&&f.brandId),
     true,
-    parseInt(f.budget)>0&&parseInt(f.numCreators)>0&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
+    budgetNum>0&&parseInt(f.numCreators)>0&&creatorBudget>0&&creatorBudget<=budgetNum&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
     true,
   ];
   const ok=stepOk[step];
@@ -1606,7 +1845,9 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
   };
   const handleSubmit=async()=>{
     if(!allOk)return;
-    const payload={...f,timeline:timelineLabel};
+    // creatorBudget is resolved here rather than in onCreate so the stored
+    // number is exactly the one the wizard showed, whichever mode was used.
+    const payload={...f,timeline:timelineLabel,creatorBudget};
     if(f.brandId!=="__new__"){ onSubmit(payload); return; }
     setSubmitting(true);setBrandErr(null);
     try{
@@ -1644,13 +1885,14 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
         {step===2&&<>
           <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Total budget (₹) *</Lbl><MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="e.g. 12,50,000" style={{...INP,resize:"none"}}/></div>
           <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Creators required *</Lbl><input type="number" min={1} value={f.numCreators} onChange={e=>u("numCreators",e.target.value)} placeholder="5" style={{...INP,resize:"none"}}/></div>
+          <CreatorBudgetField
+            budget={budgetNum} numCreators={parseInt(f.numCreators)||0}
+            mode={f.creatorBudgetMode} pct={f.creatorBudgetPct} amount={f.creatorBudgetAmt}
+            onChange={merge} showAgency={canFF(role)}/>
           <div style={{marginBottom:14}}>
-            <Lbl style={{display:"block",marginBottom:5}}>Niche</Lbl>
-            <select value={f.niche} onChange={e=>u("niche",e.target.value)} style={{...INP,resize:"none",cursor:"pointer"}}>
-              <option value="">— Any niche —</option>
-              {NICHES.map(n=><option key={n} value={n}>{n}</option>)}
-            </select>
-            <div style={{fontSize:9,color:T.sub,marginTop:4}}>Steers Generate towards same/similar creators.</div>
+            <Lbl style={{display:"block",marginBottom:5}}>Niches</Lbl>
+            <NicheSelect value={f.niches} onChange={v=>u("niches",v)}/>
+            <div style={{fontSize:9,color:T.sub,marginTop:6}}>Steers Generate towards creators in the same or similar niches. Leave empty for any niche.</div>
           </div>
           <div style={{marginBottom:14}}>
             <Lbl style={{display:"block",marginBottom:5}}>Timeline *</Lbl>
@@ -1722,8 +1964,18 @@ export default function InternalCampaigns(){
         case "am_request_edit": next={...c,stage:"draft",briefStatus:"draft_edit",amNote:data.note||"",timeline:addEv("AM requested brief edit")};break;
         case "raise_po": next={...c,stage:"po_raised",timeline:addEv("Purchase Order raised")};break;
         case "advance_received": next={...c,stage:"advance_received",timeline:addEv("Advance received — execution cleared","Accounts")};break;
-        case "assign_cm": next={...c,cmId:data.cmId,timeline:addEv(`CM assigned: ${getM(data.cmId)?.name}`)};break;
-        case "assign_ea": next={...c,eaId:data.eaId,stage:"execution",timeline:addEv(`EA assigned: ${getM(data.eaId)?.name||data.eaId}`)};break;
+        case "assign_am": next={...c,amId:data.amId,timeline:addEv(`AM assigned: ${getM(data.amId)?.name||data.amId}`)};break;
+        case "assign_cm": next={...c,cmId:data.cmId,timeline:addEv(`CM assigned: ${getM(data.cmId)?.name||data.cmId}`)};break;
+        // Staffing the EA slot starts Execution only when the campaign is
+        // actually waiting at advance_received. Filling an empty EA slot on a
+        // campaign at any other stage is pure staffing — it must not vault a
+        // draft past PO Raised, or rewind a live campaign back to Execution.
+        case "assign_ea": {
+          const starts=!c.eaId&&c.stage==="advance_received";
+          next={...c,eaId:data.eaId,...(starts?{stage:"execution"}:{}),
+            timeline:addEv(`EA assigned: ${getM(data.eaId)?.name||data.eaId}${starts?" — execution started":""}`)};
+          break;
+        }
         case "brief_sent": next={...c,stage:"brief_sent",timeline:addEv("Creator briefs sent")};break;
         case "concept_submitted": next={...c,stage:"concept_submitted",timeline:addEv("Creator concepts received")};break;
         case "cm_approve_concept": next={...c,stage:"concept_approved",cmNote:data.note||"",timeline:addEv("Concept approved — production starts",role)};break;
@@ -1761,9 +2013,9 @@ export default function InternalCampaigns(){
   // before onAction applies (and persists) anything. Pure assignments skip it.
   const [pendingAction,setPendingAction]=useState(null); // {action,data}
   const requestAction=useCallback((action,data={})=>{
-    if(NO_CONFIRM_ACTIONS.has(action)){onAction(action,data);return;}
+    if(!needsConfirm(action,campaigns.find(c=>c.id===selectedId))){onAction(action,data);return;}
     setPendingAction({action,data});
-  },[onAction]);
+  },[onAction,campaigns,selectedId]);
   const onSaveBrief=useCallback(patch=>{setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,brief:{...c.brief,...patch}}));CampaignsAPI.update(selectedId,{brief:{...(campaigns.find(c=>c.id===selectedId)?.brief||{}),...patch}}).catch(()=>showToast("Save failed — check connection"));showToast("Brief updated");},[selectedId,showToast,campaigns]);
   const onUpdateCreators=useCallback((next,extra)=>{setCampaigns(prev=>prev.map(c=>{if(c.id!==selectedId)return c;return{...c,creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}}));CampaignsAPI.update(selectedId,{creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}).catch(()=>showToast("Save failed — check connection"));if(extra==="send_to_client")showToast("Creator list sent to client");},[selectedId,showToast]);
   // Appends an audit entry to the selected campaign's timeline and persists it.
@@ -1810,8 +2062,8 @@ export default function InternalCampaigns(){
     const budget = parseInt(f.budget)||0;
     const c={
       id:campId, name:f.name, client:brandName(f.brandId)||"", brandId:f.brandId, service:f.service,
-      region:f.region||"TBD", niche:f.niche||"", stage:"draft", progress:0,
-      budget, creatorBudget:Math.round(budget*0.6),
+      region:f.region||"TBD", niches:f.niches||[], stage:"draft", progress:0,
+      budget, creatorBudget:Math.min(f.creatorBudget||0,budget),
       numReq:parseInt(f.numCreators)||5, start:f.timelineStart||today(), end:f.timelineEnd||"TBD",
       createdBy:currentUser.teamId,
       amId, cmId, eaId,
@@ -1925,7 +2177,7 @@ export default function InternalCampaigns(){
       )}
     </AnimatePresence>
     <AnimatePresence>
-      {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand}/>}
+      {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand} role={role}/>}
     </AnimatePresence>
     <AnimatePresence>
       {pendingAction&&selected&&<ConfirmActionModal camp={selected} label={ACTION_MSGS[pendingAction.action]||pendingAction.action}

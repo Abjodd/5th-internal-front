@@ -83,7 +83,6 @@ export const ExpensesAPI = crud("/api/expenses");
 export const PurchaseOrdersAPI = crud("/api/purchase-orders");
 export const ClientPOsAPI = crud("/api/client-pos");
 export const QuotesAPI = crud("/api/quotes");
-export const RegistryAPI = crud("/api/registry");
 
 export const InstagramAPI = {
   lookup: (handle) => request(`/api/instagram?handle=${encodeURIComponent(handle)}`),

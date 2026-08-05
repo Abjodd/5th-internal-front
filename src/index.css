@@ -172,11 +172,3 @@ button:not(:disabled):active {
 .dp-day:hover { background: rgba(47, 62, 107, 0.10) !important; }
 .dp-nav:not(:disabled):hover { background: rgba(28, 24, 16, 0.06); color: #1C1A15; }
 
-/* Pipeline (FullPipe) — current-stage heartbeat + node hover lift */
-@keyframes pipePulse {
-  0%   { box-shadow: 0 0 0 0 var(--pulse-col, rgba(47, 62, 107, 0.35)); }
-  70%  { box-shadow: 0 0 0 6px rgba(0, 0, 0, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0); }
-}
-.pipe-node { transition: transform 0.15s ease; cursor: default; }
-.pipe-node:hover { transform: translateY(-2px); }

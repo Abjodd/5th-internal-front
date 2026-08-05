@@ -4,9 +4,12 @@
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
-import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, RegistryAPI, CampaignsAPI } from "../../lib/api";
+// RegistryAPI is gone: the registry is derived from campaigns + expenses now
+// (see buildRegistry) rather than read from a collection nothing ever wrote to.
+import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, CampaignsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
-import { fmtCompact, prettyDate } from "../../lib/format";
+import { fmtCompact, prettyDate, ISO_DATE, todayISO } from "../../lib/format";
+import { creatorBudgetOf, creatorKeyOf, normStage, stageLabel } from "../../lib/campaign";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
 
@@ -68,16 +71,26 @@ function fmtFull(n) { return "₹" + (n || 0).toLocaleString("en-IN"); }
 function fmtPct(n)  { return `${Number(n || 0).toFixed(1)}%`; }
 
 // ── MARGIN MODEL ──────────────────────────────────────────────────────────────
-function calcMargin(clientBudget, marginPct, agencyFeePct, agencyFeeType, isRetainer) {
-  const margin    = clientBudget * (marginPct / 100);
-  const agencyFee = isRetainer ? 0 : clientBudget * (agencyFeePct / 100);
-  const opsBudget = agencyFeeType === "baked_in"
-    ? clientBudget - margin - agencyFee
-    : clientBudget - margin;
-  const clientTotal  = agencyFeeType === "over_above" ? clientBudget + agencyFee : clientBudget;
-  const grossProfit  = margin + agencyFee;
-  const grossPct     = clientTotal > 0 ? (grossProfit / clientTotal) * 100 : 0;
-  return { margin, agencyFee, opsBudget, clientTotal, grossProfit, grossPct };
+// One model, and it's the same arithmetic IM Financials already shows: the
+// client's budget splits into the creator pool the team gets to spend and the
+// agency fee we keep. Both numbers come off the campaign — nothing is stored
+// here and nothing is assumed.
+//
+// The old model read marginPct / agencyFeePct / agencyFeeType off the campaign
+// and fell back to `|| 35` / `|| 15` when they were missing — which was always,
+// since no campaign in the database has ever carried those fields. So every
+// P&L reported two invented percentages as if they were the commercials, while
+// `creatorBudget` (the number the brief actually collects) was loaded into
+// campsRef and then used in exactly one display row. Two pages, two answers,
+// for the same campaign. Deriving it means they cannot disagree again.
+function calcMargin(clientBudget, creatorBudget) {
+  const budget    = clientBudget || 0;
+  // Clamped: a creator pool larger than the budget is a data error, not a
+  // negative agency fee.
+  const opsBudget = Math.min(Math.max(creatorBudget || 0, 0), budget);
+  const agencyFee = budget - opsBudget;
+  return { opsBudget, agencyFee, clientTotal:budget, grossProfit:agencyFee,
+           grossPct: budget > 0 ? (agencyFee / budget) * 100 : 0 };
 }
 
 // ── PO LEDGER MODEL ───────────────────────────────────────────────────────────
@@ -94,6 +107,37 @@ function calcMargin(clientBudget, marginPct, agencyFeePct, agencyFeeType, isReta
 // on each client PO and nothing ever incremented it — the real values existed
 // only in seed rows, so every PO raised through the UI sat at 0 forever while
 // the "Remaining" column happily reported the full value as unspent.
+
+// Overdue is DERIVED, never stored. Nothing in the app ever set
+// `status:"overdue"` — there was no date sweep anywhere — so the Aged
+// Receivables panel, the overdue filter and the red header count were all
+// permanently empty while invoices sat unpaid indefinitely. Compounding it,
+// every auto-created invoice carried `dueDate:"TBD"`, so even a sweep would
+// have had nothing to compare.
+//
+// Only ISO dates count. "TBD" and the localised strings older Billing-created
+// invoices carry mean "no due date agreed" — which is not the same as "not yet
+// due", and must not be reported as either.
+// ISO_DATE and todayISO come from lib/format — both were re-declared here
+// while Campaigns imported/hand-rolled its own copies of the same two things.
+//
+// Declared above isOverdue because it calls it: both are const arrow functions,
+// so this only works today by virtue of the call happening after module init.
+// Money actually in the bank against an invoice. An invoice confirmed paid in
+// full is the whole amount; otherwise it's whichever schedule legs have been
+// settled — which is how a campaign's 50% advance shows up as received while
+// the invoice itself correctly stays outstanding for the balance.
+const receivedOf = inv => {
+  if (inv?.status === "paid") return inv.amount || 0;
+  const s = inv?.schedule;
+  if (!s) return 0;
+  return ["advance","final"].reduce((t, k) => t + (s[k]?.status === "paid" ? (s[k].amount || 0) : 0), 0);
+};
+const isOverdue = inv => {
+  if (!inv || inv.type === "credit_note" || inv.status === "paid") return false;
+  if (!ISO_DATE.test(inv.dueDate || "")) return false;
+  return inv.dueDate < todayISO() && receivedOf(inv) < (inv.amount || 0);
+};
 
 // Outbound (us → vendor): the bills are expenses tagged with this PO.
 const billedAgainstPO = (poId, expenses) =>
@@ -139,6 +183,20 @@ function poLedger(po, billed) {
 
 const FULFILMENT_LABEL = { open:"Open", partially_billed:"Partially billed", fully_billed:"Fully billed", closed:"Closed", unrecorded:"Value not set" };
 const FULFILMENT_COL   = { open:T.sub, partially_billed:T.amber, fully_billed:T.green, closed:T.label, unrecorded:T.red };
+
+// ── QUOTE MARGIN ──────────────────────────────────────────────────────────────
+// The percentage-driven model, kept where it belongs: a quote's margin % and
+// agency fee % are typed into the quote form, so here they are real inputs
+// rather than the `|| 35` / `|| 15` guesses they became on the campaign P&L.
+function quoteMargin(sub, marginPct, agencyFeePct, agencyFeeType, isRetainer) {
+  const margin    = sub * ((marginPct || 0) / 100);
+  const agencyFee = isRetainer ? 0 : sub * ((agencyFeePct || 0) / 100);
+  const opsBudget = agencyFeeType === "baked_in" ? sub - margin - agencyFee : sub - margin;
+  const total     = agencyFeeType === "over_above" ? sub + agencyFee : sub;
+  const grossProfit = margin + agencyFee;
+  return { margin, agencyFee, opsBudget, grossProfit,
+           grossPct: total > 0 ? (grossProfit / total) * 100 : 0 };
+}
 
 // ── QUOTE TOTALS ──────────────────────────────────────────────────────────────
 function calcQuoteTotals(lines, agencyFeePct, agencyFeeType) {
@@ -256,26 +314,8 @@ function exportTally(invoices, expenses) {
   URL.revokeObjectURL(url);
 }
 
-// ── LOCALSTORAGE ──────────────────────────────────────────────────────────────
-const readLS  = k => { try { return JSON.parse(localStorage.getItem(k) || "{}"); } catch { return {}; } };
-const writeLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
-
-// ── SEED DATA ─────────────────────────────────────────────────────────────────
-// Only CLIENTS and SEED_CAMPS_REF remain. The per-collection seed arrays
-// (invoices, expenses, POs, quotes, registry) were dead: every list is loaded
-// from the API on mount, so they were stale sample rows nobody read — and
-// their stored `invoicedAmount`/`status` fields were the misleading reference
-// that made the old PO balance columns look implemented.
-const CLIENTS = [
-  { id:"cl1", name:"FreshBite Foods", isRetainer:true, retainerAmount:350000, agencyFeeExempt:true, creditLimit:1500000, poPreferred:true },
-];
-
-// SEED_CAMPS_REF is only used as initial fallback — tabs receive live `campsRef` prop from state
-const SEED_CAMPS_REF = [
-  { id:"c1", name:"Diwali Festive Push",  client:"FreshBite Foods", budget:1250000, marginPct:35, agencyFeePct:15, agencyFeeType:"over_above", isRetainerClient:true },
-  { id:"c2", name:"Summer Launch Teaser", client:"FreshBite Foods", budget:800000,  marginPct:38, agencyFeePct:15, agencyFeeType:"baked_in",   isRetainerClient:true },
-  { id:"c3", name:"Festive Nano Wave",    client:"FreshBite Foods", budget:320000,  marginPct:35, agencyFeePct:15, agencyFeeType:"over_above",  isRetainerClient:true },
-];
+// Billing state lives in the shared collections, never in localStorage — a
+// figure only one person's browser knows is not a books entry.
 
 // ── DESIGN CONSTANTS ─────────────────────────────────────────────────────────
 const SF = "'SF Pro Display','-apple-system','BlinkMacSystemFont','Helvetica Neue',sans-serif";
@@ -379,7 +419,9 @@ function InvDetail({ inv, role, onAccConfirm, onFounderConfirm, onUploadPO }) {
           {inv.isRetainerClient && <div style={{ fontSize:9, color:T.teal, marginTop:3, fontWeight:500 }}>RETAINER CLIENT — Agency fee waived</div>}
         </div>
         <div style={{ display:"flex", gap:6 }}>
-          <Pill status={inv.type === "credit_note" ? "credit_note" : inv.status} />
+          {/* Overdue is derived, so the pill has to ask isOverdue rather than
+              read a stored status that nothing ever sets. */}
+          <Pill status={inv.type === "credit_note" ? "credit_note" : isOverdue(inv) ? "overdue" : inv.status} />
           {isAccounts(role) && <Btn variant="ghost" style={{ fontSize:10 }} onClick={() => alert("Branded PDF generated — 5th Avenue letterhead + GSTIN")}>↓ PDF</Btn>}
         </div>
       </div>
@@ -507,7 +549,7 @@ function POLedgerBar({ led, role }) {
 }
 
 // Bills counted against a PO, so the balance is auditable rather than asserted.
-function POLinkedDocs({ docs, role, emptyText }) {
+function POLinkedDocs({ docs, role, emptyText, onUnbill }) {
   return (
     <div style={{ marginBottom:14 }}>
       <Lbl style={{ display:"block", marginBottom:6 }}>Billed against this PO ({docs.length})</Lbl>
@@ -519,14 +561,17 @@ function POLinkedDocs({ docs, role, emptyText }) {
                 <div style={{ fontSize:11, color:T.text }}>{d.label || d.payee || d.id}</div>
                 <div style={{ fontSize:9, color:T.label, fontFamily:"monospace" }}>{d.id}{d.date || d.raisedDate ? ` \u00b7 ${d.date || d.raisedDate}` : ""}</div>
               </div>
-              <span style={{ fontSize:11, fontWeight:500, color:T.text, flexShrink:0, marginLeft:10 }}>{isAccounts(role) ? fmtFull(d.amount || 0) : "\u20b9 \u2014\u2014"}</span>
+              <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0, marginLeft:10 }}>
+                <span style={{ fontSize:11, fontWeight:500, color:T.text }}>{isAccounts(role) ? fmtFull(d.amount || 0) : "\u20b9 \u2014\u2014"}</span>
+                {onUnbill && isAccounts(role) && <button onClick={() => onUnbill(d.id)} title="Remove from this PO" style={{ fontSize:9, color:T.sub, background:"transparent", border:`1px solid ${T.border}`, borderRadius:3, padding:"1px 5px", cursor:"pointer", fontFamily:"'Sora'" }}>unlink</button>}
+              </div>
             </div>
           ))}
     </div>
   );
 }
 
-function PODetail({ po, role, canRaise, led, docs, direction, onApprove, onReject, onReopen, onClose, onSetValue }) {
+function PODetail({ po, role, canRaise, led, docs, candidates = [], direction, onApprove, onReject, onReopen, onClose, onSetValue, onSetNumber, onBill, onUnbill }) {
   if (!po) return <div style={{ textAlign:"center", paddingTop:60, color:T.label, fontSize:11 }}>Select a PO{canRaise ? " or create new" : ""}</div>;
   const approval = approvalOf(po);
   const outbound = direction === "outbound";
@@ -556,6 +601,13 @@ function PODetail({ po, role, canRaise, led, docs, direction, onApprove, onRejec
       <POLedgerBar led={led} role={role} />
       <Hr style={{ marginBottom:14 }} />
 
+      {po.needsReview && (
+        <div style={{ background:`${T.red}08`, border:`1px solid ${T.red}25`, borderRadius:6, padding:"10px 12px", marginBottom:12 }}>
+          <Lbl color={T.red}>Needs review</Lbl>
+          <div style={{ fontSize:10.5, color:T.sub, marginTop:3, lineHeight:1.5 }}>{po.reviewNote}</div>
+        </div>
+      )}
+
       {po.scope && (
         <div style={{ marginBottom:12 }}>
           <Lbl style={{ display:"block", marginBottom:6 }}>Scope of work</Lbl>
@@ -575,10 +627,33 @@ function PODetail({ po, role, canRaise, led, docs, direction, onApprove, onRejec
         ))}
       </div>
 
-      <POLinkedDocs docs={docs} role={role}
+      <POLinkedDocs docs={docs} role={role} onUnbill={outbound ? onUnbill : null}
         emptyText={outbound
-          ? "No vendor bills recorded against this PO yet."
+          ? "No creator costs billed against this PO yet."
           : "No invoices raised against this PO yet."} />
+
+      {/* The costs this PO could cover: creator expenses on the same campaign
+          with no PO attached. Without this there was no route from a committed
+          creator cost to the PO that authorises it, so `billedAgainstPO` always
+          summed zero and every vendor PO read "open" no matter what had been
+          spent. Explicit, one at a time — a PO covers what someone says it
+          covers, not whatever happens to share a campaign id. */}
+      {outbound && candidates.length > 0 && (
+        <div style={{ marginBottom:14, background:`${T.amber}06`, border:`1px solid ${T.amber}22`, borderRadius:6, padding:"10px 12px" }}>
+          <Lbl color={T.amber} style={{ display:"block", marginBottom:2 }}>Unbilled creator costs on this campaign ({candidates.length})</Lbl>
+          <div style={{ fontSize:9.5, color:T.label, marginBottom:6 }}>Committed on the campaign but not yet drawn against any PO.</div>
+          {candidates.map(e => (
+            <div key={e.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0", borderTop:`1px solid ${T.border}` }}>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:11, color:T.text }}>{e.payee}</div>
+                <div style={{ fontSize:9, color:T.label, fontFamily:"monospace" }}>{e.id}</div>
+              </div>
+              <span style={{ fontSize:11, fontWeight:500, color:T.text }}>{isAccounts(role) ? fmtFull(e.amount || 0) : "₹ ——"}</span>
+              {isAccounts(role) && <Btn variant="amber" style={{ fontSize:9.5 }} onClick={() => onBill && onBill(po.id, e.id)}>Bill against this PO</Btn>}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={{ marginBottom:12, fontSize:10, color:(po.poDocument || po.document === "uploaded") ? T.green : T.amber }}>
         {(po.poDocument || po.document === "uploaded") ? "\u2713 PO document uploaded" : "\u26a1 PO document not uploaded"}
@@ -592,6 +667,12 @@ function PODetail({ po, role, canRaise, led, docs, direction, onApprove, onRejec
         {/* Closing is the only manual override left: it freezes a PO whose
             remaining balance will never be billed (job descoped, PO expired). */}
         {isAccounts(role) && led.fulfilment === "unrecorded" && <Btn variant="amber" onClick={() => onSetValue && onSetValue(po.id, po.amount)}>Set PO value</Btn>}
+        {/* Inbound only. Client PO numbers were captured by an "Upload PO"
+            prompt that sat next to the vendor POs, and every client PO in the
+            data ended up holding the *vendor* PO id for the same campaign —
+            a reference for money going out, filed as the client's reference
+            for money coming in. There was no way to correct one; now there is. */}
+        {!outbound && isAccounts(role) && <Btn variant={po.poNumber ? "ghost" : "amber"} onClick={() => onSetNumber && onSetNumber(po.id, po.poNumber)}>{po.poNumber ? "Correct PO number" : "Set PO number"}</Btn>}
         {isAccounts(role) && !isPOClosed(po) && !["open","unrecorded"].includes(led.fulfilment) && <Btn variant="ghost" onClick={() => onClose && onClose(po.id)}>Close PO</Btn>}
         {isAccounts(role) && isPOClosed(po) && <Btn variant="ghost" onClick={() => onReopen && onReopen(po.id)}>Reopen PO</Btn>}
       </div>
@@ -600,20 +681,29 @@ function PODetail({ po, role, canRaise, led, docs, direction, onApprove, onRejec
 }
 
 // ── TAB: DASHBOARD ────────────────────────────────────────────────────────────
-function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, anomalies, pos, campsRef }) {
-  const paid    = invoices.filter(i => i.status === "paid" && i.type !== "credit_note").reduce((s, i) => s + i.amount, 0);
-  const pending = invoices.filter(i => i.status === "pending" && i.type !== "credit_note").reduce((s, i) => s + i.amount, 0);
-  const overdue = invoices.filter(i => i.status === "overdue").reduce((s, i) => s + i.amount, 0);
+function TabDashboard({ role, invoices, expenses, setTab, anomalies, pos, campsRef }) {
+  // Collected counts settled schedule legs, not just fully-paid invoices — a
+  // campaign's 50% advance is money in the bank even while the invoice is open.
+  // Outstanding is the mirror image: billed, minus whatever has landed.
+  const billed  = invoices.filter(i => i.type !== "credit_note").reduce((s, i) => s + (i.amount || 0), 0);
+  const paid    = invoices.filter(i => i.type !== "credit_note").reduce((s, i) => s + receivedOf(i), 0);
+  // Unpaid balance on invoices past their due date — not the full face value,
+  // since a settled advance leg is not overdue money.
+  const overdue = invoices.filter(isOverdue).reduce((s, i) => s + Math.max(0, (i.amount || 0) - receivedOf(i)), 0);
   const spent   = expenses.filter(e => e.status === "paid" && !e.directorOnly).reduce((s, e) => s + e.amount, 0);
-  const pendingApproval = expenses.filter(e => e.status === "pending_approval").length;
+  // Committed = every live expense, paid or not. A creator locked into a
+  // campaign is money we owe whether or not it has left the account yet, and
+  // reporting only the paid half is what made "Total Spent" read ₹0 forever.
+  const committed       = expenses.filter(e => e.status !== "cancelled" && e.status !== "rejected" && !e.directorOnly).reduce((s, e) => s + e.amount, 0);
   const posPending      = (pos || []).filter(p => p.status === "pending_approval").length;
-  const retainer        = CLIENTS[0];
-  const campFees        = invoices.filter(i => i.type === "campaign").reduce((s, i) => s + i.amount, 0);
-  const outstanding     = pending + overdue;
-  const overservicing   = campFees > retainer.retainerAmount * 2.5;
-  const creditRisk      = outstanding > retainer.creditLimit * 0.8;
+  const outstanding     = Math.max(0, billed - paid);
   const criticalAnoms   = anomalies.filter(a => ["critical","high"].includes(a.severity));
-  const advancePending  = campsRef.filter(c => !advMap[c.id]);
+  // Campaigns whose advance the pipeline is still waiting on. Derived from the
+  // campaign's own stage — the previous version kept an `advMap` in
+  // localStorage and told the founder it "unlocked the campaign stage", which
+  // it did not: it was browser-local, invisible to Accounts, and the real gate
+  // was a separate button in Campaigns all along.
+  const advancePending  = campsRef.filter(c => c.stage === "advance");
 
   return (
     <div style={{ padding:"20px 24px", overflowY:"auto", height:"100%" }}>
@@ -642,18 +732,11 @@ function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, ano
         </div>
       )}
 
-      {isFounder(role) && (overservicing || creditRisk) && (
-        <div style={{ background:`${T.amber}08`, border:`1px solid ${T.amber}25`, borderRadius:7, padding:"12px 14px", marginBottom:16, display:"flex", gap:20 }}>
-          {overservicing && <div style={{ flex:1 }}><Lbl color={T.amber}>Overservicing Flag</Lbl><div style={{ fontSize:11, color:T.sub, marginTop:3 }}>Campaign fees ({fmtINR(campFees)}) vs retainer ({fmtINR(retainer.retainerAmount)}) — ratio high</div></div>}
-          {creditRisk    && <div style={{ flex:1 }}><Lbl color={T.red}>Credit Limit Risk</Lbl><div style={{ fontSize:11, color:T.sub, marginTop:3 }}>Outstanding {fmtINR(outstanding)} approaching limit {fmtINR(retainer.creditLimit)}</div></div>}
-        </div>
-      )}
-
       <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:12 }}>
         <StatCard role={role} label="Revenue Collected MTD" value={fmtFull(paid)}           sub={`${invoices.filter(i => i.status === "paid").length} invoices`} col={T.green}                    permission="seeRevenue" />
         <StatCard role={role} label="Outstanding"           value={fmtFull(outstanding)}    sub={overdue > 0 ? `${fmtINR(overdue)} overdue` : null}             col={overdue > 0 ? T.amber : T.text} permission="seeOutstanding" />
-        <StatCard role={role} label="Total Spent MTD"       value={fmtFull(spent)}           sub={`${pendingApproval} pending approval`}                                                              permission="seeTotalSpend" />
-        <StatCard role={role} label="Net MTD"               value={fmtFull(paid - spent)}    sub={can(role,"seeMargins") ? fmtPct(((paid-spent)/Math.max(paid,1))*100)+" margin" : null} col={(paid-spent)>0?T.green:T.red} permission="seeNetMTD" />
+        <StatCard role={role} label="Committed Spend"       value={fmtFull(committed)}       sub={spent < committed ? `${fmtINR(spent)} paid · ${fmtINR(committed - spent)} owed` : "all settled"}   permission="seeTotalSpend" />
+        <StatCard role={role} label="Net (collected − paid)" value={fmtFull(paid - spent)}   sub={can(role,"seeMargins") ? fmtPct(((paid-spent)/Math.max(paid,1))*100)+" margin" : null} col={(paid-spent)>0?T.green:T.red} permission="seeNetMTD" />
       </div>
       {/* GST Collected / TDS Deducted / Filings Due lived here and went with
           the GST tab — they were driven by a hardcoded filing calendar. */}
@@ -671,12 +754,18 @@ function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, ano
           {overdue === 0 ? (
             <div style={{ fontSize:11, color:T.green, fontStyle:"italic" }}>No overdue invoices ✓</div>
           ) : (
-            invoices.filter(i => i.status === "overdue").map(i => (
-              <div key={i.id} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${T.border}` }}>
-                <span style={{ fontSize:11, color:T.sub }}>{i.id}</span>
-                <span style={{ fontSize:11.5, fontWeight:500, color:T.amber }}>{isAccounts(role) ? fmtFull(i.amount) : "₹ ——"}</span>
-              </div>
-            ))
+            invoices.filter(isOverdue).map(i => {
+              const days = Math.round((new Date(`${todayISO()}T00:00:00`) - new Date(`${i.dueDate}T00:00:00`)) / 86400000);
+              return (
+                <div key={i.id} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${T.border}` }}>
+                  <div style={{ minWidth:0 }}>
+                    <div style={{ fontSize:11, color:T.sub }}>{i.id}</div>
+                    <div style={{ fontSize:9, color:T.label }}>due {i.dueDate} · {days} day{days === 1 ? "" : "s"} overdue</div>
+                  </div>
+                  <span style={{ fontSize:11.5, fontWeight:500, color:T.amber }}>{isAccounts(role) ? fmtFull(Math.max(0, (i.amount || 0) - receivedOf(i))) : "₹ ——"}</span>
+                </div>
+              );
+            })
           )}
           <div style={{ marginTop:10, paddingTop:10, borderTop:`1px solid ${T.border}` }}>
             <div style={{ fontSize:10, color:T.amber, marginBottom:4 }}>⚑ Campaign invoices without Client PO</div>
@@ -687,22 +776,19 @@ function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, ano
         </div>
       </div>
 
-      {isFounder(role) && advancePending.length > 0 && (
+      {advancePending.length > 0 && (
         <div style={{ background:`${T.amber}08`, border:`1px solid ${T.amber}25`, borderRadius:7, padding:"14px" }}>
-          <Lbl color={T.amber} style={{ display:"block", marginBottom:8 }}>Advance Confirmations Pending</Lbl>
+          <Lbl color={T.amber} style={{ display:"block", marginBottom:4 }}>Awaiting Advance</Lbl>
+          <div style={{ fontSize:10, color:T.sub, marginBottom:8 }}>
+            These campaigns are held at the Advance stage. Confirming receipt is done on the campaign — it's the same action that releases it into execution.
+          </div>
           {advancePending.map(c => (
             <div key={c.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:`1px solid ${T.border}` }}>
               <div style={{ flex:1 }}>
                 <div style={{ fontSize:11.5, fontWeight:500, color:T.text }}>{c.name}</div>
                 <div style={{ fontSize:9.5, color:T.sub }}>{c.client} · Budget: {fmtINR(c.budget)}</div>
               </div>
-              <Btn variant="success" style={{ fontSize:10 }} onClick={() => {
-                const upd = { ...advMap, [c.id]:{ status:"confirmed", confirmedAt:todayStr(), confirmedBy:"founder" } };
-                setAdvMap(upd);
-                writeLS("billing_advances", upd);
-              }}>
-                Confirm advance received
-              </Btn>
+              <span style={{ fontSize:10, color:T.amber, fontStyle:"italic" }}>advance not received</span>
             </div>
           ))}
         </div>
@@ -713,8 +799,15 @@ function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, ano
         <div style={{ marginTop:20 }}>
           <div style={{ fontFamily:"'Newsreader',serif", fontSize:15, fontWeight:600, color:T.text, fontStyle:"italic", marginBottom:10 }}>Campaign Budget Tracker</div>
           {campsRef.map(c => {
-            const campSpend = expenses.filter(e => e.campaign === c.id && e.status === "paid").reduce((s, e) => s + e.amount, 0);
-            const campInv   = invoices.filter(i => i.campaign === c.id && i.status === "paid").reduce((s, i) => s + i.amount, 0);
+            // "Spent" is COMMITTED, matching the Committed Spend stat above and
+            // the Campaign P&L — it counted only `paid` here, so a campaign with
+            // a fully locked roster and nothing yet disbursed read ₹0 spent
+            // while the same page's headline said otherwise.
+            const campSpend = expenses.filter(e => e.campaign === c.id && !["cancelled","rejected"].includes(e.status) && !e.directorOnly).reduce((s, e) => s + (e.amount || 0), 0);
+            // "Invoiced" is what we BILLED, not what was collected. Filtering on
+            // `status === "paid"` made an open ₹10L invoice read as ₹0 invoiced,
+            // which is the one number this row exists to show.
+            const campInv   = invoices.filter(i => i.campaign === c.id && i.type !== "credit_note").reduce((s, i) => s + (i.amount || 0), 0);
             const pct       = c.budget > 0 ? Math.min(100, (campSpend / c.budget) * 100) : 0;
             const over      = campSpend > c.budget;
             return (
@@ -723,7 +816,7 @@ function TabDashboard({ role, invoices, expenses, advMap, setAdvMap, setTab, ano
                   <div>
                     <span style={{ fontSize:12, fontWeight:500, color:T.text }}>{c.name}</span>
                     <span style={{ fontSize:9.5, color:T.label, marginLeft:8 }}>{c.client}</span>
-                    <span style={{ fontSize:8.5, color:T.sub, marginLeft:6, padding:"1px 5px", border:`1px solid ${T.border}`, borderRadius:3, textTransform:"capitalize" }}>{c.stage||"—"}</span>
+                    <span style={{ fontSize:8.5, color:T.sub, marginLeft:6, padding:"1px 5px", border:`1px solid ${T.border}`, borderRadius:3 }}>{stageLabel(c.stage)}</span>
                   </div>
                   <div style={{ display:"flex", gap:16, alignItems:"center" }}>
                     {[["Budget",fmtINR(c.budget),T.text],["Spent",fmtINR(campSpend),over?T.red:T.text],["Invoiced",fmtINR(campInv),T.green]].map(([l,v,col])=>(
@@ -760,8 +853,8 @@ function TabIncome({ role, invoices, setInvoices, setClientPOs, campsRef }) {
   const [selId,  setSelId]  = useState(null);
 
   const filtered = useMemo(() => invoices.filter(i => {
-    if (filter === "pending")  return i.status === "pending";
-    if (filter === "overdue")  return i.status === "overdue";
+    if (filter === "pending")  return i.status === "pending" && !isOverdue(i);
+    if (filter === "overdue")  return isOverdue(i);
     if (filter === "paid")     return i.status === "paid";
     if (filter === "credit")   return i.type === "credit_note";
     if (filter === "no_po")    return !i.clientPO && i.type === "campaign";
@@ -784,7 +877,13 @@ function TabIncome({ role, invoices, setInvoices, setClientPOs, campsRef }) {
     if (raw === null) return;
     const amount = parseFloat(String(raw).replace(/[^\d.]/g, "")) || 0;
     const newPO = { id:newId("CPO"), poNumber:poNum.trim(), amount, receivedDate:todayStr(), document:"uploaded" };
-    setInvoices(p => p.map(i => i.id !== id ? i : { ...i, clientPO:newPO }));
+    // The invoice stores the LINK, not a copy. It used to embed the whole PO
+    // object alongside the client_pos record, and nothing kept the two in sync:
+    // correcting a PO number in the POs tab left the invoice showing the old
+    // one. Nothing ever read the embedded number or amount anyway — every
+    // consumer uses `clientPO.id` or just its existence — so the copy was pure
+    // drift surface. One record, one place, looked up by id.
+    setInvoices(p => p.map(i => i.id !== id ? i : { ...i, clientPO:{ id:newPO.id } }));
     // Invoices carry `campaign` (an id) but no campaign name — resolve it here
     // so the POs tab can label the row without another lookup.
     const campName = campsRef.find(c => c.id === inv?.campaign)?.name || "";
@@ -806,7 +905,7 @@ function TabIncome({ role, invoices, setInvoices, setClientPOs, campsRef }) {
                 <div key={i.id} onClick={() => setSelId(i.id)} style={{ padding:"10px 12px", borderRadius:6, cursor:"pointer", marginBottom:3, background:selId === i.id ? T.raised : "transparent", border:`1px solid ${selId === i.id ? T.borderMid : "transparent"}` }}>
                   <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
                     <span style={{ fontSize:9.5, color:T.label, fontFamily:"monospace" }}>{i.id}</span>
-                    <Pill status={i.type === "credit_note" ? "credit_note" : i.status} />
+                    <Pill status={i.type === "credit_note" ? "credit_note" : isOverdue(i) ? "overdue" : i.status} />
                   </div>
                   <div style={{ fontSize:11.5, fontWeight:500, color:T.text, marginBottom:3, lineHeight:1.4 }}>{i.label}</div>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -831,7 +930,7 @@ function TabIncome({ role, invoices, setInvoices, setClientPOs, campsRef }) {
 // them across two tabs (vendor POs here, client POs buried inside Income) meant
 // neither got the value/balance treatment. Every money figure is derived; see
 // the PO LEDGER MODEL block near the top of this file.
-function TabPurchaseOrders({ role, currentUser, pos, setPos, clientPOs, setClientPOs, invoices, expenses, campsRef }) {
+function TabPurchaseOrders({ role, currentUser, pos, setPos, setExpenses, clientPOs, setClientPOs, invoices, expenses, campsRef }) {
   const [direction, setDirection] = useState("outbound");
   const [filter, setFilter] = useState("all");
   const [selId,  setSelId]  = useState(null);
@@ -842,12 +941,22 @@ function TabPurchaseOrders({ role, currentUser, pos, setPos, clientPOs, setClien
   const source   = outbound ? pos : clientPOs;
 
   // One ledger per PO, computed from the documents that bill against it.
+  // `candidates` are the campaign's creator costs that aren't yet billed
+  // against any PO — the missing link that left every vendor PO reading "open"
+  // forever. Expenses have always carried a `poId`; nothing ever populated it,
+  // so `billedAgainstPO` summed an empty set no matter how much had been
+  // committed. Attaching is explicit rather than automatic: which costs a PO
+  // covers is a decision, and guessing it would fabricate a ledger.
   const rows = useMemo(() => (source || []).map(po => {
     const docs = outbound
       ? (expenses || []).filter(e => e.poId === po.id)
       : (invoices || []).filter(i => i.clientPO?.id === po.id && i.type !== "credit_note");
+    const candidates = outbound && po.campaign
+      ? (expenses || []).filter(e => e.campaign === po.campaign && !e.poId
+          && e.cat === "external_creator" && !["cancelled","rejected"].includes(e.status))
+      : [];
     const billed = outbound ? billedAgainstPO(po.id, expenses) : invoicedAgainstPO(po.id, invoices);
-    return { po, docs, led: poLedger(po, billed) };
+    return { po, docs, candidates, led: poLedger(po, billed) };
   }), [source, outbound, expenses, invoices]);
 
   const filtered = useMemo(() => rows.filter(({ po, led }) => {
@@ -875,6 +984,21 @@ function TabPurchaseOrders({ role, currentUser, pos, setPos, clientPOs, setClien
     if (raw === null) return;
     const amount = parseFloat(String(raw).replace(/[^\d.]/g, "")) || 0;
     if (amount > 0) patchPO(id, { amount });
+  };
+  // Inbound only — see PODetail. Also clears the review flag the repair script
+  // sets, so a corrected PO stops being listed as needing attention.
+  // Bills a creator cost against this PO. One PATCH per expense — the ledger
+  // recomputes from the expenses themselves, so nothing is stored on the PO.
+  const handleBill = (poId, expenseId) =>
+    setExpenses(p => p.map(e => e.id !== expenseId ? e : { ...e, poId }));
+  const handleUnbill = expenseId =>
+    setExpenses(p => p.map(e => e.id !== expenseId ? e : { ...e, poId:null }));
+
+  const handleSetNumber = (id, current) => {
+    const raw = window.prompt("Client PO number — the reference on the client's own PO:", current || "");
+    if (raw === null) return;
+    const poNumber = raw.trim();
+    if (poNumber) patchPO(id, { poNumber, needsReview:false, reviewNote:null });
   };
 
   const submitNew = () => {
@@ -976,9 +1100,10 @@ function TabPurchaseOrders({ role, currentUser, pos, setPos, clientPOs, setClien
             </div>
           </div>
         ) : (
-          <PODetail po={sel?.po} led={sel?.led} docs={sel?.docs || []} direction={direction}
+          <PODetail po={sel?.po} led={sel?.led} docs={sel?.docs || []} candidates={sel?.candidates || []} direction={direction}
+            onBill={handleBill} onUnbill={handleUnbill}
             role={role} canRaise={outbound && canRaisePO(role)}
-            onApprove={handleApprove} onReject={handleReject} onClose={handleClose} onReopen={handleReopen} onSetValue={handleSetValue} />
+            onApprove={handleApprove} onReject={handleReject} onClose={handleClose} onReopen={handleReopen} onSetValue={handleSetValue} onSetNumber={handleSetNumber} />
         )}
       </div>
     </div>
@@ -986,10 +1111,14 @@ function TabPurchaseOrders({ role, currentUser, pos, setPos, clientPOs, setClien
 }
 
 // ── TAB: QUOTATIONS ───────────────────────────────────────────────────────────
+// A quote's margin % is typed by whoever builds the quote — it is a proposal,
+// not a campaign, so there is no creator budget to derive it from. That's why
+// this doesn't go through calcMargin: the two are genuinely different questions
+// ("what are we pitching" vs "what did this campaign actually leave us").
 function QuoteMarginPreview({ lines, marginPct, agencyFeePct, agencyFeeType, isRetainerClient }) {
   const sub = lines.reduce((s, l) => s + (l.qty || 1) * (l.rate || 0), 0);
   if (!sub) return null;
-  const m = calcMargin(sub, marginPct, agencyFeePct, agencyFeeType, isRetainerClient);
+  const m = quoteMargin(sub, marginPct, agencyFeePct, agencyFeeType, isRetainerClient);
   return (
     <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8, marginTop:10 }}>
       {[["Ops budget (team)", fmtINR(m.opsBudget), T.teal], ["Margin kept", fmtINR(m.margin), T.accent], ["Gross %", fmtPct(m.grossPct), m.grossPct >= 30 ? T.green : T.red]].map(([l, v, c]) => (
@@ -1025,7 +1154,7 @@ function TabQuotations({ role, quotes, setQuotes, campsRef }) {
 
   const q = quotes.find(x => x.id === selId) || null;
   const tot = q ? calcQuoteTotals(q.lines, q.agencyFeePct, q.agencyFeeType) : { sub:0, gst:0, fee:0, feeGst:0, grand:0 };
-  const m   = q ? calcMargin(q.lines.reduce((s, l) => s + (l.qty||1)*(l.rate||0), 0), q.marginPct, q.agencyFeePct, q.agencyFeeType, q.isRetainerClient) : { margin:0, opsBudget:0, agencyFee:0, grossPct:0 };
+  const m   = q ? quoteMargin(q.lines.reduce((s, l) => s + (l.qty||1)*(l.rate||0), 0), q.marginPct, q.agencyFeePct, q.agencyFeeType, q.isRetainerClient) : { margin:0, opsBudget:0, agencyFee:0, grossPct:0 };
   const autoQuotes = quotes.filter(x => x.isAutoGenerated && x.status === "pending_review");
 
   const simulateBriefLock = () => {
@@ -1193,28 +1322,90 @@ function TabQuotations({ role, quotes, setQuotes, campsRef }) {
 }
 
 // ── TAB: REGISTRY ─────────────────────────────────────────────────────────────
-function TabRegistry({ role }) {
+// The registry is derived, not stored. It used to read a `registry` collection
+// via RegistryAPI.list() — the only call to that API anywhere in the codebase.
+// There was no create, no update, no write path of any kind, so the collection
+// was empty and this tab rendered nothing, permanently.
+//
+// Every field it wants already exists: identity and PAN/bank on the creator
+// embedded in each campaign, money on the expenses those campaigns generate.
+// Deriving it means it populates itself and can never drift from the campaigns
+// it describes — the same reasoning that removed the stored campaign progress.
+function buildRegistry(campsRef, expenses) {
+  const byPayee = new Map();
+  // Alias → row. Kept separate from byPayee so the registry still has exactly
+  // one entry per person while an expense can be joined by any id it happens
+  // to carry (see the alias loop below).
+  const aliases = new Map();
+  for (const camp of campsRef) {
+    for (const cr of camp.creators || []) {
+      // Locked only. A shortlisted creator has been considered, not engaged —
+      // counting them here put "3 campaigns" next to ₹85,000 paid on one, in a
+      // block headed Payment History.
+      if (!cr?.name || cr.status !== "locked") continue;
+      // Keyed on handle (falling back to name) — the same key the creators
+      // directory uses on the backend, see creatorSync.keyOf. Keying on the
+      // display name alone merged two different creators who happen to share
+      // one into a single registry row, pooling their campaigns, their money
+      // and — because the first one seen wins — one of their PAN/bank details.
+      const key = creatorKeyOf(cr);
+      if (!key) continue;
+      if (!byPayee.has(key)) {
+        const pd = cr.personalDetails || {};
+        byPayee.set(key, {
+          id: `REG-${key.replace(/[^a-z0-9]+/gi, "_")}`, type:"creator", name: cr.name,
+          handle: cr.handle || "", platform: cr.platform || "", followers: Number(cr.followers) || 0,
+          pan: pd.pan || null, panCollected: !!pd.pan,
+          bank: pd.bankAccount ? `${pd.bankName || "Bank"} ····${String(pd.bankAccount).slice(-4)}` : (cr.payType === "vendor" ? `Vendor ${cr.payId || ""}`.trim() : null),
+          gstin: pd.gstin || null,
+          // TDS 194J at 10% on professional fees is the standing treatment for
+          // creator work; without a PAN on file it is 20% under s.206AA.
+          tdsSection: "194J", tdsRate: pd.pan ? 10 : 20,
+          mcnVendor: cr.payType === "vendor" ? (cr.payId || "MCN") : null,
+          campaigns: [], totalPaid: 0, totalCommitted: 0, tdsDeducted: 0,
+        });
+      }
+      const r = byPayee.get(key);
+      if (!r.campaigns.includes(camp.name)) r.campaigns.push(camp.name);
+      // Every id an expense might carry for this person, all pointing at the
+      // one row. Three vintages exist in the data and all of them must join:
+      //   @handle          — what syncCreatorExpenses writes now
+      //   cr_<ts>_<rand>   — the per-campaign `_id` earlier code wrote, which
+      //                      is why those rows were orphaned and their money
+      //                      silently missing from the registry
+      //   the payee name   — seeded/hand-entered rows with no creatorId at all
+      for (const alias of [key, cr._id, creatorKeyOf({ name: cr.name })]) {
+        if (alias && !aliases.has(alias)) aliases.set(alias, r);
+      }
+    }
+  }
+  for (const e of expenses) {
+    if (e.cat !== "external_creator") continue;
+    const r = aliases.get(e.creatorId) || aliases.get(creatorKeyOf({ name: e.payee }));
+    if (!r) continue;
+    if (["cancelled","rejected"].includes(e.status)) continue;
+    r.totalCommitted += e.amount || 0;
+    if (e.status === "paid") r.totalPaid += e.amount || 0;
+  }
+  for (const r of byPayee.values()) r.tdsDeducted = Math.round(r.totalPaid * (r.tdsRate / 100));
+  return [...byPayee.values()].sort((a, b) => b.totalCommitted - a.totalCommitted);
+}
+
+function TabRegistry({ role, campsRef, expenses }) {
   const [type, setType] = useState("all");
   const [selId,setSelId]= useState(null);
-  const [registry,setRegistry]=useState([]);
-  const [loading,setLoading]=useState(true);
-  useEffect(()=>{
-    let cancelled=false;
-    RegistryAPI.list()
-      .then(data=>{ if(!cancelled){ setRegistry(data); setLoading(false); } })
-      .catch(()=>{ if(!cancelled){ setLoading(false); } });
-    return ()=>{ cancelled=true; };
-  },[]);
+  const registry = useMemo(() => buildRegistry(campsRef, expenses), [campsRef, expenses]);
   const filtered = registry.filter(r => type === "all" || r.type === type);
   const r = registry.find(x => x.id === selId) || null;
-
-  if(loading) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",color:T.sub,fontSize:11.5}}>Loading registry…</div>;
 
   return (
     <div style={{ display:"flex", height:"100%" }}>
       <div style={{ width:280, flexShrink:0, borderRight:`1px solid ${T.border}`, display:"flex", flexDirection:"column" }}>
         <div style={{ padding:"10px 12px", borderBottom:`1px solid ${T.border}`, display:"flex", gap:6 }}>
-          {[["all","All"],["creator","Creators"],["vendor","Vendors"]].map(([id, lbl]) => (
+          {/* A "Vendors" filter used to sit alongside these. Vendors only exist
+              as free-text names on outbound POs — there is no vendor record to
+              derive a registry entry from, so the tab was always empty. */}
+          {[["all","All"],["creator","Creators"]].map(([id, lbl]) => (
             <button key={id} onClick={() => setType(id)} style={{ padding:"3px 10px", borderRadius:4, fontSize:9.5, background:type===id?`${T.accent}18`:"transparent", border:`1px solid ${type===id?T.accent:T.border}`, color:type===id?T.accent:T.sub, cursor:"pointer", fontFamily:"'Sora'" }}>{lbl}</button>
           ))}
         </div>
@@ -1265,7 +1456,7 @@ function TabRegistry({ role }) {
               </div>
               <div>
                 <Lbl style={{ display:"block", marginBottom:8 }}>Payment History</Lbl>
-                {[["Total paid", showAmt(r.totalPaid, role)], ["TDS deducted", showAmt(r.tdsDeducted, role)], ["Net paid", showAmt((r.totalPaid||0)-(r.tdsDeducted||0), role)], ["Campaigns", r.campaigns.length]].map(([l, v]) => (
+                {[["Committed", showAmt(r.totalCommitted, role)], ["Total paid", showAmt(r.totalPaid, role)], ["TDS deducted", showAmt(r.tdsDeducted, role)], ["Net paid", showAmt((r.totalPaid||0)-(r.tdsDeducted||0), role)], ["Campaigns", r.campaigns.length]].map(([l, v]) => (
                   <div key={l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${T.border}` }}>
                     <span style={{ fontSize:11, color:T.sub }}>{l}</span>
                     <span style={{ fontSize:11, color:T.text }}>{v}</span>
@@ -1295,9 +1486,8 @@ function TabRegistry({ role }) {
 }
 
 // ── TAB: CAMPAIGN P&L (Founder — full; PCM — their event, no director pay) ──
-function TabCampaignPL({ role, advMap, setAdvMap, expenses, invoices, campsRef }) {
-  const [selC, setSelC]     = useState("c1");
-  const [mPctOv, setMPctOv] = useState({});
+function TabCampaignPL({ role, expenses, setExpenses, invoices, campsRef }) {
+  const [selC, setSelC] = useState(null);
 
   if (!can(role, "seeCampaignPL")) {
     return (
@@ -1309,17 +1499,24 @@ function TabCampaignPL({ role, advMap, setAdvMap, expenses, invoices, campsRef }
   }
 
   const camp = campsRef.find(c => c.id === selC) || campsRef[0];
-  if (!camp) return <div style={{padding:40,color:T.sub,fontSize:12}}>No campaigns found. Seed the campaigns database first.</div>;
-  const mPct = mPctOv[camp.id] != null ? mPctOv[camp.id] : camp.marginPct;
-  const m    = calcMargin(camp.budget, mPct, camp.agencyFeePct, camp.agencyFeeType, camp.isRetainerClient);
-  const creatorSpend = expenses.filter(e => e.campaign === camp.id && e.cat === "external_creator" && e.status === "paid").reduce((s, e) => s + e.amount, 0);
-  const vendorSpend  = expenses.filter(e => e.campaign === camp.id && e.cat === "external_vendor"  && e.status === "paid").reduce((s, e) => s + e.amount, 0);
-  const totalSpend   = creatorSpend + vendorSpend;
-  const remaining    = m.opsBudget - totalSpend;
-  const isAdv        = !!advMap[camp.id];
-  const retainerAmt  = CLIENTS[0].retainerAmount;
-  const campInvoiced = invoices.filter(i => i.type === "campaign").reduce((s, i) => s + (i.amount || 0), 0);
-  const ovsRatio     = retainerAmt > 0 ? campInvoiced / retainerAmt : 0;
+  if (!camp) return <div style={{padding:40,color:T.sub,fontSize:12}}>No campaigns yet.</div>;
+  const m = calcMargin(camp.budget, camp.creatorBudget);
+
+  // Live expenses for this campaign, split by where they are in their life.
+  // `committed` is what the campaign has already obligated us to — a locked
+  // creator is money owed the moment they're locked, not the day it's paid.
+  const live         = expenses.filter(e => e.campaign === camp.id && !["cancelled","rejected"].includes(e.status));
+  const sum          = arr => arr.reduce((s, e) => s + (e.amount || 0), 0);
+  const creatorSpend = sum(live.filter(e => e.cat === "external_creator"));
+  const vendorSpend  = sum(live.filter(e => e.cat === "external_vendor"));
+  const committed    = creatorSpend + vendorSpend;
+  const settled      = sum(live.filter(e => e.status === "paid"));
+  const remaining    = m.opsBudget - committed;
+  const campInvoiced = sum(invoices.filter(i => i.campaign === camp.id && i.type !== "credit_note"));
+  const campReceived = invoices.filter(i => i.campaign === camp.id && i.type !== "credit_note").reduce((s, i) => s + receivedOf(i), 0);
+  // Creator costs awaiting payment — the one place Accounts can settle them.
+  const payables     = live.filter(e => e.cat === "external_creator" && e.status !== "paid");
+  const markPaid     = id => setExpenses(p => p.map(e => e.id !== id ? e : { ...e, status:"paid", date:todayStr() }));
 
   const DIR_TYPES = [
     { t:"Salary",            sub:"salary",              sec:"192",  col:T.gold,   desc:"Director salary from company" },
@@ -1336,32 +1533,29 @@ function TabCampaignPL({ role, advMap, setAdvMap, expenses, invoices, campsRef }
           <span style={{ marginLeft:10, fontSize:10, color:T.amber, border:`1px solid ${T.amber}25`, borderRadius:3, padding:"1px 5px", fontFamily:"'Sora'", fontStyle:"normal", verticalAlign:"middle" }}>
             {isFounder(role) ? "Founder" : "PCM — event view"}
           </span>
+          {/* Where the campaign actually stands. Billing reads this; it never
+              writes it — the pipeline is owned by the campaign. */}
+          <span style={{ marginLeft:6, fontSize:10, color:T.sub, border:`1px solid ${T.border}`, borderRadius:3, padding:"1px 5px", fontFamily:"'Sora'", fontStyle:"normal", verticalAlign:"middle" }}>
+            {stageLabel(camp.stage)}
+          </span>
         </div>
         {/* Event selector — campsRef arrives pre-scoped from the root
             (non-founder/accounts users only get campaigns where their teamId
             is createdBy/amId/cmId/eaId), so a PCM only ever sees their own
             events here. */}
-        <select value={selC} onChange={e => setSelC(e.target.value)} style={{ ...INP, width:"auto" }}>
+        <select value={camp.id} onChange={e => setSelC(e.target.value)} style={{ ...INP, width:"auto" }}>
           {campsRef.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
       </div>
 
-      {ovsRatio > 2 && (
-        <div style={{ background:`${T.amber}08`, border:`1px solid ${T.amber}25`, borderRadius:7, padding:"12px 14px", marginBottom:14 }}>
-          <Lbl color={T.amber}>Overservicing Alert</Lbl>
-          <div style={{ fontSize:11, color:T.sub, marginTop:4 }}>Campaign fees ({fmtFull(campInvoiced)}) are {ovsRatio.toFixed(1)}× the monthly retainer ({fmtFull(retainerAmt)}). Consider repricing.</div>
-        </div>
-      )}
-
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
         <div style={{ background:T.raised, border:`1px solid ${T.amber}22`, borderRadius:7, padding:"14px" }}>
-          <Lbl color={T.amber} style={{ display:"block", marginBottom:10 }}>Margin Configuration</Lbl>
-          <div style={{ marginBottom:10 }}>
-            <Lbl style={{ display:"block", marginBottom:4 }}>Margin %</Lbl>
-            <input type="number" value={mPct} min={0} max={80} step={1} onChange={e => setMPctOv(o => ({ ...o, [camp.id]:parseFloat(e.target.value)||0 }))} style={{ ...INP }} />
-          </div>
-          {camp.isRetainerClient && <div style={{ fontSize:9.5, color:T.teal, marginBottom:10 }}>Retainer client — agency fee waived on campaigns</div>}
-          {[["Client budget (set by client)", fmtFull(camp.budget), T.text], ["Margin (stays with us)", fmtFull(m.margin), T.accent], ["Ops budget (team sees)", fmtFull(m.opsBudget), T.teal], ["Agency fee", m.agencyFee > 0 ? fmtFull(m.agencyFee) : "Waived (retainer)", m.agencyFee > 0 ? T.amber : T.sub], ["Gross profit", fmtFull(m.grossProfit), T.green], ["Gross margin %", fmtPct(m.grossPct), m.grossPct >= 30 ? T.green : T.red]].map(([l, v, c]) => (
+          <Lbl color={T.amber} style={{ display:"block", marginBottom:4 }}>Commercials</Lbl>
+          {/* Read-only on purpose. The margin used to be an editable % that
+              overrode a field the campaign never had; it is now the split the
+              brief actually agreed, so it changes on the campaign or not at all. */}
+          <div style={{ fontSize:9.5, color:T.label, marginBottom:10 }}>Derived from the brief — edit the creator budget on the campaign to change this.</div>
+          {[["Client budget", fmtFull(camp.budget), T.text], ["Creator pool (ops budget)", fmtFull(m.opsBudget), T.teal], ["Agency fee (stays with us)", fmtFull(m.agencyFee), T.accent], ["Gross margin %", fmtPct(m.grossPct), m.grossPct >= 30 ? T.green : T.red], ["Invoiced to client", fmtFull(campInvoiced), T.text], ["Received", fmtFull(campReceived), campReceived >= campInvoiced && campInvoiced > 0 ? T.green : T.amber]].map(([l, v, c]) => (
             <div key={l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:`1px solid ${T.border}` }}>
               <span style={{ fontSize:11, color:T.sub }}>{l}</span>
               <span style={{ fontSize:11.5, fontWeight:500, color:c }}>{v}</span>
@@ -1370,14 +1564,14 @@ function TabCampaignPL({ role, advMap, setAdvMap, expenses, invoices, campsRef }
         </div>
 
         <div style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:7, padding:"14px" }}>
-          <Lbl style={{ display:"block", marginBottom:10 }}>Budget vs. Actuals</Lbl>
+          <Lbl style={{ display:"block", marginBottom:4 }}>Creator Pool vs. Actuals</Lbl>
+          <div style={{ fontSize:9.5, color:T.label, marginBottom:10 }}>Committed = locked creators. Settled = actually paid out.</div>
           {[
-            ["Total campaign budget", camp.budget, null],
-            ["Creator budget allocated", camp.creatorBudget || Math.round(camp.budget * 0.6), null],
-            ["Ops budget (post-margin)", m.opsBudget, null],
-            ["Creator (MCN) spend", creatorSpend, m.opsBudget],
-            ["Vendor spend", vendorSpend, m.opsBudget],
-            ["Total spent", totalSpend, m.opsBudget],
+            ["Creator pool available", m.opsBudget, null],
+            ["Creator cost committed", creatorSpend, m.opsBudget],
+            ["Vendor cost committed", vendorSpend, m.opsBudget],
+            ["Total committed", committed, m.opsBudget],
+            ["Settled (paid out)", settled, m.opsBudget],
             ["Pool remaining", remaining, m.opsBudget],
           ].map(([l, v, max]) => (
             <div key={l} style={{ marginBottom:9 }}>
@@ -1416,21 +1610,36 @@ function TabCampaignPL({ role, advMap, setAdvMap, expenses, invoices, campsRef }
         </div>
       )}
 
-      <div style={{ background:isAdv ? `${T.green}08` : `${T.amber}08`, border:`1px solid ${isAdv ? `${T.green}25` : `${T.amber}25`}`, borderRadius:7, padding:"14px", display:"flex", alignItems:"center", gap:12 }}>
-        <div style={{ flex:1 }}>
-          <div style={{ fontSize:12, fontWeight:500, color:isAdv ? T.green : T.amber, marginBottom:3 }}>Advance Status — {camp.name}</div>
-          <div style={{ fontSize:10.5, color:T.sub }}>{isAdv ? `Confirmed ${advMap[camp.id].confirmedAt} · Campaign stage unlocked` : "Advance not confirmed — campaign stage blocked in InternalCampaigns"}</div>
-        </div>
-        {!isAdv && (
-          <Btn variant="success" onClick={() => {
-            const upd = { ...advMap, [camp.id]:{ status:"confirmed", confirmedAt:todayStr(), confirmedBy:"founder" } };
-            setAdvMap(upd);
-            writeLS("billing_advances", upd);
-          }}>
-            Confirm advance received
-          </Btn>
-        )}
-        {isAdv && <span style={{ fontSize:11, color:T.green }}>✓ Confirmed</span>}
+      {/* Creator payables — the settlement step the books were missing.
+          Expenses are written by the campaign the moment a creator is locked,
+          so this list fills itself; paying one here is what finally moves
+          "Settled" and the Tally export off zero. An "Advance Status" panel
+          used to sit in this spot writing localStorage and claiming to unlock
+          the campaign stage — the stage now says so itself, in the header. */}
+      <div style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:7, padding:"14px" }}>
+        <Lbl style={{ display:"block", marginBottom:8 }}>Creator Payables — {camp.name}</Lbl>
+        {payables.length === 0 ? (
+          <div style={{ fontSize:11, color:T.sub, fontStyle:"italic" }}>
+            {creatorSpend > 0 ? "All locked creators settled ✓" : "No creators locked yet — costs appear here as they're locked on the campaign."}
+          </div>
+        ) : payables.map(e => (
+          <div key={e.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:`1px solid ${T.border}` }}>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:11.5, fontWeight:500, color:T.text }}>{e.payee}</div>
+              <div style={{ fontSize:9.5, color:T.sub }}>{e.note || "Creator fee"}{e.invoiceNo ? ` · Invoice ${e.invoiceNo}` : " · invoice not raised yet"}</div>
+            </div>
+            <span style={{ fontSize:11.5, fontWeight:500, color:T.text }}>{showAmt(e.amount, role)}</span>
+            {/* Gated on createExpense (founder / pcm / accounts) rather than on
+                a role list: everyone allowed to record a cost is allowed to
+                settle one. Note that accounts cannot currently reach this tab
+                at all — seeCampaignPL is founder+pcm — so today this only ever
+                renders for those two. That's an RBAC policy question, not a
+                code one; the gate is written so opening the tab up is enough. */}
+            {can(role, "createExpense")
+              ? <Btn variant="success" style={{ fontSize:10 }} onClick={() => markPaid(e.id)}>Mark paid</Btn>
+              : <Pill status={e.status} />}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -1449,8 +1658,7 @@ export default function InternalBilling() {
   const [quotes,    setQuotesRaw]    = useState([]);
   const [pos,       setPosRaw]       = useState([]);
   const [clientPOs, setClientPOsRaw] = useState([]);
-  const [campsRef,  setCampsRef]  = useState(SEED_CAMPS_REF); // real campaigns from DB (seed fallback until loaded)
-  const [advMap,    setAdvMap]    = useState(() => readLS("billing_advances"));
+  const [campsRef,  setCampsRef]  = useState([]); // real campaigns from DB
   const [toast,     setToast]     = useState(null);
   const [loading,   setLoading]   = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -1488,7 +1696,14 @@ export default function InternalBilling() {
   const liveCampIds      = new Set(campsRef.map(c => c.id));
   const hasLiveCampaign  = d => loading || !d.campaign || liveCampIds.has(d.campaign);
   const displayInvoices  = (brandFilter ? scopedInvoices.filter(matchesBrand) : scopedInvoices).filter(hasLiveCampaign);
-  const displayExpenses  = brandFilter ? scopedExpenses.filter(e => e.brandId ? e.brandId === brandFilter : (!e.campaign || brandCampIds.has(e.campaign))) : scopedExpenses;
+  // Filtered by hasLiveCampaign like invoices and client POs. It wasn't, so a
+  // creator expense whose campaign had been deleted kept inflating Committed
+  // Spend and the derived registry forever — and the only thing preventing
+  // that was the delete-cascade in Campaigns, which is inside a bare
+  // `catch{}`. One failed DELETE and the number was permanently wrong with no
+  // screen that could even show you the row. Now the cascade is a tidy-up
+  // rather than the thing correctness depends on.
+  const displayExpenses  = (brandFilter ? scopedExpenses.filter(e => e.brandId ? e.brandId === brandFilter : (!e.campaign || brandCampIds.has(e.campaign))) : scopedExpenses).filter(hasLiveCampaign);
   const displayPos       = brandFilter ? scopedPos.filter(p => p.brandId ? p.brandId === brandFilter : (!p.campaign || brandCampIds.has(p.campaign))) : scopedPos;
   const displayClientPOs = (brandFilter ? scopedClientPOs.filter(matchesBrand) : scopedClientPOs).filter(hasLiveCampaign);
   const displayQuotes    = brandFilter ? scopedQuotes.filter(matchesBrand) : scopedQuotes;
@@ -1562,17 +1777,19 @@ export default function InternalBilling() {
           client: c.client,
           brandId: c.brandId || null,
           budget: c.budget || 0,
-          creatorBudget: c.creatorBudget || Math.round((c.budget || 0) * 0.6),
-          stage: c.stage,
+          creatorBudget: creatorBudgetOf(c),
+          // Normalised on the way in, so a legacy 16-stage id can never reach
+          // a label or a filter here. Billing reads the stage; it never writes it.
+          stage: normStage(c.stage),
           // assignment slots — drive the per-user billing scope below
           createdBy: c.createdBy || null,
           amId: c.amId || null,
           cmId: c.cmId || null,
           eaId: c.eaId || null,
-          marginPct: c.marginPct || 35,
-          agencyFeePct: c.agencyFeePct || 15,
-          agencyFeeType: c.agencyFeeType || "baked_in",
-          isRetainerClient: c.isRetainerClient || false,
+          // Embedded creators drive the derived Registry and the committed
+          // creator cost on the P&L — both were previously reading collections
+          // nothing writes to.
+          creators: c.creators || [],
         })));
         setLoading(false);
       })
@@ -1580,25 +1797,16 @@ export default function InternalBilling() {
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    if (loading) return; // wait until quotes are fetched so the dup-check below is accurate
-    const pending = readLS("billing_auto_quotes_pending");
-    const keys    = Object.keys(pending);
-    if (keys.length === 0) return;
-    const campId  = keys[0];
-    const camp    = campsRef.find(c => c.id === campId);
-    if (!camp) return;
-    const already = quotes.some(q => q.campaignId === campId && q.isAutoGenerated);
-    if (already) return;
-    const newQ = { id:`QT-AUTO-${campId}`, client:camp.client, brandId:camp.brandId || null, label:`${camp.name} — Auto-Generated Quote`, status:"pending_review", isAutoGenerated:true, campaignId:campId, createdDate:todayStr(), validTill:"", isRetainerClient:true, marginPct:35, agencyFeePct:0, agencyFeeType:"baked_in", lines:[{ desc:`Influencer Marketing — ${camp.name}`, sac:"998361", qty:1, rate:camp.budget, gstRate:18 }], notes:"Auto-generated on brief lock. Review and edit before sending." };
-    setQuotes(p => [newQ, ...p]);
-    writeLS("billing_auto_quotes_pending", {});
-    showToast(`Auto-quote created for ${camp.name}`);
-  }, [loading, campsRef]); // eslint-disable-line react-hooks/exhaustive-deps
+  // An effect used to sit here that read `billing_auto_quotes_pending` from
+  // localStorage and turned it into a quote "on brief lock". Nothing in the
+  // codebase has ever written that key — brief sign-off was supposed to set it
+  // and doesn't — so the effect could never fire. It is gone rather than
+  // wired up: auto-generating a quote from a campaign is a decision for the
+  // Quotations rework, not something to switch on silently.
 
   const anomalies = useMemo(() => detectAnomalies(displayExpenses), [displayExpenses]);
 
-  const overdueCount     = displayInvoices.filter(i => i.status === "overdue").length;
+  const overdueCount     = displayInvoices.filter(isOverdue).length;
   const pendingPOs       = displayPos.filter(p => p.status === "pending_approval").length;
   const autoQuotesPending= displayQuotes.filter(q => q.isAutoGenerated && q.status === "pending_review").length;
   const noPOInvoices     = displayInvoices.filter(i => !i.clientPO && i.type === "campaign").length;
@@ -1656,7 +1864,10 @@ export default function InternalBilling() {
           {/* Quick stats */}
           <div style={{ display:"flex", gap:20, marginRight:8 }}>
             {[
-              { l:"Outstanding", v:fmtINR(displayInvoices.filter(i => ["pending","overdue"].includes(i.status) && i.type !== "credit_note").reduce((s,i)=>s+i.amount,0)), c:overdueCount > 0 ? T.red : "#1D1D1F" },
+              // Billed minus received, so a settled 50% advance actually moves
+              // this number instead of the invoice reading fully outstanding
+              // until its final leg lands.
+              { l:"Outstanding", v:fmtINR(displayInvoices.filter(i => i.type !== "credit_note").reduce((s,i)=>s+Math.max(0,(i.amount||0)-receivedOf(i)),0)), c:overdueCount > 0 ? T.red : "#1D1D1F" },
               // These two used to read `pendingApproval` (expense approvals) and
               // `anomalies` (expense outliers). Both were Spending-tab concepts
               // with no input path left, so they now track what Billing actually
@@ -1696,12 +1907,12 @@ export default function InternalBilling() {
       </div>
 
       <div style={{ flex:1, minHeight:0, overflow:"hidden" }}>
-        {tab === "dashboard"      && <TabDashboard      role={role} invoices={displayInvoices} expenses={displayExpenses} advMap={advMap} setAdvMap={setAdvMap} setTab={setTab} anomalies={anomalies} pos={displayPos} campsRef={displayCampsRef} />}
+        {tab === "dashboard"      && <TabDashboard      role={role} invoices={displayInvoices} expenses={displayExpenses} setTab={setTab} anomalies={anomalies} pos={displayPos} campsRef={displayCampsRef} />}
         {tab === "income"         && <TabIncome         role={role} invoices={displayInvoices} setInvoices={setInvoices} setClientPOs={setClientPOs} campsRef={displayCampsRef} />}
-        {tab === "purchase_orders"&& <TabPurchaseOrders role={role} currentUser={currentUser} pos={displayPos} setPos={setPos} clientPOs={displayClientPOs} setClientPOs={setClientPOs} invoices={displayInvoices} expenses={displayExpenses} campsRef={displayCampsRef} />}
+        {tab === "purchase_orders"&& <TabPurchaseOrders role={role} currentUser={currentUser} pos={displayPos} setPos={setPos} setExpenses={setExpenses} clientPOs={displayClientPOs} setClientPOs={setClientPOs} invoices={displayInvoices} expenses={displayExpenses} campsRef={displayCampsRef} />}
         {tab === "quotations"     && <TabQuotations     role={role} quotes={displayQuotes} setQuotes={setQuotes} campsRef={displayCampsRef} />}
-        {tab === "registry"       && <TabRegistry       role={role} />}
-        {tab === "campaign_pl"    && <TabCampaignPL     role={role} advMap={advMap} setAdvMap={setAdvMap} expenses={displayExpenses} invoices={displayInvoices} campsRef={displayCampsRef} />}
+        {tab === "registry"       && <TabRegistry       role={role} campsRef={displayCampsRef} expenses={displayExpenses} />}
+        {tab === "campaign_pl"    && <TabCampaignPL     role={role} expenses={displayExpenses} setExpenses={setExpenses} invoices={displayInvoices} campsRef={displayCampsRef} />}
       </div>
 
     </div>

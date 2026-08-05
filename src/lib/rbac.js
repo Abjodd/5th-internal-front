@@ -12,7 +12,12 @@
 
 export const PERMS = {
   // ── Who can see what in the campaign list / cards ──────────────────────────
-  seeCampaignBudget:  ["founder", "pcm", "accounts_head", "accounts_exec"],
+  // The client-facing total. Deliberately narrower than seeCreatorFees below:
+  // knowing the campaign sold for ₹12.5L while the creator pot is ₹7.5L is the
+  // margin, so it stays with the two roles that own commercials. Accounts sees
+  // the total in Billing (seeCampaignBudgetInBilling) where it is the invoice
+  // amount, not on the campaign where it sits next to creator cost.
+  seeCampaignBudget:  ["founder", "pcm"],
   // Creator-side money — the creator budget pot and the per-creator fees drawn
   // against it. This is execution data, not commercial data: CM/AM/EA shortlist
   // and negotiate creators, so they have to know what's left to spend. It stays

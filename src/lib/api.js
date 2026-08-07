@@ -40,10 +40,11 @@ export const FindingsAPI = {
 // The landing page's "Start a project" form POSTs; the founder inbox uses
 // list/update. Backend fires the founder email on create (mailer.js).
 export const ClientRequestsAPI = {
-  list: (status) => request(`/api/client-requests${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  list: () => request("/api/client-requests"),
   create: (req) => request("/api/client-requests", { method: "POST", body: JSON.stringify(req) }),
-  update: (id, patch) =>
-    request(`/api/client-requests/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  // Called once a BrandCredential login has been generated for this lead —
+  // the request is removed rather than flagged, mirroring creator-request promote.
+  remove: (id) => request(`/api/client-requests/${id}`, { method: "DELETE" }),
 };
 
 // ── Creator Requests (Requests › Creator Requests) ───────────────────────────
@@ -82,7 +83,6 @@ export const ExpensesAPI = crud("/api/expenses");
 export const PurchaseOrdersAPI = crud("/api/purchase-orders");
 export const ClientPOsAPI = crud("/api/client-pos");
 export const QuotesAPI = crud("/api/quotes");
-export const RegistryAPI = crud("/api/registry");
 
 export const InstagramAPI = {
   lookup: (handle) => request(`/api/instagram?handle=${encodeURIComponent(handle)}`),

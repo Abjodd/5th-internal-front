@@ -90,35 +90,5 @@ export function useAuth() {
   return useContext(AuthContext);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RBAC Helper
-// Determines if the logged-in user can view a campaign.
-// ─────────────────────────────────────────────────────────────────────────────
-export function userCanSeeCampaign(user, camp) {
-  if (!user || !camp) return false;
-
-  const { role, teamId } = user;
-
-  switch (role) {
-    case "founder":
-    case "accounts_head":
-    case "accounts_exec":
-      return true;
-
-    case "pcm":
-      // Partner Category Manager can view all campaigns
-      return true;
-
-    case "cm":
-      return camp.cmId === teamId;
-
-    case "am":
-      return camp.amId === teamId;
-
-    case "ea":
-      return camp.eaId === teamId;
-
-    default:
-      return false;
-  }
-}
+// This file owns authentication only. Campaign visibility is `canSee()` in
+// pages/Campaigns/index.jsx — one rule, kept next to the thing it governs.

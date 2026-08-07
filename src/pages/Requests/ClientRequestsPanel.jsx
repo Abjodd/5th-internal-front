@@ -2,15 +2,15 @@
  * 5th Avenue — Requests › Client Requests
  * ─────────────────────────────────────────────────────────────────
  * Inbox of brand signups from the public "Start a project" landing page
- * (hosted separately — it POSTs to /api/client-requests). The founder triages
- * each lead by status (new → reviewed → contacted → archived), and can turn a
- * lead into an actual Brand Portal login without leaving the row.
+ * (hosted separately — it POSTs to /api/client-requests). No triage status —
+ * a request is either sitting here pending, or it's been turned into an
+ * actual Brand Portal login and removed (see onCredentialsCreated below).
  */
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ClientRequestsAPI, ClientsAPI, BrandCredentialsAPI } from "../../lib/api";
 import { T } from "../../theme/tokens";
-import { thS, tdS, INP, STATUS, statusMeta, Av, Pill, Fact, Chevron, Expandable, fmtWhen, Notice } from "./shared";
+import { thS, tdS, INP, Av, Fact, Chevron, Expandable, fmtWhen, Notice } from "./shared";
 
 const Lbl = ({ children }) => (
   <label style={{
@@ -75,7 +75,10 @@ function GenerateCredentialsModal({ req, brands, onClose, onCreated, onCreateBra
         avatar, username: form.username.trim().toLowerCase(), name: form.name,
         title: form.title, password: form.password, brandId,
       });
-      onCreated(created);
+      // Pass the original request alongside the new credential — `created`
+      // is a BrandCredential (id "bc3"), not the ClientRequest ("cr5"), so
+      // the caller needs `req` to know which request to remove.
+      onCreated(req, created);
       onClose();
     } catch (e) {
       setErr(String(e.message).includes("409") ? "That username already exists." : `Save failed: ${e.message}`);
@@ -164,17 +167,16 @@ function RequestDetail({ req, onGenerateCredentials }) {
       <div style={{ ...card, flex: 1, minWidth: 220 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
           <div style={title}>Contact</div>
-          {req.credentialsGenerated ? (
-            <Pill color={T.green}>Credentials issued</Pill>
-          ) : (
-            <button onClick={onGenerateCredentials} style={{
-              fontSize: 9.5, color: T.accent, background: "transparent",
-              border: `1px solid ${T.accent}30`, borderRadius: 4, padding: "3px 10px",
-              cursor: "pointer", fontFamily: "'Sora'",
-            }}>
-              Generate credentials
-            </button>
-          )}
+          {/* Once credentials are generated the request is removed from the
+              list entirely (see onCredentialsCreated), so this button never
+              needs a "done" state — it's gone by the time that would show. */}
+          <button onClick={onGenerateCredentials} style={{
+            fontSize: 9.5, color: T.accent, background: "transparent",
+            border: `1px solid ${T.accent}30`, borderRadius: 4, padding: "3px 10px",
+            cursor: "pointer", fontFamily: "'Sora'",
+          }}>
+            Generate credentials
+          </button>
         </div>
         <Fact label="Name"         value={req.name} />
         <Fact label="Role"         value={req.role} />
@@ -205,10 +207,12 @@ export default function ClientRequestsPanel({ query, showToast, onCount }) {
       .finally(() => setLoading(false));
   }, []);
 
-  // Untriaged count for the tab badge — reported up rather than lifted, so
-  // this panel stays the only owner of its list.
+  // Pending count for the tab badge — every request in the list is pending
+  // by definition (it's removed once credentials are generated), so this is
+  // just the list length. Reported up rather than lifted, so this panel
+  // stays the only owner of its list.
   useEffect(() => {
-    onCount?.(requests.filter(r => (r.status || "new") === "new").length);
+    onCount?.(requests.length);
   }, [requests, onCount]);
 
   // Same slug scheme as the Auth page's inline "Add new brand…" flow.
@@ -219,19 +223,14 @@ export default function ClientRequestsPanel({ query, showToast, onCount }) {
     return { id: created.id, name: created.name };
   }, [refreshBrands]);
 
-  // A generated login also counts as the lead having been acted on — mark it
-  // with a dedicated flag so re-triaging status doesn't hide the badge.
-  const onCredentialsCreated = useCallback((req) => {
-    setRequests(prev => prev.map(r => (r.id === req.id ? { ...r, credentialsGenerated: true } : r)));
-    ClientRequestsAPI.update(req.id, { credentialsGenerated: true }).catch(() => {});
-    showToast(`Login created for ${req.name || req.organisation}`);
-  }, [showToast]);
-
-  // Optimistic status change + toast-on-failure, same pattern as Creators.
-  const setStatus = useCallback((id, status) => {
-    setRequests(prev => prev.map(r => (r.id === id ? { ...r, status } : r)));
-    ClientRequestsAPI.update(id, { status }).catch(() => showToast("Save failed — check connection"));
-    showToast(`Marked ${statusMeta(status).label.toLowerCase()}`);
+  // The request has done its job once a login exists for it — it's removed
+  // rather than flagged, mirroring the creator-request promote flow. `req` is
+  // the original ClientRequest ("cr5"); `credential` is the just-created
+  // BrandCredential ("bc3") — two different ids, don't mix them up.
+  const onCredentialsCreated = useCallback((req, credential) => {
+    setRequests(prev => prev.filter(r => r.id !== req.id));
+    ClientRequestsAPI.remove(req.id).catch(() => {});
+    showToast(`Login created for ${credential?.name || req.name || req.organisation}`);
   }, [showToast]);
 
   const visible = useMemo(() => {
@@ -241,8 +240,8 @@ export default function ClientRequestsPanel({ query, showToast, onCount }) {
         .filter(Boolean).some(v => String(v).toLowerCase().includes(q))
     );
     // Newest signup first. The API already sorts this way (createdAt: -1),
-    // but re-sorting here keeps the order correct even if a status update
-    // reshuffles `requests` or the API contract ever changes.
+    // but re-sorting here keeps the order correct even if the list ever
+    // reshuffles for another reason.
     return matched.slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   }, [requests, query]);
 
@@ -266,14 +265,12 @@ export default function ClientRequestsPanel({ query, showToast, onCount }) {
               <th style={thS}>Contact</th>
               <th style={thS}>Headquarters</th>
               <th style={thS}>Received</th>
-              <th style={thS}>Status</th>
               <th style={{ ...thS, width: 34 }} />
             </tr>
           </thead>
           <tbody>
             {visible.map(req => {
               const open = expanded === req.id;
-              const meta = statusMeta(req.status);
               return [
                 <tr
                   key={req.id}
@@ -295,22 +292,10 @@ export default function ClientRequestsPanel({ query, showToast, onCount }) {
                   <td style={tdS}>{req.contact || "—"}</td>
                   <td style={tdS}>{req.headquarters || "—"}</td>
                   <td style={tdS}>{fmtWhen(req.createdAt)}</td>
-                  <td style={tdS} onClick={e => e.stopPropagation()}>
-                    <select
-                      value={req.status || "new"}
-                      onChange={e => setStatus(req.id, e.target.value)}
-                      style={{
-                        ...INP, padding: "4px 8px", fontSize: 10.5, cursor: "pointer",
-                        color: meta.color, borderColor: `${meta.color}40`, background: `${meta.color}0C`,
-                      }}
-                    >
-                      {STATUS.map(s => <option key={s.id} value={s.id} style={{ color: T.text }}>{s.label}</option>)}
-                    </select>
-                  </td>
                   <td style={{ ...tdS, fontSize: 10 }}><Chevron open={open} /></td>
                 </tr>,
                 <tr key={`${req.id}_detail`}>
-                  <td colSpan={7} style={{ padding: 0, border: "none", borderBottom: open ? `1px solid ${T.border}` : "none" }}>
+                  <td colSpan={6} style={{ padding: 0, border: "none", borderBottom: open ? `1px solid ${T.border}` : "none" }}>
                     <Expandable open={open}>
                       <RequestDetail req={req} onGenerateCredentials={() => setCredModal(req)} />
                     </Expandable>

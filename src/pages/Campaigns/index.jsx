@@ -14,11 +14,13 @@
  */
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
-import { motion, AnimatePresence } from "motion/react";
-import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ClientPOsAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
+import { motion, AnimatePresence, useSpring, useMotionValueEvent, useReducedMotion } from "motion/react";
+import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
-import { fmtCompact, prettyDate, initials, ISO_DATE } from "../../lib/format";
+import { fmtCompact, prettyDate, initials, ISO_DATE, todayISO } from "../../lib/format";
+import { creatorBudgetOf, numReqOf, perCreatorOf, costOf, normCreator, creatorExpensePlan, isLockedCreator,
+         PIPELINE, PL_IDS, normStage } from "../../lib/campaign";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
 
@@ -29,14 +31,15 @@ import { T as BASE_T } from "../../theme/tokens";
 const T = {
   ...BASE_T,
   sc: {
-    draft: BASE_T.amber,
-    creator_shortlist: BASE_T.accent, advance_received: BASE_T.green,
-    po_raised: BASE_T.amber, execution: BASE_T.accent,
-    brief_sent: BASE_T.purple, concept_submitted: BASE_T.amber, concept_approved: BASE_T.green,
-    production: BASE_T.purple, video_submitted: BASE_T.amber,
-    internal_review: BASE_T.accent, client_approved: BASE_T.green,
-    live: BASE_T.green, creator_paid: BASE_T.green,
-    reporting: BASE_T.label, completed: BASE_T.label,
+    draft:     BASE_T.label,
+    brief_log: BASE_T.accent,
+    po:        BASE_T.purple,
+    advance:   BASE_T.teal,
+    // Execution stays amber for its entire duration — it is the only stage with
+    // work actually in flight, so it never reads "settled" until it hands off.
+    execution: BASE_T.amber,
+    reporting: BASE_T.accent,
+    completed: BASE_T.green,
   },
 };
 
@@ -60,43 +63,16 @@ const ROLES = [
   { id:"accounts",label:"Accounts Team",      short:"ACC", fin:true,  finFull:false, canCreate:false },
 ];
 
-// ── PIPELINE — 16-stage workflow ─────────────────────────────────────────────
-const PIPELINE = [
-  { id:"draft",             label:"Draft"              },
-  { id:"creator_shortlist", label:"Creator Shortlisting"},
-  { id:"po_raised",         label:"PO Raised"          },
-  { id:"advance_received",  label:"Advance Received"   },
-  { id:"execution",         label:"Execution"          },
-  { id:"brief_sent",        label:"Brief Sent"         },
-  { id:"concept_submitted", label:"Concept Submitted"  },
-  { id:"concept_approved",  label:"Concept Approved"   },
-  { id:"production",        label:"Production"         },
-  { id:"video_submitted",   label:"Video Submitted"    },
-  { id:"internal_review",   label:"Internal Review"    },
-  { id:"client_approved",   label:"Client Approved"    },
-  { id:"live",              label:"Live"               },
-  { id:"creator_paid",      label:"Creator Paid"       },
-  { id:"reporting",         label:"Reporting"          },
-  { id:"completed",         label:"Completed"          },
-];
-const PL_IDS = PIPELINE.map(p=>p.id);
+// PIPELINE / LEGACY_STAGE / normStage now live in lib/campaign.js — Billing
+// reads a campaign's stage too, and the two must not drift.
 const STAGE_HINT = {
-  draft:             "Campaign created — team building brief",
-  creator_shortlist: "EA & AM shortlisting creators from directory",
-  po_raised:         "Purchase Order raised — awaiting client confirmation",
-  advance_received:  "Advance received — execution cleared",
-  execution:         "Campaign execution in progress",
-  brief_sent:        "Creator briefs sent — awaiting acknowledgement",
-  concept_submitted: "Creator concepts received — pending review",
-  concept_approved:  "Concepts approved — content production begins",
-  production:        "Creators shooting & editing content",
-  video_submitted:   "Content submitted — pending internal review",
-  internal_review:   "AM reviewing content before client send",
-  client_approved:   "Client has approved content — ready to go live",
-  live:              "Content is live on platforms",
-  creator_paid:      "Creator payments released",
-  reporting:         "Campaign report being prepared",
-  completed:         "Campaign fully completed",
+  draft:     "Assign the Account Manager, Category Manager and Exec Associate to begin",
+  brief_log: "Brief being written — Founder or PCM signs it off to move to PO",
+  po:        "Brief signed off — awaiting Purchase Order",
+  advance:   "Purchase Order raised — awaiting advance payment",
+  execution: "In execution — creators locked, content in flight",
+  reporting: "Campaign report being prepared",
+  completed: "Campaign fully completed",
 };
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -154,11 +130,33 @@ const NICHE_SIMILAR = {
   Tech:      ["Tech","Gaming"],
   Gaming:    ["Gaming","Tech"],
 };
-// Creators whose niche shares an audience with the campaign's chosen niche.
-const nicheMatches = (campNiche, creatorNiche) => {
-  if (!campNiche) return true; // no niche picked → don't filter
-  return (NICHE_SIMILAR[campNiche] || [campNiche]).includes(creatorNiche);
+// Free-typed niches are normalised to the same shape as the NICHES list above —
+// trimmed, single-spaced, Title Case — so "  home  decor" and "Home Decor"
+// can't both land on one campaign, and a typed "food" resolves to the existing
+// "Food" preset instead of creating a near-duplicate the matcher would miss.
+// Words already typed in caps are left alone so acronyms (DIY, UGC) survive.
+// \p{M} keeps combining marks so Indic scripts survive ("हिंदी" isn't stripped
+// down to its consonants); hyphens capitalise on both sides ("pet-care" →
+// "Pet-Care") while apostrophes don't ("mom's" → "Mom's", not "Mom'S").
+const titleNicheWord = (w) => w.split("-")
+  .map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+  .join("-");
+const normalizeNiche = (s) => String(s || "")
+  .replace(/[’‘]/g, "'")
+  .replace(/[^\p{L}\p{M}\p{N}&'\- ]/gu, " ")
+  .trim().replace(/\s+/g, " ")
+  .split(" ")
+  .map(w => /^[\p{Lu}\p{N}&]{2,4}$/u.test(w) ? w : titleNicheWord(w))
+  .join(" ");
+
+// Creators whose niche shares an audience with ANY niche the campaign picked.
+const nicheMatches = (campNiches, creatorNiche) => {
+  if (!campNiches?.length) return true; // no niche picked → don't filter
+  return campNiches.some(n => (NICHE_SIMILAR[n] || [n]).includes(creatorNiche));
 };
+// Campaigns created before the field went multi-select stored a single `niche`
+// string — read both shapes so their Generate results don't silently change.
+const nichesOf = (c) => c?.niches?.length ? c.niches : (c?.niche ? [c.niche] : []);
 // Profile auto-fetch per platform. Add an entry here when the backend grows a
 // lookup endpoint for another platform.
 const PROFILE_LOOKUP = {
@@ -170,8 +168,10 @@ const CREATOR_COLS = [
   {key:"followers",label:"Followers",cv:true,w:78},{key:"avgER",label:"Avg ER%",cv:true,w:65},
   {key:"niche",label:"Niche",cv:true,w:85},{key:"state",label:"State",cv:true,w:100},
   {key:"status",label:"Status",cv:true,w:120},
-  {key:"concept",label:"Concept",cv:true,w:105},{key:"demo",label:"Demo",cv:true,w:105},
-  {key:"fee",label:"Fee",cv:false,w:90},{key:"payType",label:"Pay Type",cv:false,w:110},
+  // Concept/Demo deliberately absent: this table is the shortlist, and an
+  // asset status is meaningless before the creator is locked. Both live on the
+  // Deliverables tab, which only renders locked creators.
+  {key:"cost",label:"Cost",cv:false,w:90},{key:"payType",label:"Pay Type",cv:false,w:110},
 ];
 // Maps form field names -> validator kinds, for live per-keystroke checks.
 const FIELD_SANITIZE = { phone:"phone", email:"email", pan:"pan", ifsc:"ifsc", bankAccount:"account", upiId:"upi" };
@@ -210,24 +210,24 @@ const teamFromUsers = (users) => (users || [])
 
 // ── CREATOR DB (used only by Generate) ───────────────────────────────────────
 const CREATOR_DB = [
-  {id:"c001",name:"Anjali Kitchen",   handle:"@anjalikitchen",  platform:"Instagram",niche:"Cooking",  followers:"820K",  avgLikes:"32K",avgER:4.2, fee:85000 },
-  {id:"c002",name:"South Foodie",     handle:"@southfoodie",    platform:"YouTube",  niche:"Food",     followers:"1.2M",  avgLikes:"58K",avgER:5.1, fee:180000},
-  {id:"c003",name:"Taste of Madras",  handle:"@tasteofmadras",  platform:"Instagram",niche:"Food",     followers:"540K",  avgLikes:"18K",avgER:3.8, fee:65000 },
-  {id:"c004",name:"Foodie Hyderabad", handle:"@foodiehyd",      platform:"Instagram",niche:"Lifestyle",followers:"380K",  avgLikes:"16K",avgER:4.5, fee:50000 },
-  {id:"c005",name:"Kerala Food Tales",handle:"@keralafood",     platform:"YouTube",  niche:"Cooking",  followers:"290K",  avgLikes:"16K",avgER:6.1, fee:40000 },
-  {id:"c006",name:"Mumbai Munchies",  handle:"@mumbaimunch",    platform:"Instagram",niche:"Food",     followers:"95K",   avgLikes:"6.5K",avgER:7.2,fee:18000 },
-  {id:"c007",name:"Delhi Diaries",    handle:"@delhidiaries",   platform:"Instagram",niche:"Lifestyle",followers:"78K",   avgLikes:"5K", avgER:6.8, fee:15000 },
-  {id:"c008",name:"Chef Kabira",      handle:"@chefkabira",     platform:"YouTube",  niche:"Cooking",  followers:"650K",  avgLikes:"30K",avgER:4.9, fee:90000 },
-  {id:"c009",name:"Fit Freaks IN",    handle:"@fitfreaksin",    platform:"Instagram",niche:"Fitness",  followers:"120K",  avgLikes:"6K", avgER:5.5, fee:22000 },
-  {id:"c010",name:"Goa Vibes",        handle:"@goavibes",       platform:"Instagram",niche:"Lifestyle",followers:"32K",   avgLikes:"2.8K",avgER:9.2,fee:8000  },
-  {id:"c011",name:"Bong Kitchen",     handle:"@bongkitchen",    platform:"YouTube",  niche:"Cooking",  followers:"420K",  avgLikes:"17K",avgER:4.4, fee:55000 },
-  {id:"c012",name:"Pune Palate",      handle:"@punepalate",     platform:"Instagram",niche:"Food",     followers:"67K",   avgLikes:"5K", avgER:8.1, fee:12000 },
-  {id:"c013",name:"Coastal Kitchen",  handle:"@coastalkitchen", platform:"YouTube",  niche:"Cooking",  followers:"510K",  avgLikes:"25K",avgER:5.3, fee:72000 },
-  {id:"c014",name:"Hyderabad Hunger", handle:"@hydhunger",      platform:"Instagram",niche:"Food",     followers:"41K",   avgLikes:"4K", avgER:10.4,fee:9000  },
+  {id:"c001",name:"Anjali Kitchen",   handle:"@anjalikitchen",  platform:"Instagram",niche:"Cooking",  followers:"820K",  avgLikes:"32K",avgER:4.2, cost:85000 },
+  {id:"c002",name:"South Foodie",     handle:"@southfoodie",    platform:"YouTube",  niche:"Food",     followers:"1.2M",  avgLikes:"58K",avgER:5.1, cost:180000},
+  {id:"c003",name:"Taste of Madras",  handle:"@tasteofmadras",  platform:"Instagram",niche:"Food",     followers:"540K",  avgLikes:"18K",avgER:3.8, cost:65000 },
+  {id:"c004",name:"Foodie Hyderabad", handle:"@foodiehyd",      platform:"Instagram",niche:"Lifestyle",followers:"380K",  avgLikes:"16K",avgER:4.5, cost:50000 },
+  {id:"c005",name:"Kerala Food Tales",handle:"@keralafood",     platform:"YouTube",  niche:"Cooking",  followers:"290K",  avgLikes:"16K",avgER:6.1, cost:40000 },
+  {id:"c006",name:"Mumbai Munchies",  handle:"@mumbaimunch",    platform:"Instagram",niche:"Food",     followers:"95K",   avgLikes:"6.5K",avgER:7.2,cost:18000 },
+  {id:"c007",name:"Delhi Diaries",    handle:"@delhidiaries",   platform:"Instagram",niche:"Lifestyle",followers:"78K",   avgLikes:"5K", avgER:6.8, cost:15000 },
+  {id:"c008",name:"Chef Kabira",      handle:"@chefkabira",     platform:"YouTube",  niche:"Cooking",  followers:"650K",  avgLikes:"30K",avgER:4.9, cost:90000 },
+  {id:"c009",name:"Fit Freaks IN",    handle:"@fitfreaksin",    platform:"Instagram",niche:"Fitness",  followers:"120K",  avgLikes:"6K", avgER:5.5, cost:22000 },
+  {id:"c010",name:"Goa Vibes",        handle:"@goavibes",       platform:"Instagram",niche:"Lifestyle",followers:"32K",   avgLikes:"2.8K",avgER:9.2,cost:8000  },
+  {id:"c011",name:"Bong Kitchen",     handle:"@bongkitchen",    platform:"YouTube",  niche:"Cooking",  followers:"420K",  avgLikes:"17K",avgER:4.4, cost:55000 },
+  {id:"c012",name:"Pune Palate",      handle:"@punepalate",     platform:"Instagram",niche:"Food",     followers:"67K",   avgLikes:"5K", avgER:8.1, cost:12000 },
+  {id:"c013",name:"Coastal Kitchen",  handle:"@coastalkitchen", platform:"YouTube",  niche:"Cooking",  followers:"510K",  avgLikes:"25K",avgER:5.3, cost:72000 },
+  {id:"c014",name:"Hyderabad Hunger", handle:"@hydhunger",      platform:"Instagram",niche:"Food",     followers:"41K",   avgLikes:"4K", avgER:10.4,cost:9000  },
 ];
 
 // ── CREATOR FACTORY ──────────────────────────────────────────────────────────
-const mkCreator = (src={}, fee) => ({
+const mkCreator = (src={}, cost) => ({
   _id:      src._id || `cr_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
   dbId:     src.id || src.dbId || null,
   name:     src.name    || "",
@@ -239,9 +239,11 @@ const mkCreator = (src={}, fee) => ({
   followers:src.followers|| "",
   avgLikes: src.avgLikes || null,
   avgER:    src.avgER !== undefined ? src.avgER : (src.engRate || null),
-  askingPrice:   src.askingPrice !== undefined ? src.askingPrice : null,
-  negotiatedCost:src.negotiatedCost !== undefined ? src.negotiatedCost : (fee ?? src.fee ?? 0),
-  fee:      fee ?? src.fee ?? (src.negotiatedCost || 0),
+  askingPrice: src.askingPrice !== undefined ? src.askingPrice : null,
+  // What we pay this creator for this campaign — the negotiated cost. Was
+  // `fee`, and was mirrored into a second `negotiatedCost` field that nothing
+  // ever read; one name, one field. Legacy docs are read via src.fee.
+  cost:     cost ?? costOf(src),
   igFetched: src.igFetched || null, // raw auto-fetched snapshot (bio, posts, fetchedAt, etc.)
   status:   "shortlisted",
   state:    src.state   || null,
@@ -336,19 +338,37 @@ const mkCreator = (src={}, fee) => ({
 
 // ── WORKFLOW ACTION LABELS ───────────────────────────────────────────────────
 // Shared by the confirmation modal and the post-action toast.
-const ACTION_MSGS={advance_to_shortlist:"Move to creator shortlisting",am_request_edit:"Request brief edit",raise_po:"Raise Purchase Order",advance_received:"Confirm advance received",assign_cm:"Assign CM",assign_ea:"Assign EA — start execution",brief_sent:"Mark briefs sent to creators",concept_submitted:"Mark concepts received",cm_approve_concept:"Approve concept",cm_request_changes:"Request concept changes",start_production:"Start production",video_submitted:"Mark video submitted",internal_approved:"Approve internally — send to client",internal_revision:"Request internal revision",client_approved:"Mark client approved",client_revision:"Log client revision request",mark_live:"Mark content live",creator_paid:"Confirm creator payments released",start_reporting:"Start reporting",mark_completed:"Mark campaign completed",extend_end_date:"Campaign end date extended"};
-// Actions that don't move the pipeline stage — no confirmation needed.
+const ACTION_MSGS={assign_am:"Assign Account Manager",assign_cm:"Assign Category Manager",assign_ea:"Assign Executive Associate",brief_start:"Start the brief",brief_complete:"Sign off the brief",raise_po:"Record the client Purchase Order",advance_received:"Confirm advance received",start_reporting:"Start reporting",mark_completed:"Mark campaign completed",extend_end_date:"Campaign end date extended"};
+// Actions that don't get the "Confirm stage change" dialog.
 // extend_end_date is here because ExtendEndModal is already its own confirm
-// step (it has to be — it collects the new date), so the generic stage-change
-// modal would just be a second dialog saying less.
-const NO_CONFIRM_ACTIONS=new Set(["assign_cm","extend_end_date"]);
+// step (it has to be — it collects the new date), so the generic modal would
+// just be a second dialog saying less.
+// The three assign_* actions are here even though completing the team DOES
+// advance Draft → Brief Log: that transition is meant to be automatic, and a
+// dialog after a dropdown pick would make it read as a manual stage change.
+// The Team tab warns before the fact instead (see TabTeam).
+// raise_po joins them for the same reason as extend_end_date: ClientPOModal
+// collects the PO number and value, so it is already the confirmation step.
+const NO_CONFIRM_ACTIONS=new Set(["assign_am","assign_cm","assign_ea","extend_end_date","raise_po"]);
+const needsConfirm=action=>!NO_CONFIRM_ACTIONS.has(action);
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 const fmtINR  = n => !n&&n!==0?"—":n>=100000?`₹${(n/100000).toFixed(1)}L`:`₹${(n/1000).toFixed(0)}K`;
 const fmtNum  = fmtCompact; // shared compact formatter — lib/format.js
 const getM    = id => TEAM_DIR.find(t=>t.id===id)||TEAM.find(t=>t.id===id)||null;
 const getR    = id => ROLES.find(r=>r.id===id)||ROLES[0];
-const plIdx   = id => PL_IDS.indexOf(id);
+const plIdx   = id => PL_IDS.indexOf(normStage(id));
+// All three slots staffed is the gate out of Draft. These slots are also the
+// access key (canSee only shows a campaign to its amId/cmId/eaId), so until
+// every seat is filled the campaign is invisible to someone who needs it.
+const teamComplete = c => !!(c?.amId && c?.cmId && c?.eaId);
+// Team assignments and the brief stay editable right up to the PO — that is
+// where the numbers get committed to the client, and changing either after
+// would silently desync the PO. One boundary, used by both.
+const beforePO = c => plIdx(c?.stage) < plIdx("po");
+// creatorBudgetOf / numReqOf / perCreatorOf / costOf now live in lib/campaign.js
+// — Billing derives the same numbers, and one copy is what keeps the two pages
+// from disagreeing again.
 
 function amtInWords(n) {
   const ones = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
@@ -370,7 +390,7 @@ function amtInWords(n) {
 }
 
 function generateInvoiceHTML(creator, camp, invoiceNo, dated) {
-  const fee  = creator.fee || 0;
+  const cost = costOf(creator);
   const pd   = creator.personalDetails || {};
   const fmt  = n => "₹" + (n || 0).toLocaleString("en-IN");  // full format, e.g. ₹74,000
   const rows = Array(8).fill('<tr><td></td><td></td><td></td><td class="rt"></td><td class="rt"></td></tr>').join("");
@@ -426,15 +446,15 @@ function generateInvoiceHTML(creator, camp, invoiceNo, dated) {
     <td class="cen">1</td>
     <td>Influencer Marketing Services — ${camp.name}</td>
     <td class="cen">1</td>
-    <td class="rt">${fmt(fee)}</td>
-    <td class="rt">${fmt(fee)}</td>
+    <td class="rt">${fmt(cost)}</td>
+    <td class="rt">${fmt(cost)}</td>
   </tr>
   ${rows}
   <tr>
     <td colspan="4" style="text-align:right;font-weight:bold">Total</td>
-    <td class="rt" style="font-weight:bold">${fmt(fee)}</td>
+    <td class="rt" style="font-weight:bold">${fmt(cost)}</td>
   </tr>
-  <tr><td colspan="5">Tax Amount (in words): ${amtInWords(fee)}</td></tr>
+  <tr><td colspan="5">Tax Amount (in words): ${amtInWords(cost)}</td></tr>
   ${creator.payType === "upi" && pd.upiId ? `<tr><td colspan="5">
     <p><strong>Payment Details</strong></p>
     <div class="bg">
@@ -462,6 +482,11 @@ function generateInvoiceHTML(creator, camp, invoiceNo, dated) {
 // Per spec: AM sees execution budget but NOT revenue/margins in billing.
 // In campaigns: AM sees campaign budget (needed for execution). CM/EA: no financials.
 const canFin    = r => can(r, "seeCampaignBudget");  // budget in campaign card/detail
+// Creator-side money — the creator budget pot + per-creator fees. Wider than
+// canFin on purpose: CM/AM/EA run the shortlist and the negotiation, so they
+// need the pot they're spending against, while the client-facing total budget,
+// agency fee and margin stay behind canFin/canFF.
+const canCrFin  = r => can(r, "seeCreatorFees");
 const canFF     = r => can(r, "seeMargins");          // margins — founder only
 const canCreate = r => can(r, "createCampaign");
 // Visibility: founder sees all; everyone else only sees own campaigns
@@ -471,10 +496,7 @@ const canSee = (c, r, teamId) => {
 };
 // ISO ("YYYY-MM-DD") so a campaign's start/end always matches the format
 // DateInput writes when staff do pick a date — one consistent shape in the DB.
-const today   = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-};
+const today = todayISO; // shared with Billing — see lib/format.js
 // End-date proximity nudge. Returns null unless the campaign is still running
 // and its ISO end date is within a week (or already past) — a subtle "ending
 // soon" cue on the card + detail header. Completed campaigns never warn.
@@ -502,7 +524,85 @@ const EndPill = ({ es, style = {} }) => es ? (
     <Dot color={es.tone} size={5}/>{es.text}
   </span>
 ) : null;
-const needsLnk= s => ["received","rework"].includes(s);
+// A creator only reaches Deliverables once they're locked — everything before
+// that is shortlisting, and an asset status on an unconfirmed creator is noise.
+const isLocked = isLockedCreator;
+
+// ── EXECUTION PROGRESS ───────────────────────────────────────────────────────
+// An asset counts as "in" the moment anything arrives — `rework` and
+// `pending_brand` mean it was submitted and is being worked, not that it's
+// missing. Only `yet_to_receive` (and an empty status) is nothing.
+const assetIn = a => !!a?.status && a.status !== "yet_to_receive";
+// Every locked creator walks four milestones — locked → concept in → video in
+// → live — and execution progress is milestones reached over milestones
+// planned. The denominator is the TARGET creator count, not the locked count:
+// locking one of five creators and finishing their work has to read 20%, not
+// 100%. max() keeps it honest if more creators get locked than were planned.
+function execStats(c){
+  const lockd = (c?.creators||[]).filter(isLocked);
+  const target= Math.max(numReqOf(c), lockd.length);
+  const done  = {
+    locked:  lockd.length,
+    concept: lockd.filter(x=>assetIn(x.concept)).length,
+    video:   lockd.filter(x=>assetIn(x.demo)).length,
+    live:    lockd.filter(x=>!!x.live?.postUrl).length,
+  };
+  const total = target*4;
+  const pct   = total>0 ? Math.min(100,Math.round(((done.locked+done.concept+done.video+done.live)/total)*100)) : 0;
+  return {...done,target,pct};
+}
+// Progress is DERIVED from stage + creator milestones, never stored, so it can
+// never drift away from the stage it describes.
+// ── STAGE GATES ──────────────────────────────────────────────────────────────
+// A stage only advances when its own condition is met, so the workflow buttons
+// confirm something that is already true rather than skipping past it.
+//
+// Signing off an empty brief would raise a PO against nothing, so sign-off
+// needs the brief to actually say something first. Returns what's still
+// missing, so the UI can name it instead of just greying a button out.
+const briefGaps = c => [
+  ...[["objective","Objective"],["audience","Audience"],["messages","Key Messages"]]
+    .filter(([k])=>!String(c?.brief?.[k]||"").trim()).map(([,l])=>l),
+  ...((c?.brief?.deliverables||[]).length?[]:["Deliverables"]),
+  ...(creatorBudgetOf(c)>0?[]:["Creator budget"]),
+];
+// Reporting starts once everything actually committed to is live — measured
+// against the LOCKED creators, not the target. A campaign that only ever
+// locked 3 of 5 planned creators can never reach 100% of plan, so gating on
+// the target would trap it in Execution with no way to close it out.
+const execDone = c => { const s=execStats(c); return s.locked>0&&s.live===s.locked; };
+
+// ── BILLING BRIDGE ───────────────────────────────────────────────────────────
+// Locking a creator commits money. That commitment used to live only on the
+// campaign, so Billing — which reads the `expenses` collection — reported ₹0
+// spent on every campaign, forever: the collection was empty, "Total Spent"
+// was structurally stuck at zero, and every vendor PO read permanently open
+// because nothing was ever billed against it.
+//
+// One expense per locked creator, with an id derived from the campaign and
+// creator ids so re-saving the roster updates the row instead of duplicating
+// it. The expense is created `pending_approval` — committed, not paid; Accounts
+// settles it on the Campaign P&L, which is what moves it to `paid`.
+// Executes the plan creatorExpensePlan() decides on — see lib/campaign.js for
+// the rule itself, which is kept pure so it can be tested without the network.
+function syncCreatorExpenses(camp,prevCreators,nextCreators,onError){
+  const fail=()=>onError&&onError();
+  for(const {op,id,body} of creatorExpensePlan(camp,prevCreators,nextCreators)){
+    if(op==="create"){
+      // A creator locked → backed off → locked again already has a row, so a
+      // failed create means "exists": revive it rather than losing the link.
+      ExpensesAPI.create(body).catch(()=>{const{id:_,...rest}=body;ExpensesAPI.update(id,rest).catch(fail);});
+    } else {
+      ExpensesAPI.update(id,body).catch(fail);
+    }
+  }
+}
+
+function progressOf(c){
+  const i=plIdx(c?.stage), cur=PIPELINE[i]||PIPELINE[0];
+  if(cur.id!=="execution") return cur.p;
+  return Math.round(cur.p + (execStats(c).pct/100)*(PIPELINE[i+1].p-cur.p));
+}
 // External links pasted without a protocol ("instagram.com/p/…") would resolve
 // relative to the SPA — the new tab lands on our router with an empty
 // sessionStorage and gets bounced to /login. Always absolutize before href.
@@ -511,6 +611,35 @@ const extUrl = u => {
   const t = String(u).trim();
   return /^https?:\/\//i.test(t) ? t : `https://${t}`;
 };
+// Public profile link for a creator's handle, or null when one can't be built.
+// Returning null matters: a handle with no derivable profile stays plain text
+// rather than becoming a link that 404s.
+//
+// `igUrl` is checked first and is NOT Instagram-only despite the name — the
+// YouTube lookup writes the channel URL into the same field, so whenever a
+// profile was auto-fetched that URL is the canonical one.
+//
+// Handles are stored with a leading "@" ("@anjalikitchen") but not always
+// ("adidastestcr"), so the "@" is stripped before templating either way.
+// LinkedIn / Moj / Josh / Other have no derivable pattern from a handle alone
+// (a LinkedIn slug may be /in/ or /company/), so they're deliberately absent.
+const PROFILE_URL = {
+  "Instagram":   h => `https://www.instagram.com/${h}/`,
+  "YouTube":     h => `https://www.youtube.com/@${h}`,
+  "Twitter / X": h => `https://x.com/${h}`,
+  "Snapchat":    h => `https://www.snapchat.com/add/${h}`,
+};
+const HANDLE_RE = /^[A-Za-z0-9._-]{1,50}$/;
+const profileUrl = (cr) => {
+  if (cr?.igUrl) return extUrl(cr.igUrl);
+  const raw = String(cr?.handle || "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;          // already a full link
+  const h = raw.replace(/^@+/, "");
+  if (!HANDLE_RE.test(h)) return null;                // spaces, emoji, junk
+  return PROFILE_URL[cr?.platform]?.(h) || null;
+};
+
 // Live post URLs must match the creator's platform — those are the two
 // platforms the backend /api/post-metrics endpoint can track.
 const isIgUrl = u => /^(https?:\/\/)?(www\.)?instagram\.com\/.+/i.test(String(u || "").trim());
@@ -535,37 +664,392 @@ function Btn({children,onClick,variant="ghost",disabled,style={}}){
 const INP={width:"100%",padding:"9px 12px",borderRadius:9,background:"rgba(0,0,0,0.03)",border:"1px solid rgba(0,0,0,0.1)",color:"#1D1D1F",fontSize:12,fontFamily:SF,outline:"none",resize:"vertical",transition:"border 0.15s"};
 
 // ── PIPELINE WIDGETS ─────────────────────────────────────────────────────────
-const MiniPipe=({stage})=>{const pct=Math.round((plIdx(stage)/(PIPELINE.length-1))*100),col=T.sc[stage]||T.sub;return <div style={{height:2,background:"rgba(0,0,0,0.07)",borderRadius:1,marginTop:9}}><motion.div style={{height:2,borderRadius:1,background:col}} animate={{width:`${pct}%`}} transition={{type:"spring",stiffness:220,damping:26}}/></div>;};
-function FullPipe({stage}){
-  const idx=plIdx(stage),col=T.sc[stage]||T.sub,GREEN="#34C759";
-  // Top/bottom padding keeps the pulse ring and hover lift inside the
-  // overflow-x scroll container instead of getting clipped.
-  return(<div style={{overflowX:"auto",padding:"8px 0 6px"}}><div style={{display:"flex",alignItems:"flex-start",minWidth:"max-content"}}>{PIPELINE.map((p,i)=>{
-    const done=i<idx,cur=i===idx;
-    return(<div key={p.id} style={{display:"flex",alignItems:"flex-start"}}>
-      <div className="pipe-node" title={`Stage ${i+1} of ${PIPELINE.length} — ${p.label}${done?" · complete":cur?" · current":""}`} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,minWidth:72}}>
-        <motion.div style={{width:14,height:14,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",
-          border:done||cur?"none":"1.5px solid rgba(0,0,0,0.14)",
-          animation:cur?"pipePulse 2s ease-out infinite":"none",
-          "--pulse-col":`${col}50`}}
-          animate={{background:cur?col:done?GREEN:"#FFFFFF"}} transition={{duration:0.3}}>
-          {done&&<span style={{color:"#FFF",fontSize:8,fontWeight:700,lineHeight:1}}>✓</span>}
-          {cur&&<span style={{width:4,height:4,borderRadius:"50%",background:"#FFF"}}/>}
+const MiniPipe=({camp})=>{const pct=progressOf(camp),col=T.sc[normStage(camp.stage)]||T.sub;return <div style={{height:2,background:"rgba(0,0,0,0.07)",borderRadius:1,marginTop:9}}><motion.div style={{height:2,borderRadius:1,background:col}} animate={{width:`${pct}%`}} transition={{type:"spring",stiffness:220,damping:26}}/></div>;};
+
+// The EA sees a three-node view of the same pipeline. PO and Advance are
+// commercial steps they neither run nor need to track, so both collapse into
+// Brief Log — which is why that node reads amber for an EA while the campaign
+// is really parked at PO: from their seat it is one continuous wait.
+const EA_PL_IDS=["draft","brief_log","execution"];
+const eaStage = s => s==="draft" ? "draft"
+  : ["brief_log","po","advance"].includes(s) ? "brief_log" : "execution";
+// One source of truth for "what stage does this role see", so a campaign's
+// chip, its colour and its pipeline can never disagree with each other.
+const viewStage = (stage,role) => role==="ea" ? eaStage(normStage(stage)) : normStage(stage);
+const viewCol   = (stage,role) => { const s=viewStage(stage,role); return (role==="ea"&&s==="brief_log"?T.amber:T.sc[s])||T.sub; };
+const viewPl    = (stage,role) => PIPELINE.find(p=>p.id===viewStage(stage,role))||PIPELINE[0];
+
+// ── PIPELINE ─────────────────────────────────────────────────────────────────
+// One continuous rail, one travelling marker, one node per stage. Four things
+// animate, and each of them carries meaning rather than decoration:
+//
+//   the rail fill — how far the campaign has actually got. Inside Execution it
+//                   advances with the creator milestones instead of sitting
+//                   still through the widest stage in the pipeline and then
+//                   jumping 40→90 in one step.
+//   the marker    — a single shared element (layoutId) that TRAVELS to the new
+//                   node when a stage advances, so the change reads as movement
+//                   rather than two colours swapping in place.
+//   the caption   — hovering any node explains that stage without moving the
+//                   campaign, and releases back to where things really are. The
+//                   pipeline stops being a read-only ornament.
+//   the number    — tweens, so locking a creator reads as progress happening
+//                   rather than a re-render.
+const NODE_W = 88;
+const PIPE_GREEN = "#34C759";
+// The marker and the rail travel on the SAME spring. They were on different
+// ones, so on a stage change the circle arrived while the line was still
+// catching up — the two halves of one movement visibly out of step.
+const PIPE_SPRING = { type:"spring", stiffness:260, damping:30 };
+
+// Headline percentage, tweened. Initialised at the true value so mounting (or
+// switching campaigns) snaps rather than counting up from zero every time.
+function useCountUp(value){
+  const mv = useSpring(value, { stiffness:140, damping:26 });
+  const [shown,setShown] = useState(value);
+  useEffect(()=>{ mv.set(value); },[value,mv]);
+  useMotionValueEvent(mv,"change",v=>setShown(Math.round(v)));
+  return shown;
+}
+
+// `ended` is whether the CAMPAIGN is finished, and it has to be passed in
+// rather than inferred from the node. Testing `p.id==="completed"` looks
+// equivalent and isn't: the EA node set has no Completed node — eaStage()
+// folds completed (and reporting) into Execution — so an EA opening a finished
+// campaign got the live-Execution treatment on the last node: a "0%" badge and
+// a heartbeat on a campaign that was 100% done.
+function PipeNode({p,i,total,idx,col,ended,onExecClick,onHover,reduce,es}){
+  const done=i<idx, isCur=i===idx;
+  // Only the live Execution node opens the breakdown — on a campaign that has
+  // finished there is no creator work in flight to break down.
+  const clickable=isCur&&!ended&&p.id==="execution"&&!!onExecClick;
+  const dotCol=isCur?col:done?PIPE_GREEN:"#FFFFFF";
+  return(
+    <motion.div
+      onHoverStart={()=>onHover(p.id)} onHoverEnd={()=>onHover(null)}
+      onFocus={()=>onHover(p.id)} onBlur={()=>onHover(null)}
+      onClick={clickable?onExecClick:undefined}
+      onKeyDown={clickable?e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();onExecClick();}}:undefined}
+      role={clickable?"button":undefined} tabIndex={clickable?0:undefined}
+      aria-label={`Stage ${i+1} of ${total} — ${p.label}${done?", complete":isCur?", current":""}`}
+      whileHover={reduce?undefined:{y:-3}} whileTap={clickable?{scale:0.94}:undefined}
+      transition={{type:"spring",stiffness:420,damping:28}}
+      style={{width:NODE_W,display:"flex",flexDirection:"column",alignItems:"center",gap:7,
+        cursor:clickable?"pointer":"default",outline:"none",background:"transparent",border:"none",padding:0}}>
+
+      <div style={{position:"relative",width:18,height:18,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        {/* Heartbeat on the live stage. A looped motion animation rather than a
+            CSS keyframe so it honours prefers-reduced-motion with the rest. */}
+        {isCur&&!reduce&&!ended&&(
+          <motion.span aria-hidden animate={{scale:[1,2.1],opacity:[0.4,0]}}
+            transition={{duration:2,repeat:Infinity,ease:"easeOut"}}
+            style={{position:"absolute",width:16,height:16,borderRadius:"50%",background:col}}/>
+        )}
+        {/* The travelling marker. One element for the whole pipeline — framer
+            interpolates it between nodes on a stage change. */}
+        {isCur&&(
+          <motion.span layoutId="pipeMarker" aria-hidden transition={PIPE_SPRING}
+            style={{position:"absolute",width:24,height:24,borderRadius:"50%",border:`1.5px solid ${col}`,opacity:0.45}}/>
+        )}
+        <motion.div
+          animate={{backgroundColor:dotCol,scale:isCur?1:0.86}}
+          transition={{type:"spring",stiffness:300,damping:26}}
+          style={{position:"relative",width:16,height:16,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
+            border:done||isCur?"none":"1.5px solid rgba(0,0,0,0.14)"}}>
+          {done&&(
+            <motion.svg width={10} height={10} viewBox="0 0 12 12" aria-hidden>
+              {/* Drawn rather than popped in — a completed stage should feel
+                  ticked off, and the stagger makes a fresh load read as the
+                  campaign walking its own history. */}
+              <motion.path d="M2.6 6.3 L4.9 8.6 L9.4 3.8" fill="none" stroke="#FFF"
+                strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round"
+                initial={reduce?false:{pathLength:0}} animate={{pathLength:1}}
+                transition={{duration:0.28,delay:reduce?0:0.12+i*0.05,ease:"easeOut"}}/>
+            </motion.svg>
+          )}
+          {isCur&&<span style={{width:5,height:5,borderRadius:"50%",background:"#FFF"}}/>}
         </motion.div>
-        <span style={{fontSize:7.5,textAlign:"center",whiteSpace:"nowrap",color:cur?col:done?"#1D1D1F":"rgba(0,0,0,0.30)",fontWeight:cur?700:done?500:400,fontFamily:SF,letterSpacing:"0.01em"}}>{p.label}</span>
-        {cur&&<span style={{fontSize:6.5,fontWeight:700,color:col,background:`${col}14`,borderRadius:4,padding:"1px 5px",textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:SF,marginTop:-2}}>Now</span>}
       </div>
-      {i<PIPELINE.length-1&&<motion.div style={{width:18,height:2,borderRadius:1,marginTop:6,flexShrink:0}} animate={{background:i<idx?GREEN:"rgba(0,0,0,0.08)"}} transition={{duration:0.3}}/>}
-    </div>);
-  })}</div></div>);
+
+      <motion.span animate={{color:isCur?col:done?"#1D1D1F":"rgba(0,0,0,0.32)"}}
+        style={{fontSize:9.5,textAlign:"center",whiteSpace:"nowrap",fontWeight:isCur?700:done?500:400,
+          fontFamily:SF,letterSpacing:"-0.01em",
+          textDecoration:clickable?"underline":"none",textUnderlineOffset:3,textDecorationStyle:"dotted"}}>
+        {p.label}
+      </motion.span>
+
+      {/* The live badge doubles as Execution's own readout — that stage spans
+          half the pipeline, so "NOW" alone would hide all of its movement. */}
+      {isCur&&(
+        <motion.span initial={reduce?false:{opacity:0,y:-3}} animate={{opacity:1,y:0}}
+          transition={{delay:0.1,type:"spring",stiffness:400,damping:30}}
+          style={{fontSize:8,fontWeight:700,color:col,background:`${col}16`,borderRadius:5,
+            padding:"1.5px 6px",letterSpacing:"0.06em",fontFamily:SF,marginTop:-3,whiteSpace:"nowrap"}}>
+          {ended?"DONE":p.id==="execution"?`${es.pct}%`:"NOW"}
+        </motion.span>
+      )}
+    </motion.div>
+  );
+}
+
+function FullPipe({camp,role,onExecClick}){
+  const reduce=useReducedMotion();
+  const cur=viewStage(camp.stage,role), col=viewCol(camp.stage,role);
+  const nodes=role==="ea"?PIPELINE.filter(p=>EA_PL_IDS.includes(p.id)):PIPELINE;
+  const idx=nodes.findIndex(p=>p.id===cur);
+  const [hover,setHover]=useState(null);
+  const es=execStats(camp);
+  const shown=useCountUp(progressOf(camp));
+  // The real stage, not the role-collapsed one — see PipeNode.
+  const ended=normStage(camp.stage)==="completed";
+
+  // Hovering previews another stage's meaning; releasing returns to the real
+  // one. `focus` is display-only — nothing here can move a campaign.
+  const focus=nodes.some(p=>p.id===hover)?hover:cur;
+  const focusIdx=nodes.findIndex(p=>p.id===focus);
+  const focusNode=nodes[focusIdx]||nodes[0];
+  const previewing=focus!==cur;
+
+  // Rail fill, in two layers that mean different things:
+  //   done — stages actually behind us, green, ends on the live node
+  //   head — progress WITHIN the live stage, in the stage's own colour
+  // Only Execution has a meaningful head today, and that is the point: it spans
+  // half the pipeline, so without it the rail would sit still through the
+  // longest stretch of the campaign and then jump.
+  //
+  // Two solid layers rather than one gradient: a gradient's end colour cannot
+  // be interpolated, so it snapped to the new stage colour mid-slide while the
+  // width was still moving. Each layer now owns one colour and never changes it.
+  const seg=nodes.length>1?nodes.length-1:1;
+  const sub=cur==="execution"?es.pct/100:0;
+  const doneFrac=Math.min(1,Math.max(0,idx/seg));
+  const headFrac=Math.min(1-doneFrac,sub/seg);
+  const railW=seg*NODE_W;
+  const filled=doneFrac+headFrac;
+  // The rail carried no motion of its own, so next to a pulsing node it read as
+  // dead track. A slow sweep along the completed length says the campaign is
+  // running — and it stops once there is nothing left in flight.
+  const flowing=!reduce&&filled>0.02&&!ended;
+
+  return(
+    <div style={{marginTop:2}}>
+      {/* Caption — the stage in focus, and what it means right now. */}
+      <div style={{display:"flex",alignItems:"baseline",gap:10,minHeight:34,padding:"0 2px 6px"}}>
+        <div style={{flex:1,minWidth:0}}>
+          <motion.div key={focus} initial={reduce?false:{opacity:0,y:4}} animate={{opacity:1,y:0}}
+            transition={{duration:0.18,ease:"easeOut"}}>
+            <div style={{display:"flex",alignItems:"center",gap:7}}>
+              <span style={{fontFamily:"'Newsreader',serif",fontSize:15,fontStyle:"italic",fontWeight:600,
+                color:previewing?"#6E6E73":"#1D1D1F",letterSpacing:"-0.01em"}}>{focusNode.label}</span>
+              <span style={{fontSize:9,color:"rgba(0,0,0,0.30)",fontFamily:SF}}>
+                {previewing?`stage ${focusIdx+1} of ${nodes.length}`:`stage ${idx+1} of ${nodes.length}`}
+              </span>
+            </div>
+            <div style={{fontSize:10.5,color:"#6E6E73",fontFamily:SF,marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+              {/* Execution earns a live readout instead of a static sentence —
+                  it is the only stage whose meaning changes day to day. */}
+              {focus==="execution"&&focus===cur&&!ended
+                ? `${es.locked}/${es.target} locked · ${es.concept} concept${es.concept===1?"":"s"} · ${es.video} video${es.video===1?"":"s"} · ${es.live} live — click for the breakdown`
+                : STAGE_HINT[focus]}
+            </div>
+          </motion.div>
+        </div>
+        <div style={{display:"flex",alignItems:"baseline",gap:2,flexShrink:0}}>
+          <motion.span animate={{color:col}} style={{fontSize:19,fontWeight:700,fontFamily:SF,letterSpacing:"-0.03em",lineHeight:1}}>{shown}</motion.span>
+          <span style={{fontSize:10,color:"#86868B",fontFamily:SF,fontWeight:600}}>%</span>
+        </div>
+      </div>
+
+      {/* Rail + nodes. Scrolls in its own lane; the padding keeps the heartbeat
+          ring and the hover lift from being clipped by the overflow. */}
+      <div style={{overflowX:"auto",overflowY:"hidden",padding:"10px 0 4px"}}>
+        <div style={{position:"relative",width:nodes.length*NODE_W,minWidth:nodes.length*NODE_W}}>
+          <div aria-hidden style={{position:"absolute",left:NODE_W/2,top:8,width:railW,height:3,
+            borderRadius:2,background:"rgba(0,0,0,0.07)",overflow:"hidden"}}>
+            {/* Stages complete */}
+            <motion.div animate={{width:doneFrac*railW}} transition={reduce?{duration:0}:PIPE_SPRING}
+              style={{position:"absolute",left:0,top:0,height:3,background:PIPE_GREEN}}/>
+            {/* Progress inside the live stage, parked at the end of the green */}
+            <motion.div animate={{width:headFrac*railW,x:doneFrac*railW,backgroundColor:col}}
+              transition={reduce?{duration:0}:PIPE_SPRING}
+              style={{position:"absolute",left:0,top:0,height:3}}/>
+            {/* The sweep. Clipped to the rail, travelling only as far as the
+                fill reaches, so it never implies progress that hasn't happened. */}
+            {flowing&&(
+              <motion.div
+                animate={{x:[-56,filled*railW]}}
+                transition={{duration:2.6,repeat:Infinity,ease:"easeInOut",repeatDelay:0.9}}
+                style={{position:"absolute",left:0,top:0,height:3,width:56,
+                  background:"linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,0.8),rgba(255,255,255,0))"}}/>
+            )}
+          </div>
+          <div style={{position:"relative",display:"flex"}}>
+            {nodes.map((p,i)=>(
+              <PipeNode key={p.id} p={p} i={i} total={nodes.length} idx={idx} col={col} ended={ended}
+                onExecClick={onExecClick} onHover={setHover} reduce={reduce} es={es}/>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── EXECUTION BREAKDOWN ──────────────────────────────────────────────────────
+// What the Execution node opens. Four milestones, all measured against the same
+// target creator count so the four bars and the headline percentage are reading
+// off one denominator — showing "concepts 1/1" next to "locked 1/5" would look
+// finished when 80% of the campaign hasn't started.
+function ExecutionModal({camp,onClose}){
+  const s=execStats(camp);
+  const rows=[
+    {l:"Creators locked",    n:s.locked,  c:T.green},
+    {l:"Concepts submitted", n:s.concept, c:T.accent},
+    {l:"Videos submitted",   n:s.video,   c:T.purple},
+    {l:"Posts live",         n:s.live,    c:T.teal},
+  ];
+  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(420px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
+      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:2}}>
+        <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic"}}>Execution</div>
+        <div style={{fontSize:22,fontWeight:600,color:T.amber,fontFamily:SF,lineHeight:1}}>{s.pct}%</div>
+      </div>
+      <div style={{fontSize:10.5,color:T.sub,marginBottom:16}}>{camp.name} · {s.target} creator{s.target!==1?"s":""} planned</div>
+      {rows.map(({l,n,c},i)=>(
+        <div key={l} style={{marginBottom:i<rows.length-1?12:4}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
+            <span style={{fontSize:11.5,color:T.sub,fontFamily:SF}}>{l}</span>
+            <span style={{fontSize:11.5,fontWeight:600,color:n>0?T.text:T.label,fontFamily:SF}}>{n} / {s.target}</span>
+          </div>
+          <div style={{height:4,background:"rgba(0,0,0,0.06)",borderRadius:2,overflow:"hidden"}}>
+            <motion.div initial={{width:0}} animate={{width:`${s.target>0?Math.min(100,(n/s.target)*100):0}%`}} transition={{type:"spring",stiffness:200,damping:28}} style={{height:4,borderRadius:2,background:c}}/>
+          </div>
+        </div>
+      ))}
+      <div style={{fontSize:9.5,color:T.label,lineHeight:1.55,margin:"14px 0 16px"}}>
+        Each locked creator counts four milestones — locked, concept in, video in, post live. Update them on the Deliverables tab.
+      </div>
+      <div style={{display:"flex"}}><div style={{flex:1}}/><Btn variant="ghost" onClick={onClose}>Close</Btn></div>
+    </motion.div>
+  </div>);
 }
 
 // ── DELIVERABLE MULTISELECT ───────────────────────────────────────────────────
 function DelvSelect({value=[],onChange}){const t=d=>onChange(value.includes(d)?value.filter(x=>x!==d):[...value,d]);return(<div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:2}}>{IM_DELIVERABLES.map(d=>{const on=value.includes(d);return <button key={d} onClick={()=>t(d)} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{d}</button>;})}</div>);}
 
+// ── NICHE MULTISELECT ────────────────────────────────────────────────────────
+// Same chip pattern as DelvSelect, plus a free-text row for niches we don't
+// have a preset for. Anything typed goes through normalizeNiche() first, and a
+// typed value that matches an existing preset or an already-picked custom niche
+// (case-insensitively) selects that one rather than adding a twin — the
+// Generate matcher compares niches by exact string, so near-duplicates would
+// quietly stop matching creators.
+function NicheSelect({value=[],onChange}){
+  const [draft,setDraft]=useState("");
+  const norm=normalizeNiche(draft);
+  const all=[...NICHES,...value.filter(n=>!NICHES.includes(n))];
+  const existing=norm?all.find(n=>n.toLowerCase()===norm.toLowerCase()):null;
+  const already=!!existing&&value.includes(existing);
+  const toggle=n=>onChange(value.includes(n)?value.filter(x=>x!==n):[...value,n]);
+  const add=()=>{
+    if(!norm)return;
+    const n=existing||norm;
+    if(!value.includes(n))onChange([...value,n]);
+    setDraft("");
+  };
+  return(<div>
+    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:2}}>
+      {all.map(n=>{
+        const on=value.includes(n),custom=!NICHES.includes(n);
+        return <button key={n} onClick={()=>toggle(n)} title={custom?"Custom niche — click to remove":undefined} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{n}{custom&&on&&<span style={{marginLeft:5,opacity:0.6}}>×</span>}</button>;
+      })}
+    </div>
+    <div style={{display:"flex",gap:8,marginTop:8,alignItems:"center"}}>
+      <input value={draft} maxLength={24}
+        onChange={e=>setDraft(e.target.value)}
+        onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();add();}}}
+        placeholder="+ Other niche…" style={{...INP,resize:"none",flex:1}}/>
+      <Btn variant="ghost" onClick={add} disabled={!norm||already}>Add</Btn>
+    </div>
+    {norm&&(already
+      ? <div style={{fontSize:9,color:T.sub,marginTop:4}}>"{existing}" is already selected.</div>
+      : norm!==draft.trim()&&<div style={{fontSize:9,color:T.sub,marginTop:4}}>Will be added as "{norm}".</div>)}
+  </div>);
+}
+
+// ── CREATOR BUDGET FIELD (New Campaign → Commercial) ─────────────────────────
+// The creator budget is the slice of the total that actually pays creators;
+// whatever is left is the agency's. Teams arrive at it both ways — "60% of the
+// budget" when pricing off a rate card, a fixed rupee number when the client
+// has already carved it out — so the field accepts either and always shows the
+// other, plus the per-head split the shortlist will be built against.
+const clampPct = v => Math.min(100, Math.max(0, parseFloat(v) || 0));
+// Resolve the two input modes down to the one number that gets stored.
+const resolveCreatorBudget = (f, budget) =>
+  f.creatorBudgetMode === "amount"
+    ? (parseInt(f.creatorBudgetAmt) || 0)
+    : Math.round(budget * clampPct(f.creatorBudgetPct) / 100);
+
+function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAgency}){
+  const isPct = mode === "pct";
+  const value = resolveCreatorBudget({creatorBudgetMode:mode,creatorBudgetPct:pct,creatorBudgetAmt:amount}, budget);
+  const effPct = budget > 0 ? (value / budget) * 100 : 0;
+  const per    = numCreators > 0 ? Math.round(value / numCreators) : 0;
+  const over   = value > budget;
+  const agency = budget - value;
+  // One slice per creator up to 12 — past that the hairlines read as noise,
+  // so the bar collapses to a single block and the "× N" label carries it.
+  const slices = numCreators > 0 && numCreators <= 12 ? numCreators : 1;
+  const seg = on => ({padding:"4px 12px",borderRadius:6,fontSize:10,fontWeight:600,fontFamily:SF,cursor:"pointer",border:"none",transition:"all 0.15s",background:on?T.surface:"transparent",color:on?T.text:T.label,boxShadow:on?"0 1px 2px rgba(0,0,0,0.08)":"none"});
+  return(<div style={{marginBottom:14}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+      <Lbl>Creator budget *</Lbl>
+      <div style={{display:"flex",gap:2,padding:2,borderRadius:8,background:T.mute}}>
+        <button onClick={()=>onChange({creatorBudgetMode:"pct"})}    style={seg(isPct)}>% of budget</button>
+        <button onClick={()=>onChange({creatorBudgetMode:"amount"})} style={seg(!isPct)}>₹ amount</button>
+      </div>
+    </div>
+    <div style={{display:"flex",alignItems:"center",gap:10}}>
+      {isPct
+        ? <div style={{position:"relative",width:120,flexShrink:0}}>
+            <input type="number" min={0} max={100} step={5} value={pct} onChange={e=>onChange({creatorBudgetPct:e.target.value})} style={{...INP,resize:"none",paddingRight:26}}/>
+            <span style={{position:"absolute",right:11,top:"50%",transform:"translateY(-50%)",fontSize:11,color:T.label,pointerEvents:"none"}}>%</span>
+          </div>
+        : <MoneyInput value={amount} onChange={v=>onChange({creatorBudgetAmt:v})} placeholder="e.g. 7,50,000" style={{...INP,resize:"none",width:150,flexShrink:0}}/>}
+      <span style={{fontSize:11,color:budget>0?T.text:T.label,fontFamily:SF}}>
+        {budget>0
+          ? (isPct ? `= ${fmtINR(value)} of ${fmtINR(budget)}` : `= ${effPct.toFixed(1)}% of ${fmtINR(budget)}`)
+          : "Enter the total budget first"}
+      </span>
+    </div>
+    {isPct&&<div style={{display:"flex",gap:6,marginTop:8}}>{[50,60,70,75].map(p=>{
+      const on=clampPct(pct)===p;
+      return <button key={p} onClick={()=>onChange({creatorBudgetPct:p})} style={{padding:"3px 10px",borderRadius:20,fontSize:10,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:T.sub,border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{p}%</button>;
+    })}</div>}
+    {/* Allocation bar — the creator share split into one block per creator,
+        with the agency remainder trailing it. Makes "where does the money go"
+        legible at a glance instead of only as two numbers. */}
+    {budget>0&&!over&&<div style={{marginTop:10}}>
+      <div style={{display:"flex",height:8,borderRadius:4,overflow:"hidden",background:T.mute}}>
+        <div style={{width:`${effPct}%`,flexShrink:0,display:"flex",gap:2,overflow:"hidden",transition:"width 0.25s"}}>
+          {Array.from({length:slices}).map((_,i)=><div key={i} style={{flex:1,background:T.accent,borderRadius:2,minWidth:2}}/>)}
+        </div>
+        <div style={{flex:1,minWidth:0,marginLeft:2,background:`${T.gold}55`,borderRadius:2}}/>
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:9.5,fontFamily:SF}}>
+        <span style={{color:T.sub}}>≈ <strong style={{color:T.text,fontWeight:600}}>{fmtINR(per)}</strong> per creator × {numCreators||0}</span>
+        {showAgency&&<span style={{color:T.label}}>Agency {fmtINR(agency)} · {(100-effPct).toFixed(0)}%</span>}
+      </div>
+    </div>}
+    {over&&<div style={{fontSize:9.5,color:T.red,marginTop:6}}>Creator budget can't exceed the total budget of {fmtINR(budget)}.</div>}
+    {budget>0&&!over&&value===0&&<div style={{fontSize:9.5,color:T.red,marginTop:6}}>Set how much of the budget goes to creators.</div>}
+  </div>);
+}
+
 // ── CAMPAIGN CARD (grid tile) ─────────────────────────────────────────────────
 function CampCard({camp,onClick,role}){
-  const col=T.sc[camp.stage]||T.sub,pl=PIPELINE.find(p=>p.id===camp.stage)||PIPELINE[0];
+  const col=viewCol(camp.stage,role),pl=viewPl(camp.stage,role);
   const am=getM(camp.amId),cm=getM(camp.cmId),ea=getM(camp.eaId);
   const es=endStatus(camp.end,camp.stage);
   return(
@@ -581,7 +1065,7 @@ function CampCard({camp,onClick,role}){
       <div style={{position:"absolute",top:0,left:0,right:0,height:3,background:col}}/>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4,marginTop:2}}>
         <span style={{fontSize:14,fontWeight:600,color:"#1D1D1F",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,letterSpacing:"-0.02em",fontFamily:SF}}>{camp.name}</span>
-        <span style={{fontSize:10,color:"#6E6E73",marginLeft:8,flexShrink:0,fontFamily:SF}}>{camp.progress}%</span>
+        <span style={{fontSize:10,color:"#6E6E73",marginLeft:8,flexShrink:0,fontFamily:SF}}>{progressOf(camp)}%</span>
       </div>
       <div style={{fontSize:11.5,color:"#6E6E73",marginBottom:12,fontFamily:SF}}>{camp.client}{camp.region?` · ${camp.region}`:""}</div>
       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
@@ -589,7 +1073,7 @@ function CampCard({camp,onClick,role}){
         <EndPill es={es}/>
         {canFin(role)&&<span style={{marginLeft:"auto",fontSize:11.5,color:"#1D1D1F",fontFamily:SF,fontWeight:600}}>{fmtINR(camp.budget)}</span>}
       </div>
-      <MiniPipe stage={camp.stage}/>
+      <MiniPipe camp={camp}/>
       {(am||cm||ea)&&<div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>{[{m:am,l:"AM"},{m:cm,l:"CM"},{m:ea,l:"EA"}].filter(x=>x.m).map(({m,l})=><div key={l} style={{display:"flex",alignItems:"center",gap:4}}><Av init={m.avatar} size={18}/><span style={{fontSize:9,color:"#6E6E73",fontFamily:SF}}>{l}</span></div>)}</div>}
     </motion.div>
   );
@@ -646,7 +1130,10 @@ function CampaignGrid({campaigns,role,onSelect,brandName}){
 }
 
 // ── FILTER TABS (sliding pill indicator) ──────────────────────────────────────
-const STAGE_FILTERS=[["all","All"],["intake","Intake"],["planning","Plan"],["execution","Exec"],["delivery","Done"],["ended","Ended"]];
+// Grid filter groups — the seven stages collapsed into the four phases the
+// team actually talks in. Declared next to STAGE_FILTERS so the two can't drift.
+const STAGE_GROUPS={setup:["draft","brief_log"],commercial:["po","advance"],execution:["execution"],done:["reporting","completed"]};
+const STAGE_FILTERS=[["all","All"],["setup","Setup"],["commercial","PO"],["execution","Exec"],["done","Done"],["ended","Ended"]];
 function FilterTabs({value,onChange,endedCount=0}){
   return(
     <div style={{display:"flex",background:"rgba(0,0,0,0.04)",borderRadius:8,padding:2,gap:1}}>
@@ -796,6 +1283,57 @@ function ExtendEndModal({camp,onConfirm,onCancel}){
   </div>);
 }
 
+// ── CLIENT PO MODAL ──────────────────────────────────────────────────────────
+// The PO stage used to advance on a bare "Mark Purchase Order Raised" button:
+// an assertion that a PO existed somewhere, creating no record, no number and
+// no amount. Meanwhile Billing had a real PO model that the campaign never
+// touched — which is how client PO records ended up holding *vendor* PO
+// numbers, the only route to one being to staple a number onto an invoice
+// after the fact.
+//
+// Now the stage advances because the PO exists. This collects it, writes the
+// client PO, links it to the campaign's invoice, and the transition follows.
+function ClientPOModal({camp,invoiceAmount,onConfirm,onCancel}){
+  const [poNumber,setPo]=useState("");
+  const [amount,setAmount]=useState(String(invoiceAmount||camp.budget||0));
+  const [date,setDate]=useState(today());
+  const amt=parseInt(String(amount).replace(/[^\d]/g,""))||0;
+  const ok=!!poNumber.trim()&&amt>0&&ISO_DATE.test(date);
+  // Not a blocker — a single PO can legitimately cover several campaigns, or
+  // be raised for less while the rest follows. It just shouldn't pass silently.
+  const mismatch=invoiceAmount>0&&amt!==invoiceAmount;
+
+  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(420px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
+      <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Record client Purchase Order</div>
+      <div style={{fontSize:11,color:T.sub,lineHeight:1.6,marginBottom:14}}>
+        The PO <strong style={{color:T.text}}>{camp.client}</strong> raised against <strong style={{color:T.text}}>{camp.name}</strong>.
+        Saving it moves the campaign to Advance and links the PO to its invoice in Billing.
+      </div>
+
+      <Lbl style={{display:"block",marginBottom:5}}>Client PO number</Lbl>
+      <input value={poNumber} onChange={e=>setPo(e.target.value)} placeholder="as it appears on the client's PO"
+        style={{...INP,marginBottom:12}}/>
+
+      <Lbl style={{display:"block",marginBottom:5}}>PO value</Lbl>
+      <MoneyInput value={amt} onChange={setAmount} style={{...INP,marginBottom:mismatch?5:12}}/>
+      {mismatch&&<div style={{fontSize:10,color:T.amber,marginBottom:12}}>
+        Invoice for this campaign is {fmtINR(invoiceAmount)} — the PO authorises {fmtINR(amt)}.
+      </div>}
+
+      <Lbl style={{display:"block",marginBottom:5}}>PO date</Lbl>
+      <DateInput value={date} onChange={setDate} style={{...INP,marginBottom:16}}/>
+
+      <div style={{display:"flex",gap:8}}>
+        <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
+        <div style={{flex:1}}/>
+        <Btn variant="primary" disabled={!ok} onClick={()=>ok&&onConfirm({poNumber:poNumber.trim(),amount:amt,receivedDate:date})}>Save PO</Btn>
+      </div>
+    </motion.div>
+  </div>);
+}
+
 // ── ADD CREATOR MODAL ─────────────────────────────────────────────────────────
 // Doubles as the "Edit Creator" form (PERMS.editCreatorDetails): pass `editing` (an existing
 // creator object) to prefill every field; onAdd then receives the merged
@@ -813,7 +1351,7 @@ export function AddCreatorModal({onAdd,onClose,editing=null}){
     vendorCode:editing?.payType==="vendor"?(editing.payId||""):""
   });
   const [askingPrice,setAskingPrice]=useState(editing?.askingPrice!=null?String(editing.askingPrice):"");
-  const [fee,setFee]=useState(editing?.fee!=null?String(editing.fee):""); // negotiated cost
+  const [cost,setCost]=useState(editing?.cost!=null?String(editing.cost):"");
   const [fetching,setFetching]=useState(false);
   const [fetchErr,setFetchErr]=useState(null);
   const [igFetched,setIgFetched]=useState(null);
@@ -879,7 +1417,7 @@ export function AddCreatorModal({onAdd,onClose,editing=null}){
         name:f.name, platform:f.platform, handle:f.handle, igUrl:f.igUrl||null,
         phone:f.phone||null, niche:f.niche, state:f.state||null,
         followers:f.followers, avgLikes:f.avgLikes||null, avgER:parseFloat(f.avgER)||null,
-        askingPrice:parseInt(askingPrice)||null, fee:parseInt(fee)||0,
+        askingPrice:parseInt(askingPrice)||null, cost:parseInt(cost)||0,
         payType:f.payType||null, payId:payId||null,
         personalDetails:{...editing.personalDetails,...personalDetails},
       });
@@ -890,13 +1428,12 @@ export function AddCreatorModal({onAdd,onClose,editing=null}){
       ...f,
       avgER:parseFloat(f.avgER)||null,
       askingPrice:parseInt(askingPrice)||null,
-      negotiatedCost:parseInt(fee)||0,
       igFetched,
       state:f.state||null,
       payType:f.payType||null,
       payId:payId||null,
       personalDetails
-    },parseInt(fee)||0));
+    },parseInt(cost)||0));
     onClose();
   };
 
@@ -985,7 +1522,7 @@ export function AddCreatorModal({onAdd,onClose,editing=null}){
         <Lbl style={{display:"block",marginBottom:10}}>Commercials</Lbl>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
           <div><Lbl style={{display:"block",marginBottom:4}}>Asking Price (₹)</Lbl><MoneyInput value={askingPrice} onChange={setAskingPrice} placeholder="e.g. 90,000" style={{...INP,resize:"none"}}/></div>
-          <div><Lbl style={{display:"block",marginBottom:4}}>Negotiated Cost (₹)</Lbl><MoneyInput value={fee} onChange={setFee} placeholder="e.g. 75,000" style={{...INP,resize:"none"}}/></div>
+          <div><Lbl style={{display:"block",marginBottom:4}}>Negotiated Cost (₹)</Lbl><MoneyInput value={cost} onChange={setCost} placeholder="e.g. 75,000" style={{...INP,resize:"none"}}/></div>
         </div>
         <Hr style={{margin:"14px 0"}}/>
         <Lbl style={{display:"block",marginBottom:10}}>Payment</Lbl>
@@ -1143,7 +1680,7 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
         <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div>
             <div style={{fontFamily:"'Newsreader',serif",fontSize:17,color:T.text,fontStyle:"italic"}}>Invoice Details — {creator.name}</div>
-            <div style={{fontSize:9.5,color:T.sub,marginTop:2}}>{PAYMENT_TYPES.find(p=>p.id===creator.payType)?.label||"—"} · {creator.handle} · {fmtINR(creator.fee)}</div>
+            <div style={{fontSize:9.5,color:T.sub,marginTop:2}}>{PAYMENT_TYPES.find(p=>p.id===creator.payType)?.label||"—"} · {creator.handle} · {fmtINR(costOf(creator))}</div>
           </div>
           <button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button>
         </div>
@@ -1184,9 +1721,9 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const [showAdd,setShowAdd]=useState(false);
   const [editTarget,setEditTarget]=useState(null);       // creator being edited (see PERMS.editCreatorDetails)
   const [invoiceTarget,setInvoiceTarget]=useState(null); // creator to invoice
-  const required=camp.numReq||5,flagged=genRounds>=4;
-  const cb=camp.creatorBudget||camp.budget*0.6;
-  const totalFee=creators.reduce((s,c)=>s+(c.fee||0),0);
+  const required=numReqOf(camp),flagged=genRounds>=4;
+  const cb=creatorBudgetOf(camp),perCr=perCreatorOf(camp);
+  const totalFee=creators.reduce((s,c)=>s+costOf(c),0);
   const over=totalFee>cb;
   const canEdit=["ea","cm","am","pcm","founder"].includes(role);
   const sync=next=>{setCreators(next);onUpdateCreators(next);};
@@ -1194,7 +1731,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const generate=()=>{if(flagged||generating)return;setGenerating(true);setTimeout(()=>{const taken=new Set(creators.map(c=>c.dbId).filter(Boolean));
     // Restrict suggestions to the campaign's niche (same/similar). If nothing
     // in the DB matches, fall back to the full pool so Generate is never empty.
-    const inNiche=CREATOR_DB.filter(c=>!taken.has(c.id)&&nicheMatches(camp.niche,c.niche));
+    const inNiche=CREATOR_DB.filter(c=>!taken.has(c.id)&&nicheMatches(nichesOf(camp),c.niche));
     const base=inNiche.length?inNiche:CREATOR_DB.filter(c=>!taken.has(c.id));
     const pool=base.slice(0,required*2).map(c=>mkCreator(c));setSuggested(pool);setGenRounds(r=>r+1);setGenerating(false);},900);};
   const confirmRemove=(reason,note)=>{API.removeCreator(camp.id,removeTarget._id,reason,note);sync(creators.filter(c=>c._id!==removeTarget._id));setRemoveTarget(null);};
@@ -1202,7 +1739,16 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const thS={fontSize:9,fontWeight:600,color:T.label,textTransform:"uppercase",letterSpacing:"0.07em",padding:"8px 10px",whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`,textAlign:"left",background:T.raised};
   const tdS={padding:"8px 10px",borderBottom:`1px solid ${T.border}`,fontSize:11,color:T.sub,verticalAlign:"middle",whiteSpace:"nowrap"};
   return(<div>
-    {canFin(role)&&<div style={{marginBottom:18}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}><Lbl>Creator Budget</Lbl><span style={{fontSize:10.5,color:over?T.red:T.sub}}>{fmtINR(totalFee)} of {fmtINR(cb)}</span></div><div style={{height:2,background:T.mute,borderRadius:1}}><div style={{height:2,borderRadius:1,background:over?T.red:T.green,width:`${Math.min((totalFee/cb)*100,100)}%`,transition:"width 0.3s"}}/></div>{over&&<div style={{fontSize:9.5,color:T.red,marginTop:3}}>{fmtINR(totalFee-cb)} over budget</div>}</div>}
+    {canCrFin(role)&&<div style={{marginBottom:18}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}><Lbl>Creator Budget</Lbl><span style={{fontSize:10.5,color:over?T.red:T.sub}}>{fmtINR(totalFee)} of {fmtINR(cb)}</span></div>
+      <div style={{height:2,background:T.mute,borderRadius:1}}><div style={{height:2,borderRadius:1,background:over?T.red:T.green,width:`${cb>0?Math.min((totalFee/cb)*100,100):0}%`,transition:"width 0.3s"}}/></div>
+      {/* The per-head target set at creation — what a shortlister needs in view
+          while negotiating, next to what's actually been committed so far. */}
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:4,fontSize:9.5}}>
+        <span style={{color:T.label}}>≈ {fmtINR(perCr)} per creator target · {required} required</span>
+        <span style={{color:over?T.red:T.sub}}>{over?`${fmtINR(totalFee-cb)} over budget`:`${fmtINR(cb-totalFee)} left`}</span>
+      </div>
+    </div>}
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
       <div><Lbl>Creators</Lbl><span style={{fontSize:9,color:T.sub,marginLeft:8}}>{creators.length} of {required} required</span>{camp.sentToClient&&<span style={{fontSize:9,color:T.green,marginLeft:8}}>&middot; sent to client</span>}</div>
       <div style={{display:"flex",gap:6,alignItems:"center"}}>
@@ -1216,7 +1762,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
     <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}>
       <table style={{width:"100%",borderCollapse:"collapse",minWidth:1080}}>
         <thead><tr>
-          {CREATOR_COLS.filter(c=>c.key!=="fee"||canFin(role)).filter(c=>!["payType","payId"].includes(c.key)||canFin(role)).map(col=>(
+          {CREATOR_COLS.filter(c=>c.key!=="cost"||canCrFin(role)).filter(c=>!["payType","payId"].includes(c.key)||canFin(role)).map(col=>(
             <th key={col.key} title={col.cv?undefined:"Internal only"} style={{...thS,width:col.w,minWidth:col.w}}>{col.label}</th>
           ))}
           {(canEdit||canFin(role))&&<th style={{...thS,width:130}}></th>}
@@ -1225,7 +1771,6 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
           {creators.length===0&&<tr><td colSpan={12} style={{...tdS,textAlign:"center",color:T.label,padding:"24px"}}>No creators yet. Generate or add manually.</td></tr>}
           {creators.map((cr,i)=>{
             const stCol=CR_COLOR[cr.status]||T.sub;
-            const cSt=cr.concept?.status||"yet_to_receive",dSt=cr.demo?.status||"yet_to_receive";
             return(<tr key={cr._id} style={{background:i%2===0?"transparent":T.hover}}>
               <td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={22}/><div><div style={{fontSize:11,fontWeight:500,color:T.text}}>{cr.name}</div><div style={{fontSize:9,color:T.label}}>{cr.handle}</div></div></div></td>
               <td style={tdS}>{cr.platform}</td>
@@ -1233,10 +1778,24 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
               <td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td>
               <td style={tdS}>{cr.niche||"—"}</td>
               <td style={tdS}>{cr.state||"—"}</td>
-              <td style={tdS}>{canEdit?<select value={cr.status} onChange={e=>patch(cr._id,{status:e.target.value})} style={{background:"transparent",border:"none",color:stCol,fontSize:10.5,fontFamily:"'Sora'",outline:"none",cursor:"pointer",appearance:"none",WebkitAppearance:"none",padding:"2px 4px"}}>{CR_JOURNEY.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>:<span style={{fontSize:10.5,color:stCol}}>{CR_JOURNEY.find(s=>s.id===cr.status)?.label}</span>}</td>
-              <td style={tdS}><span style={{fontSize:10,color:ASSET_COLOR[cSt],fontWeight:500}}>{ASSET_STATUSES.find(s=>s.id===cSt)?.label}</span></td>
-              <td style={tdS}><span style={{fontSize:10,color:ASSET_COLOR[dSt],fontWeight:500}}>{ASSET_STATUSES.find(s=>s.id===dSt)?.label}</span></td>
-              {canFin(role)&&<td style={tdS}>{canEdit?<MoneyInput value={cr.fee||0} onChange={v=>patch(cr._id,{fee:parseInt(v)||0})} style={{width:76,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}/>:fmtINR(cr.fee)}</td>}
+              {/* Reads as an interactive control, not a label. With no border,
+                  no background and appearance:none it was indistinguishable
+                  from the plain text in every other cell, so nobody could tell
+                  the journey stage was changeable from here. */}
+              <td style={tdS}>{canEdit
+                ? <span style={{position:"relative",display:"inline-block"}}>
+                    <select value={cr.status} onChange={e=>patch(cr._id,{status:e.target.value})}
+                      title="Change shortlist status"
+                      style={{appearance:"none",WebkitAppearance:"none",cursor:"pointer",outline:"none",
+                        fontSize:10.5,fontWeight:600,fontFamily:"'Sora'",color:stCol,
+                        background:`${stCol}12`,border:`1px solid ${stCol}40`,borderRadius:20,
+                        padding:"3px 22px 3px 10px"}}>
+                      {CR_JOURNEY.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}
+                    </select>
+                    <span style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",pointerEvents:"none",fontSize:7,color:stCol}}>▼</span>
+                  </span>
+                : <span style={{fontSize:10.5,color:stCol}}>{CR_JOURNEY.find(s=>s.id===cr.status)?.label}</span>}</td>
+              {canCrFin(role)&&<td style={tdS}>{canEdit?<CostCell value={costOf(cr)} onCommit={n=>patch(cr._id,{cost:n})} style={{width:76,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}/>:fmtINR(costOf(cr))}</td>}
               {canFin(role)&&<td style={tdS}>{canEdit?<select value={cr.payType||""} onChange={e=>patch(cr._id,{payType:e.target.value||null,payId:null})} style={{background:"transparent",border:`1px solid ${T.border}`,color:cr.payType?T.text:T.label,fontSize:10,fontFamily:"'Sora'",outline:"none",cursor:"pointer",borderRadius:4,padding:"3px 5px"}}>{PAYMENT_TYPES.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select>:<span style={{fontSize:10,color:T.text}}>{PAYMENT_TYPES.find(p=>p.id===cr.payType)?.label||"—"}</span>}</td>}
               {(canEdit||canFin(role))&&<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}>
                 {can(role,"editCreatorDetails")&&<button onClick={()=>setEditTarget(cr)} title="Edit all creator details" style={{fontSize:9,color:T.sub,background:"transparent",border:`1px solid ${T.borderMid}`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Edit</button>}
@@ -1252,7 +1811,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
     </div>
     {canEdit&&creators.length>=required&&!camp.sentToClient&&<div style={{marginTop:14}}><Hr style={{marginBottom:12}}/><Btn variant="primary" onClick={()=>onUpdateCreators(creators,"send_to_client")}>Send creator list to client</Btn></div>}
     {suggested.length>0&&<div style={{marginTop:20}}><Hr style={{marginBottom:14}}/><div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}><Lbl>Suggested — Round {genRounds}</Lbl><span style={{fontSize:9,color:T.sub}}>{required-creators.length} spots remaining</span></div>
-      <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:500}}><thead><tr>{["Creator","Platform","Followers","Avg ER%","Niche","Est. Fee",""].map(h=><th key={h} style={{...thS}}>{h}</th>)}</tr></thead><tbody>{suggested.map((cr,i)=><tr key={cr._id} style={{opacity:creators.length>=required?0.35:1}}><td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={20}/><div><div style={{fontSize:11,fontWeight:500}}>{cr.name}</div><div style={{fontSize:9,color:T.label}}>{cr.handle}</div></div></div></td><td style={tdS}>{cr.platform}</td><td style={tdS}>{fmtNum(cr.followers)}</td><td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td><td style={tdS}>{cr.niche||"—"}</td>{canFin(role)&&<td style={tdS}>{fmtINR(cr.fee)}</td>}<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}><Btn variant="ghost" onClick={()=>addFromSugg(cr)} disabled={creators.length>=required} style={{fontSize:9,padding:"3px 9px"}}>Add</Btn><Btn variant="subtle" onClick={()=>setSuggested(p=>p.filter(c=>c._id!==cr._id))} style={{fontSize:9,padding:"3px 9px"}}>Skip</Btn></div></td></tr>)}</tbody></table></div>
+      <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:500}}><thead><tr>{["Creator","Platform","Followers","Avg ER%","Niche",...(canCrFin(role)?["Est. Cost"]:[]),""].map(h=><th key={h} style={{...thS}}>{h}</th>)}</tr></thead><tbody>{suggested.map((cr,i)=><tr key={cr._id} style={{opacity:creators.length>=required?0.35:1}}><td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={20}/><div><div style={{fontSize:11,fontWeight:500}}>{cr.name}</div><div style={{fontSize:9,color:T.label}}>{cr.handle}</div></div></div></td><td style={tdS}>{cr.platform}</td><td style={tdS}>{fmtNum(cr.followers)}</td><td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td><td style={tdS}>{cr.niche||"—"}</td>{canCrFin(role)&&<td style={tdS}>{fmtINR(costOf(cr))}</td>}<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}><Btn variant="ghost" onClick={()=>addFromSugg(cr)} disabled={creators.length>=required} style={{fontSize:9,padding:"3px 9px"}}>Add</Btn><Btn variant="subtle" onClick={()=>setSuggested(p=>p.filter(c=>c._id!==cr._id))} style={{fontSize:9,padding:"3px 9px"}}>Skip</Btn></div></td></tr>)}</tbody></table></div>
     </div>}
     {removeTarget&&<RemoveModal creator={removeTarget} onConfirm={confirmRemove} onCancel={()=>setRemoveTarget(null)}/>}
     {showAdd&&<AddCreatorModal onAdd={cr=>sync([...creators,cr])} onClose={()=>setShowAdd(false)}/>}
@@ -1263,9 +1822,61 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   </div>);
 }
 
+// ── DRAFT-ON-BLUR MONEY CELL ─────────────────────────────────────────────────
+// Same reasoning as AssetCell below: a free-text field must not commit per
+// keystroke. Typing "1,50,000" through the raw MoneyInput fired six full
+// campaign PATCHes plus — for a locked creator — six expense PATCHes, all
+// racing each other, and every intermediate value ("1", "15", "150"…) was
+// briefly the creator's real committed cost in Billing.
+function CostCell({value,onCommit,style}){
+  const [draft,setDraft]=useState(String(value ?? ""));
+  useEffect(()=>{setDraft(String(value ?? ""));},[value]);
+  const commit=()=>{const n=parseInt(draft)||0; if(n!==value) onCommit(n);};
+  return <MoneyInput value={draft} onChange={setDraft} onBlur={commit}
+    onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}} style={style}/>;
+}
+
+// ── ASSET CELL (Concept / Demo) ──────────────────────────────────────────────
+// The two columns were duplicated blocks differing only by label and patcher.
+//
+// The file link is now always present, at every status — the link IS the
+// deliverable, so hiding the field until the status happened to be Received or
+// Rework meant an approved asset had nowhere to record where it lives.
+//
+// The input holds a local draft and commits on blur rather than on change.
+// Committing per keystroke fired a full campaign PATCH per character — dozens
+// of round trips to type one Drive URL, each racing the last.
+function AssetCell({label,asset,canEdit,onPatch,style={}}){
+  const [draft,setDraft]=useState(asset.fileLink||"");
+  // Re-sync when the campaign or creator underneath changes, so the box never
+  // shows a stale draft from a previously selected row.
+  useEffect(()=>{setDraft(asset.fileLink||"");},[asset.fileLink]);
+  const commit=()=>{
+    const v=draft.trim();
+    if(v!==(asset.fileLink||"")) onPatch({fileLink:v||null});
+  };
+  const stS=st=>({fontSize:10,color:ASSET_COLOR[st]||T.sub,fontWeight:500,padding:"2px 6px",background:`${ASSET_COLOR[st]||T.sub}12`,borderRadius:3});
+  return(<div style={{padding:"12px 14px",...style}}>
+    <Lbl style={{display:"block",marginBottom:8}}>{label}</Lbl>
+    {canEdit
+      ? <select value={asset.status} onChange={e=>onPatch({status:e.target.value})} style={{background:"transparent",border:`1px solid ${T.border}`,color:ASSET_COLOR[asset.status]||T.sub,fontSize:10,fontFamily:"'Sora'",outline:"none",borderRadius:4,padding:"3px 6px",width:"100%",marginBottom:8}}>{ASSET_STATUSES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>
+      : <span style={stS(asset.status)}>{ASSET_STATUSES.find(s=>s.id===asset.status)?.label}</span>}
+    {canEdit&&<input value={draft} onChange={e=>setDraft(e.target.value)} onBlur={commit}
+      onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}}
+      placeholder="Attach file link…" style={{...INP,fontSize:10,padding:"5px 8px",resize:"none"}}/>}
+    {asset.fileLink
+      ? <a href={extUrl(asset.fileLink)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:4}}>Open file →</a>
+      : <div style={{fontSize:9,color:T.label,marginTop:4,fontStyle:"italic"}}>No link attached</div>}
+  </div>);
+}
+
 // ── DELIVERABLES TAB ─────────────────────────────────────────────────────────
 function TabDeliverables({camp,role,onUpdateCreators}){
+  // `creators` stays the FULL list so edits below splice back into the real
+  // array; `rows` is what actually renders. Filtering the state itself would
+  // drop every non-locked creator on the first save.
   const [creators,setCreators]=useState(camp.creators||[]);
+  const rows=creators.filter(isLocked);
   const [fetching,setFetching]=useState({});
   const canEdit=["ea","cm","am","pcm","founder"].includes(role);
   const sync=next=>{setCreators(next);onUpdateCreators(next);};
@@ -1284,61 +1895,55 @@ function TabDeliverables({camp,role,onUpdateCreators}){
     setFetching(f=>({...f,[id]:false}));
   };
   // Aggregates
-  const wd=creators.filter(c=>c.tracking?.views!=null);
+  const wd=rows.filter(c=>c.tracking?.views!=null);
   const totV=wd.reduce((s,c)=>s+(c.tracking.views||0),0);
   const totL=wd.reduce((s,c)=>s+(c.tracking.likes||0),0);
   const totC=wd.reduce((s,c)=>s+(c.tracking.comments||0),0);
   const totF=wd.reduce((s,c)=>s+(c.tracking.forwards||0),0);
-  const totFee=creators.reduce((s,c)=>s+(c.fee||0),0);
-  const cpv=totV>0?(totFee/totV):null;
+  const totCost=rows.reduce((s,c)=>s+costOf(c),0);
+  const cpv=totV>0?(totCost/totV):null;
   const er=totV>0?(((totL+totC+totF)/totV)*100):null;
   const ps=wd.filter(c=>c.tracking.positivityScore!=null).map(c=>c.tracking.positivityScore);
   const avgPos=ps.length>0?Math.round(ps.reduce((s,n)=>s+n,0)/ps.length):null;
   const agg=[
     {l:"Total Views",v:fmtNum(totV||null),show:true},
     {l:"Total Likes",v:fmtNum(totL||null),show:true},
-    {l:"CPV",v:cpv!=null?`₹${cpv.toFixed(2)}`:"—",show:canFin(role)},
+    {l:"CPV",v:cpv!=null?`₹${cpv.toFixed(2)}`:"—",show:canCrFin(role)},  // creator fees ÷ views — creator-side, same band as the fees themselves
     {l:"Avg ER",v:er!=null?`${er.toFixed(1)}%`:"—",show:true},
     {l:"Forwards",v:fmtNum(totF||null),show:true},
     {l:"% Positive",v:avgPos!=null?`${avgPos}%`:"—",show:true},
   ].filter(s=>s.show);
-  const stS=st=>({fontSize:10,color:ASSET_COLOR[st]||T.sub,fontWeight:500,padding:"2px 6px",background:`${ASSET_COLOR[st]||T.sub}12`,borderRadius:3});
   return(<div>
     {wd.length>0&&<div style={{marginBottom:20}}>
       <div style={{display:"grid",gridTemplateColumns:`repeat(${agg.length},1fr)`,gap:8,marginBottom:6}}>
         {agg.map(s=><div key={s.l} style={{padding:"12px 14px",background:T.raised,borderRadius:7,border:`1px solid ${T.border}`}}><div style={{fontSize:8.5,color:T.label,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.07em",fontWeight:600}}>{s.l}</div><div style={{fontSize:18,fontWeight:600,color:T.text,lineHeight:1}}>{s.v}</div></div>)}
       </div>
-      {wd.length<creators.length&&<div style={{fontSize:9,color:T.label}}>Based on {wd.length} of {creators.length} creator{creators.length!==1?"s":""} with live data.</div>}
+      {wd.length<rows.length&&<div style={{fontSize:9,color:T.label}}>Based on {wd.length} of {rows.length} creator{rows.length!==1?"s":""} with live data.</div>}
     </div>}
-    {creators.length===0&&<div style={{padding:"20px 0",color:T.label,fontSize:11,textAlign:"center"}}>No creators yet.</div>}
+    {rows.length===0&&<div style={{padding:"20px 0",color:T.label,fontSize:11,textAlign:"center"}}>
+      {creators.length===0
+        ? "No creators yet."
+        : `No locked creators yet — ${creators.length} shortlisted. Lock a creator on the Creators tab to start tracking deliverables.`}
+    </div>}
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
-      {creators.map(cr=>{
+      {rows.map(cr=>{
         const con=cr.concept||{status:"yet_to_receive",fileLink:null};
         const dem=cr.demo||{status:"yet_to_receive",fileLink:null};
         const liv=cr.live||{postUrl:null,postedDate:null};
+        const prof=profileUrl(cr);
         const trk=cr.tracking||{};
         const isFetch=!!fetching[cr._id];
         return(<div key={cr._id} style={{background:T.raised,borderRadius:8,border:`1px solid ${T.border}`,overflow:"hidden"}}>
           <div style={{padding:"11px 16px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
             <Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={26}/>
-            <div style={{flex:1}}><div style={{fontSize:12,fontWeight:500,color:T.text}}>{cr.name} <span style={{fontSize:9.5,color:T.label}}>{cr.handle}</span></div><div style={{fontSize:9.5,color:T.sub}}>{cr.platform}{cr.followers?` · ${fmtNum(cr.followers)}`:""}{ cr.avgER!=null?` · ${cr.avgER}% ER`:""}</div></div>
+            <div style={{flex:1}}><div style={{fontSize:12,fontWeight:500,color:T.text}}>{cr.name} {cr.handle&&(prof
+                ? <a href={prof} target="_blank" rel="noreferrer noopener" title={`Open ${cr.platform||"profile"} \u2192 ${cr.handle}`} style={{fontSize:9.5,color:T.accent,textDecoration:"underline",textUnderlineOffset:2}}>{cr.handle}</a>
+                : <span style={{fontSize:9.5,color:T.label}}>{cr.handle}</span>)}</div><div style={{fontSize:9.5,color:T.sub}}>{cr.platform}{cr.followers?` · ${fmtNum(cr.followers)}`:""}{ cr.avgER!=null?` · ${cr.avgER}% ER`:""}</div></div>
             <span style={{fontSize:9.5,color:CR_COLOR[cr.status]||T.sub,fontWeight:500}}>{CR_JOURNEY.find(s=>s.id===cr.status)?.label||cr.status}</span>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr"}}>
-            {/* Concept */}
-            <div style={{padding:"12px 14px",borderRight:`1px solid ${T.border}`}}>
-              <Lbl style={{display:"block",marginBottom:8}}>Concept</Lbl>
-              {canEdit?<select value={con.status} onChange={e=>pCon(cr._id,{status:e.target.value})} style={{background:"transparent",border:`1px solid ${T.border}`,color:ASSET_COLOR[con.status]||T.sub,fontSize:10,fontFamily:"'Sora'",outline:"none",borderRadius:4,padding:"3px 6px",width:"100%",marginBottom:needsLnk(con.status)?8:0}}>{ASSET_STATUSES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>:<span style={stS(con.status)}>{ASSET_STATUSES.find(s=>s.id===con.status)?.label}</span>}
-              {needsLnk(con.status)&&canEdit&&<><input value={con.fileLink||""} onChange={e=>pCon(cr._id,{fileLink:e.target.value})} placeholder="Attach file link…" style={{...INP,fontSize:10,padding:"5px 8px",resize:"none"}}/>{con.fileLink&&<a href={extUrl(con.fileLink)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:4}}>Open →</a>}</>}
-              {con.fileLink&&!needsLnk(con.status)&&<a href={extUrl(con.fileLink)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:6}}>Open file →</a>}
-            </div>
-            {/* Demo */}
-            <div style={{padding:"12px 14px",borderRight:`1px solid ${T.border}`}}>
-              <Lbl style={{display:"block",marginBottom:8}}>Demo Video</Lbl>
-              {canEdit?<select value={dem.status} onChange={e=>pDem(cr._id,{status:e.target.value})} style={{background:"transparent",border:`1px solid ${T.border}`,color:ASSET_COLOR[dem.status]||T.sub,fontSize:10,fontFamily:"'Sora'",outline:"none",borderRadius:4,padding:"3px 6px",width:"100%",marginBottom:needsLnk(dem.status)?8:0}}>{ASSET_STATUSES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>:<span style={stS(dem.status)}>{ASSET_STATUSES.find(s=>s.id===dem.status)?.label}</span>}
-              {needsLnk(dem.status)&&canEdit&&<><input value={dem.fileLink||""} onChange={e=>pDem(cr._id,{fileLink:e.target.value})} placeholder="Attach file link…" style={{...INP,fontSize:10,padding:"5px 8px",resize:"none"}}/>{dem.fileLink&&<a href={extUrl(dem.fileLink)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:4}}>Open →</a>}</>}
-              {dem.fileLink&&!needsLnk(dem.status)&&<a href={extUrl(dem.fileLink)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:6}}>Open file →</a>}
-            </div>
+            <AssetCell label="Concept"    asset={con} canEdit={canEdit} onPatch={o=>pCon(cr._id,o)} style={{borderRight:`1px solid ${T.border}`}}/>
+            <AssetCell label="Demo Video" asset={dem} canEdit={canEdit} onPatch={o=>pDem(cr._id,o)} style={{borderRight:`1px solid ${T.border}`}}/>
             {/* Live — unlocked once the demo video is received; URL must match the creator's platform */}
             <div style={{padding:"12px 14px",borderRight:`1px solid ${T.border}`}}>
               <Lbl style={{display:"block",marginBottom:8}}>Live</Lbl>
@@ -1371,53 +1976,204 @@ function TabDeliverables({camp,role,onUpdateCreators}){
 }
 
 // ── BRIEF TAB ────────────────────────────────────────────────────────────────
-function TabBrief({camp,role,onSaveBrief,onAction}){
-  const [editing,setEditing]=useState(false);
-  const [messages,setMessages]=useState(camp.brief.messages||"");
-  const [deliverables,setDeliverables]=useState(camp.brief.deliverables||[]);
-  const [bmNote,setBmNote]=useState(camp.amNote||"");
-  const [cmNote,setCmNote]=useState(camp.cmNote||"");
-  const isAM=["am","founder","pcm"].includes(role),isCM=["cm","pcm","founder"].includes(role);
-  const canAMEdit=isAM&&["draft","creator_shortlist"].includes(camp.stage);
-  const canCMRev=isCM&&["concept_submitted","internal_review"].includes(camp.stage);
-  const save=()=>{onSaveBrief({messages,deliverables});setEditing(false);};
+function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
+  // One field is editable at a time. `edit` holds the field key being edited
+  // and `draft` its working value — editing the whole brief at once made it
+  // unclear what a Save was about to write.
+  const [edit,setEdit]=useState(null);
+  const [draft,setDraft]=useState(null);
+  // Editing is open to founder/PCM AND to whoever created the campaign, up to
+  // the PO — that's the point the numbers are committed to the client, after
+  // which an edit here would silently desync the PO. Including the creator
+  // matters because an AM or CM can raise a campaign, and locking them out of
+  // their own brief means the two people who own commercials have to retype it.
+  const isCreator=!!currentUser?.teamId&&camp.createdBy===currentUser.teamId;
+  const canEditBrief=(["founder","pcm"].includes(role)||isCreator)&&beforePO(camp);
+  // Sign-off stays with the two roles that own commercials, regardless of who
+  // wrote the brief — it's the act that commits the numbers and moves to PO,
+  // and it only unlocks once the brief is actually filled in (briefGaps).
+  const canSignOff=["founder","pcm"].includes(role)&&normStage(camp.stage)==="brief_log";
+  const gaps=briefGaps(camp);
+
+  const open  = (key,value) => { setEdit(key); setDraft(value); };
+  const cancel= () => { setEdit(null); setDraft(null); };
+  // Brief text fields all patch brief{}; creatorBudget lives on the campaign
+  // itself, so it takes the other setter.
+  const commit= (key) => {
+    if(key==="creatorBudget"){
+      const n=parseInt(draft)||0;
+      if(n>(camp.budget||0)) return;              // guarded by the button too
+      if(n!==creatorBudgetOf(camp)) onSaveCampaign({creatorBudget:n});
+    } else if(draft!==(camp.brief[key]??(key==="deliverables"?[]:""))){
+      onSaveBrief({[key]:draft});
+    }
+    cancel();
+  };
+
+  // Row shell: label + its own Edit control, and Save/Cancel only while open.
+  // Called as a function, NOT rendered as <Field/> — a component declared
+  // inside render gets a fresh identity every pass, which makes React remount
+  // the subtree and drop focus out of the textarea on every keystroke.
+  const field = ({fieldKey,label,value,render,children,invalid}) => {
+    const on = edit===fieldKey;
+    return(<div style={{padding:"12px 0"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
+        <Lbl>{label}</Lbl>
+        {/* Gated on `edit`, not on `on`: while any field is open the other
+            Edit controls disappear, so a half-typed draft can't be silently
+            discarded by clicking Edit on a different row. */}
+        {canEditBrief&&!edit&&<button onClick={()=>open(fieldKey,value)} style={{fontSize:9,color:T.accent,background:"none",border:"none",cursor:"pointer",fontFamily:"'Sora'"}}>Edit</button>}
+      </div>
+      {on
+        ? <>{children}<div style={{display:"flex",gap:8,marginTop:8}}>
+            <Btn variant="primary" onClick={()=>commit(fieldKey)} disabled={invalid}>Save</Btn>
+            <Btn variant="ghost" onClick={cancel}>Cancel</Btn>
+          </div></>
+        : render}
+    </div>);
+  };
+  const txt = v => <div style={{fontSize:12,color:v?T.text:T.label,lineHeight:1.6,fontStyle:v?"normal":"italic"}}>{v||"Not specified"}</div>;
+  const area = <textarea value={draft||""} onChange={e=>setDraft(e.target.value)} style={{...INP,minHeight:60}}/>;
+
+  const cbNum=parseInt(draft)||0, cbOver=edit==="creatorBudget"&&cbNum>(camp.budget||0);
+
   return(<div>
-    {[["Objective",camp.brief.objective],["Audience",camp.brief.audience]].map(([l,v],i)=><div key={l}><div style={{padding:"12px 0"}}><Lbl style={{display:"block",marginBottom:5}}>{l}</Lbl><div style={{fontSize:12,color:v?T.text:T.label,lineHeight:1.6,fontStyle:v?"normal":"italic"}}>{v||"Not specified"}</div></div><Hr/></div>)}
-    <div style={{padding:"12px 0"}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}><Lbl>Key Messages</Lbl>{canAMEdit&&!editing&&<button onClick={()=>setEditing(true)} style={{fontSize:9,color:T.accent,background:"none",border:"none",cursor:"pointer",fontFamily:"'Sora'"}}>Edit</button>}</div>{editing&&canAMEdit?<textarea value={messages} onChange={e=>setMessages(e.target.value)} style={{...INP,minHeight:60,marginBottom:8}}/>:<div style={{fontSize:12,color:messages?T.text:T.label,lineHeight:1.6,fontStyle:messages?"normal":"italic"}}>{messages||"Not specified — AM to fill"}</div>}</div><Hr/>
-    <div style={{padding:"12px 0"}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}><Lbl>Deliverables</Lbl>{canAMEdit&&!editing&&<button onClick={()=>setEditing(true)} style={{fontSize:9,color:T.accent,background:"none",border:"none",cursor:"pointer",fontFamily:"'Sora'"}}>Edit</button>}</div>{editing&&canAMEdit?<DelvSelect value={deliverables} onChange={setDeliverables}/>:deliverables.length>0?<div style={{display:"flex",flexWrap:"wrap",gap:5}}>{deliverables.map(d=><span key={d} style={{fontSize:10.5,color:T.sub,padding:"3px 8px",background:T.mute,borderRadius:3}}>{d}</span>)}</div>:<div style={{fontSize:12,color:T.label,fontStyle:"italic"}}>Not selected — AM to choose</div>}</div>
-    {editing&&canAMEdit&&<div style={{display:"flex",gap:8,marginTop:4}}><Btn variant="primary" onClick={save}>Save</Btn><Btn variant="ghost" onClick={()=>setEditing(false)}>Cancel</Btn></div>}
-    <Hr style={{marginTop:4}}/>
-    {[["Budget",camp.brief.budget],["Timeline",camp.brief.timeline]].map(([l,v],i)=><div key={l}><div style={{padding:"12px 0"}}><Lbl style={{display:"block",marginBottom:5}}>{l}</Lbl><div style={{fontSize:12,color:v?T.text:T.label}}>{v||"—"}</div></div>{i===0&&<Hr/>}</div>)}
-    {camp.cmNote&&(isCM||isAM)&&<div style={{marginTop:14,paddingLeft:10,borderLeft:`2px solid ${T.accent}`}}><Lbl color={T.accent} style={{display:"block",marginBottom:4}}>CM Note</Lbl><div style={{fontSize:11.5,color:T.sub,lineHeight:1.6}}>{camp.cmNote}</div></div>}
+    {field({fieldKey:"objective",label:"Objective",value:camp.brief.objective||"",render:txt(camp.brief.objective),children:area})}<Hr/>
+    {field({fieldKey:"audience",label:"Audience",value:camp.brief.audience||"",render:txt(camp.brief.audience),children:area})}<Hr/>
+    {field({fieldKey:"messages",label:"Key Messages",value:camp.brief.messages||"",children:area,
+      render:<div style={{fontSize:12,color:camp.brief.messages?T.text:T.label,lineHeight:1.6,fontStyle:camp.brief.messages?"normal":"italic"}}>{camp.brief.messages||"Not specified — AM to fill"}</div>})}<Hr/>
+    {field({fieldKey:"deliverables",label:"Deliverables",value:camp.brief.deliverables||[],
+      children:<DelvSelect value={draft||[]} onChange={setDraft}/>,
+      render:(camp.brief.deliverables||[]).length>0
+        ? <div style={{display:"flex",flexWrap:"wrap",gap:5}}>{camp.brief.deliverables.map(d=><span key={d} style={{fontSize:10.5,color:T.sub,padding:"3px 8px",background:T.mute,borderRadius:3}}>{d}</span>)}</div>
+        : <div style={{fontSize:12,color:T.label,fontStyle:"italic"}}>Not selected — AM to choose</div>})}<Hr/>
+    {/* Total budget is the client-facing number (founder/PCM only). Creator
+        budget is the pot the shortlist is built against, so every role that
+        can see creator cost can see it here too. */}
+    {canFin(role)&&<><div style={{padding:"12px 0"}}><Lbl style={{display:"block",marginBottom:5}}>Total budget</Lbl><div style={{fontSize:12,color:camp.budget?T.text:T.label}}>{camp.budget?fmtINR(camp.budget):"—"}</div></div><Hr/></>}
+    {canCrFin(role)&&<>
+      {field({fieldKey:"creatorBudget",label:"Creator budget",value:String(creatorBudgetOf(camp)),invalid:cbOver,
+        render:<div style={{fontSize:12,color:T.text}}>{fmtINR(creatorBudgetOf(camp))} <span style={{fontSize:10,color:T.label}}>· ≈ {fmtINR(perCreatorOf(camp))} per creator × {numReqOf(camp)}</span></div>,
+        children:<>
+          <MoneyInput value={draft||""} onChange={setDraft} placeholder="e.g. 7,50,000" style={{...INP,resize:"none",maxWidth:180}}/>
+          <div style={{fontSize:9.5,color:cbOver?T.red:T.sub,marginTop:4}}>
+            {cbOver
+              ? `Can't exceed the total budget of ${fmtINR(camp.budget)}.`
+              : `≈ ${fmtINR(numReqOf(camp)>0?Math.round(cbNum/numReqOf(camp)):0)} per creator × ${numReqOf(camp)}`}
+          </div>
+        </>})}<Hr/>
+    </>}
+    <div style={{padding:"12px 0"}}><Lbl style={{display:"block",marginBottom:5}}>Timeline</Lbl><div style={{fontSize:12,color:camp.brief.timeline?T.text:T.label}}>{camp.brief.timeline||"—"}</div></div>
+    {camp.cmNote&&role!=="ea"&&<div style={{marginTop:14,paddingLeft:10,borderLeft:`2px solid ${T.accent}`}}><Lbl color={T.accent} style={{display:"block",marginBottom:4}}>CM Note</Lbl><div style={{fontSize:11.5,color:T.sub,lineHeight:1.6}}>{camp.cmNote}</div></div>}
     {role!=="ea"&&camp.internalNotes&&<div style={{marginTop:12,paddingLeft:10,borderLeft:`2px solid ${T.amber}`}}><Lbl color={T.amber} style={{display:"block",marginBottom:4}}>Internal — not visible to client</Lbl><div style={{fontSize:11.5,color:T.sub,lineHeight:1.6}}>{camp.internalNotes}</div></div>}
-    {canAMEdit&&<div style={{marginTop:20}}><Hr style={{marginBottom:16}}/><Lbl style={{display:"block",marginBottom:8}}>AM Review</Lbl><textarea value={bmNote} onChange={e=>setBmNote(e.target.value)} placeholder="Review note…" style={{...INP,minHeight:60,marginBottom:10}}/><div style={{display:"flex",gap:8}}><Btn variant="primary" onClick={()=>onAction("advance_to_shortlist",{note:bmNote})}>Move to Creator Shortlisting</Btn><Btn variant="ghost" onClick={()=>onAction("am_request_edit",{note:bmNote})}>Request edit</Btn></div></div>}
-    {canCMRev&&<div style={{marginTop:20}}><Hr style={{marginBottom:16}}/><Lbl style={{display:"block",marginBottom:8}}>CM / PCM Review</Lbl><textarea value={cmNote} onChange={e=>setCmNote(e.target.value)} placeholder="Review note…" style={{...INP,minHeight:60,marginBottom:10}}/><div style={{display:"flex",gap:8}}><Btn variant="primary" onClick={()=>onAction("cm_approve_concept")}>Approve concept</Btn><Btn variant="ghost" onClick={()=>onAction("cm_request_changes",{note:cmNote})}>Request changes</Btn></div></div>}
+    {/* Sign-off is the only way out of Brief Log. Blocked while a field is open
+        so a half-typed draft can't be sealed away by the stage moving on. */}
+    {canSignOff&&<div style={{marginTop:20}}>
+      <Hr style={{marginBottom:16}}/>
+      <Lbl style={{display:"block",marginBottom:6}}>Brief sign-off</Lbl>
+      <div style={{fontSize:11.5,color:T.sub,lineHeight:1.55,marginBottom:10}}>
+        Signing off locks the brief and moves this campaign to PO. It can't be edited afterwards.
+      </div>
+      {gaps.length>0&&<div style={{fontSize:10.5,color:T.amber,lineHeight:1.5,marginBottom:10}}>
+        Still needed before sign-off: {gaps.join(", ")}.
+      </div>}
+      <Btn variant="primary" onClick={()=>onAction("brief_complete")} disabled={!!edit||gaps.length>0}>Sign off brief &amp; move to PO</Btn>
+    </div>}
+    {!canEditBrief&&!canSignOff&&<div style={{marginTop:16,fontSize:10,color:T.label}}>
+      {beforePO(camp)?"The brief is edited by the Founder, PCM or whoever raised this campaign, and signed off by the Founder or PCM.":"The brief was locked when the Purchase Order was raised."}
+    </div>}
   </div>);
 }
 
 // ── TEAM TAB ─────────────────────────────────────────────────────────────────
+// One rule: slots are freely assignable and re-assignable up to the PO, and
+// frozen from then on. That boundary is the same one the brief uses (beforePO)
+// — once the PO is raised the campaign is committed to the client, and moving
+// it off someone also revokes their access to it (see canSee), so past that
+// point it's a governance decision rather than an inline edit.
+//
+// These slots are also the Draft gate: filling all three moves the campaign to
+// Brief Log on its own (see the assign_* cases in onAction). That's why the
+// form warns before the last slot is saved — the transition is automatic, so
+// there is no confirmation dialog to catch it afterwards.
+const TEAM_SLOTS=[
+  {key:"am",label:"Account Manager", campKey:"amId",action:"assign_am",roles:["am","pcm","founder"]},
+  {key:"cm",label:"Category Manager",campKey:"cmId",action:"assign_cm",roles:["cm","pcm"]},
+  {key:"ea",label:"Exec Associate",  campKey:"eaId",action:"assign_ea",roles:["ea"]},
+];
 function TabTeam({camp,role,onAction}){
-  const [selCM,setSelCM]=useState(camp.cmId||"");
-  const [selEA,setSelEA]=useState(camp.eaId||"");
-  const [justif,setJustif]=useState("");
-  const isAM=["am","founder","pcm"].includes(role),isCM=["cm","pcm","founder"].includes(role);
-  const canAssignCM=isAM&&["draft","creator_shortlist","po_raised"].includes(camp.stage);
-  const canAssignEA=isCM&&camp.stage==="advance_received"&&!camp.eaId;
-  const cms=TEAM_DIR.filter(t=>["cm","pcm"].includes(t.role)),eas=TEAM_DIR.filter(t=>t.role==="ea");
+  const [editing,setEditing]=useState(null); // slot key currently being edited
+  const [sel,setSel]=useState("");
+  const canAssign=can(role,"assignUsers")&&beforePO(camp);
+  const open=slot=>{setEditing(slot.key);setSel("");};
+  const save=slot=>{
+    if(!sel)return;
+    onAction(slot.action,{[slot.campKey]:sel});
+    setEditing(null);
+  };
+  // True when saving THIS slot is what completes the team and starts the brief.
+  const startsBrief=slot=>normStage(camp.stage)==="draft"
+    &&TEAM_SLOTS.every(s=>s.key===slot.key||camp[s.campKey]);
   return(<div>
-    {[{label:"Account Manager",id:camp.amId},{label:"Category Manager",id:camp.cmId},{label:"Exec Associate",id:camp.eaId}].map(({label,id},i)=>{const m=getM(id);return(<div key={label}><div style={{padding:"12px 0"}}><Lbl style={{display:"block",marginBottom:5}}>{label}</Lbl><div style={{display:"flex",alignItems:"center",gap:7}}>{m&&<Av init={m.avatar} size={20}/>}<span style={{fontSize:12,color:m?T.text:T.label,fontStyle:m?"normal":"italic"}}>{m?m.name:"Unassigned"}</span>{m&&<span style={{fontSize:9,color:T.label}}>{m.jobTitle}</span>}</div></div>{i<2&&<Hr/>}</div>);})}
-    {canAssignCM&&<div style={{marginTop:20}}><Hr style={{marginBottom:16}}/><Lbl style={{display:"block",marginBottom:8}}>Assign Category Manager</Lbl><select value={selCM} onChange={e=>setSelCM(e.target.value)} style={{...INP,resize:"none",marginBottom:10}}><option value="">Select CM…</option>{cms.map(cm=><option key={cm.id} value={cm.id}>{cm.name}</option>)}</select><Btn variant="primary" onClick={()=>selCM&&onAction("assign_cm",{cmId:selCM})} disabled={!selCM}>Assign CM</Btn></div>}
-    {canAssignEA&&<div style={{marginTop:20}}><Hr style={{marginBottom:16}}/><Lbl style={{display:"block",marginBottom:8}}>Assign EA</Lbl><select value={selEA} onChange={e=>setSelEA(e.target.value)} style={{...INP,resize:"none",marginBottom:8}}><option value="">Select EA…</option>{eas.map(ea=><option key={ea.id} value={ea.id}>{ea.name} ({ea.jobTitle})</option>)}</select><textarea value={justif} onChange={e=>setJustif(e.target.value)} placeholder="Justification…" style={{...INP,minHeight:48,marginBottom:10}}/><Btn variant="primary" onClick={()=>selEA&&onAction("assign_ea",{eaId:selEA,justif})} disabled={!selEA}>Assign</Btn></div>}
-    {camp.stage==="po_raised"&&<div style={{marginTop:20}}><Hr style={{marginBottom:16}}/><div style={{padding:"12px 14px",background:T.raised,borderRadius:6,border:`1px solid ${T.amber}22`,marginBottom:12}}><Lbl color={T.amber} style={{display:"block",marginBottom:4}}>Advance Pending</Lbl><div style={{fontSize:11.5,color:T.sub,lineHeight:1.5}}>Waiting for Finance to confirm advance payment received.</div></div>{(role==="accounts"||role==="founder"||role==="pcm")&&<Btn variant="success" onClick={()=>onAction("advance_received")}>Confirm advance received</Btn>}</div>}
+    {TEAM_SLOTS.map((slot,i)=>{
+      const m=getM(camp[slot.campKey]),isEditing=editing===slot.key;
+      const pool=TEAM_DIR.filter(t=>slot.roles.includes(t.role));
+      return(<div key={slot.key}>
+        <div style={{padding:"12px 0"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
+            <Lbl>{slot.label}</Lbl>
+            {canAssign&&!isEditing&&<button onClick={()=>open(slot)} style={{background:"transparent",border:"none",padding:0,cursor:"pointer",fontFamily:SF,fontSize:10.5,fontWeight:600,color:T.accent,textDecoration:"underline",textUnderlineOffset:2}}>{m?"Change":"Assign"}</button>}
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:7}}>
+            {m&&<Av init={m.avatar} size={20}/>}
+            <span style={{fontSize:12,color:m?T.text:T.label,fontStyle:m?"normal":"italic"}}>{m?m.name:"Unassigned"}</span>
+            {m&&<span style={{fontSize:9,color:T.label}}>{m.jobTitle}</span>}
+          </div>
+          {isEditing&&<div style={{marginTop:10,padding:"12px 14px",background:T.raised,borderRadius:6,border:`1px solid ${T.border}`}}>
+            <select value={sel} onChange={e=>setSel(e.target.value)} style={{...INP,resize:"none",marginBottom:8}}>
+              <option value="">Select {slot.label}…</option>
+              {pool.map(t=><option key={t.id} value={t.id}>{t.name} — {t.jobTitle}</option>)}
+            </select>
+            {!pool.length&&<div style={{fontSize:9.5,color:T.amber,marginBottom:8}}>No one with this role yet — add them on the Access &amp; Credentials page (they need a Team ID).</div>}
+            {/* Warned up front because the transition is automatic — there's no
+                confirmation dialog after the fact to catch it. */}
+            {startsBrief(slot)&&<div style={{fontSize:9.5,color:T.amber,marginBottom:8}}>This is the last empty slot — saving it starts the brief.</div>}
+            <div style={{display:"flex",gap:8}}>
+              <Btn variant="primary" onClick={()=>save(slot)} disabled={!sel}>{m?"Reassign":"Assign"}</Btn>
+              <Btn variant="subtle" onClick={()=>setEditing(null)}>Cancel</Btn>
+            </div>
+          </div>}
+        </div>
+        {i<TEAM_SLOTS.length-1&&<Hr/>}
+      </div>);
+    })}
+    <div style={{marginTop:14,fontSize:10,color:T.label,lineHeight:1.5}}>{
+      !can(role,"assignUsers") ? "Assignments are managed by the Account Manager, Category Manager or Founder."
+      : !beforePO(camp)        ? "The team was locked when the Purchase Order was raised — reassigning now also changes who can see this campaign, so it's handled outside the campaign."
+      : "All three roles must be filled before the brief can start. They stay reassignable until the Purchase Order is raised."
+    }</div>
   </div>);
 }
 
 // ── FINANCIALS TAB ───────────────────────────────────────────────────────────
+// Three visibility bands, widest to narrowest:
+//   canCrFin — creator budget, per-head target, committed/remaining (CM/AM/EA)
+//   canFin   — the client-facing total budget on top of that
+//   canFF    — agency fee and margin (founder only)
 function TabFinancials({camp,role}){
-  const cb=camp.creatorBudget||camp.budget*0.6,af=camp.budget-cb;
-  const cmt=(camp.creators||[]).reduce((s,c)=>s+(c.fee||0),0);
-  const rows=[{label:"Total budget",value:fmtINR(camp.budget),color:T.text,show:true},{label:"Creator budget",value:fmtINR(cb),color:T.sub,show:true},{label:"Creator fees committed",value:fmtINR(cmt),color:cmt>cb?T.red:T.green,show:true},{label:"Creator budget remaining",value:fmtINR(cb-cmt),color:T.sub,show:true},{label:"Agency fee",value:fmtINR(af),color:T.accent,show:canFF(role)},{label:"Margin",value:`${((af/camp.budget)*100).toFixed(1)}%`,color:((af/camp.budget)*100)>=30?T.green:T.amber,show:canFF(role)}].filter(r=>r.show);
-  return(<div><div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}><Lbl>Financial overview</Lbl><span style={{fontSize:9,color:T.amber,border:`1px solid ${T.amber}25`,borderRadius:3,padding:"1px 6px"}}>Internal only</span></div>{rows.map(({label,value,color},i)=><div key={label}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 0"}}><span style={{fontSize:11.5,color:T.sub}}>{label}</span><span style={{fontSize:12,fontWeight:500,color}}>{value}</span></div>{i<rows.length-1&&<Hr/>}</div>)}{!canFF(role)&&<div style={{marginTop:10,fontSize:10,color:T.label}}>Agency fee and margin visible to Founders only.</div>}</div>);
+  const cb=creatorBudgetOf(camp),af=(camp.budget||0)-cb;
+  const cmt=(camp.creators||[]).reduce((s,c)=>s+costOf(c),0);
+  const marginPct=camp.budget>0?(af/camp.budget)*100:0;
+  const rows=[
+    {label:"Total budget",value:fmtINR(camp.budget),color:T.text,show:canFin(role)},
+    {label:"Creator budget",value:fmtINR(cb),color:T.sub,show:true},
+    {label:"Per-creator target",value:`≈ ${fmtINR(perCreatorOf(camp))} × ${numReqOf(camp)}`,color:T.sub,show:true},
+    {label:"Creator fees committed",value:fmtINR(cmt),color:cmt>cb?T.red:T.green,show:true},
+    {label:"Creator budget remaining",value:fmtINR(cb-cmt),color:T.sub,show:true},
+    {label:"Agency fee",value:fmtINR(af),color:T.accent,show:canFF(role)},
+    {label:"Margin",value:`${marginPct.toFixed(1)}%`,color:marginPct>=30?T.green:T.amber,show:canFF(role)},
+  ].filter(r=>r.show);
+  return(<div><div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}><Lbl>Financial overview</Lbl><span style={{fontSize:9,color:T.amber,border:`1px solid ${T.amber}25`,borderRadius:3,padding:"1px 6px"}}>Internal only</span></div>{rows.map(({label,value,color},i)=><div key={label}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 0"}}><span style={{fontSize:11.5,color:T.sub}}>{label}</span><span style={{fontSize:12,fontWeight:500,color}}>{value}</span></div>{i<rows.length-1&&<Hr/>}</div>)}{!canFF(role)&&<div style={{marginTop:10,fontSize:10,color:T.label}}>{canFin(role)?"Agency fee and margin visible to Founders only.":"Creator-side budget only — total budget, agency fee and margin are not shown for your role."}</div>}</div>);
 }
 
 // ── TIMELINE TAB ─────────────────────────────────────────────────────────────
@@ -1427,42 +2183,53 @@ function TabTimeline({camp}){const events=camp.timeline||[];if(!events.length)re
 // Shows the right next-step CTA(s) for the current role and stage.
 // Each entry: { stages, roles, actions: [{label, action, variant, data}], hint }
 function WorkflowActions({camp, role, onAction}) {
-  const isAM  = ["am","founder","pcm"].includes(role);
-  const isCM  = ["cm","pcm","founder"].includes(role);
-  const isEA  = ["ea","am","pcm","founder"].includes(role);
-  const isAcc = ["accounts","founder","pcm"].includes(role);
+  const isAM   = ["am","founder","pcm"].includes(role);
+  const isAcc  = ["accounts","founder","pcm"].includes(role);
+  const isLead = ["founder","pcm"].includes(role);
+  const stage  = normStage(camp.stage);
 
   const actions = [];
 
-  if (camp.stage==="draft" && isAM)
-    actions.push({label:"Move to Creator Shortlisting", action:"advance_to_shortlist", variant:"primary"}, {label:"Request Brief Edit", action:"am_request_edit", variant:"ghost"});
-  if (camp.stage==="creator_shortlist" && isAM)
-    actions.push({label:"Raise Purchase Order", action:"raise_po", variant:"primary"});
-  if (camp.stage==="po_raised" && isAcc)
-    actions.push({label:"Confirm Advance Received", action:"advance_received", variant:"success"});
-  if (camp.stage==="advance_received" && isCM && !camp.eaId)
-    actions.push({label:"Assign EA to start Execution →", action:null, variant:"ghost", hint:"Use the Team tab to assign an EA"});
-  if (camp.stage==="execution" && isEA)
-    actions.push({label:"Mark Briefs Sent to Creators", action:"brief_sent", variant:"primary"});
-  if (camp.stage==="brief_sent" && isEA)
-    actions.push({label:"Mark Concepts Received", action:"concept_submitted", variant:"primary"});
-  if (camp.stage==="concept_submitted" && isCM)
-    actions.push({label:"Approve Concept", action:"cm_approve_concept", variant:"success"}, {label:"Request Changes", action:"cm_request_changes", variant:"ghost"});
-  if (camp.stage==="concept_approved" && isEA)
-    actions.push({label:"Mark Production Started", action:"start_production", variant:"primary"});
-  if (camp.stage==="production" && isEA)
-    actions.push({label:"Mark Video Submitted", action:"video_submitted", variant:"primary"});
-  if (camp.stage==="video_submitted" && isAM)
-    actions.push({label:"Approve Internally → Send to Client", action:"internal_approved", variant:"success"}, {label:"Request Revision", action:"internal_revision", variant:"ghost"});
-  if (camp.stage==="internal_review" && isAM)
-    actions.push({label:"Client Approved", action:"client_approved", variant:"success"}, {label:"Client Requested Revision", action:"client_revision", variant:"ghost"});
-  if (camp.stage==="client_approved" && isAM)
-    actions.push({label:"Mark Content Live", action:"mark_live", variant:"success"});
-  if (camp.stage==="live" && isAcc)
-    actions.push({label:"Confirm Creator Payments Released", action:"creator_paid", variant:"primary"});
-  if (camp.stage==="creator_paid" && isAM)
-    actions.push({label:"Start Reporting", action:"start_reporting", variant:"primary"});
-  if (camp.stage==="reporting" && isAM)
+  // Draft has no button by design — it advances on its own once the three
+  // slots are filled, so the only thing to say is what's still missing.
+  if (stage==="draft") {
+    const missing=TEAM_SLOTS.filter(s=>!camp[s.campKey]).map(s=>s.label);
+    if (missing.length) actions.push({action:null, hint:`Assign ${missing.join(", ")} on the Team tab to start the brief`});
+    // Fully staffed but still at Draft is only reachable by a campaign that was
+    // already staffed before this gate existed — the auto-advance fires on the
+    // assign action, so nothing is left to trigger it. Without this it's stuck.
+    else if (isAM) actions.push({label:"Start Brief", action:"brief_start", variant:"primary"});
+  }
+  // Sign-off deliberately has no button here — it lives on the Brief tab, so
+  // it can't be given without the brief being in front of you.
+  if (stage==="brief_log") {
+    const gaps=briefGaps(camp);
+    actions.push({action:null, hint:gaps.length
+      ? `Brief incomplete — ${gaps.join(", ")} still needed`
+      : isLead ? "Brief is complete — sign it off on the Brief tab"
+               : "Waiting on Founder/PCM to sign off the brief"});
+  }
+  // Both record something that happened outside the system, so both stay
+  // manual — but they now produce the record rather than merely asserting it.
+  // Raising the PO writes the client PO and links it to the invoice; confirming
+  // the advance settles the invoice's advance leg. The stage moves because the
+  // document exists, which is the same shape as the Draft gate.
+  if (stage==="po") {
+    if (isAcc) actions.push({label:"Record Client PO", action:"raise_po", variant:"primary"});
+    else actions.push({action:null, hint:"Waiting on Accounts to record the client's Purchase Order"});
+  }
+  if (stage==="advance") {
+    if (isAcc) actions.push({label:"Confirm Advance Received", action:"advance_received", variant:"success"});
+    else actions.push({action:null, hint:"PO recorded — waiting on the client's advance payment"});
+  }
+  if (stage==="execution" && isAM) {
+    const s=execStats(camp), done=execDone(camp);
+    actions.push({label:"Start Reporting", action:"start_reporting", variant:done?"success":"primary", disabled:!done});
+    if (!done) actions.push({action:null, hint:s.locked===0
+      ? "No creators locked yet — lock creators on the Creators tab"
+      : `${s.live} of ${s.locked} locked creator${s.locked!==1?"s":""} live · ${s.pct}% of plan delivered`});
+  }
+  if (stage==="reporting" && isAM)
     actions.push({label:"Mark Campaign Completed", action:"mark_completed", variant:"success"});
 
   if (!actions.length) return null;
@@ -1470,7 +2237,7 @@ function WorkflowActions({camp, role, onAction}) {
     <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14,padding:"10px 14px",background:"rgba(0,0,0,0.03)",borderRadius:10,border:"1px solid rgba(0,0,0,0.07)",alignItems:"center"}}>
       <span style={{fontSize:9.5,color:"#86868B",marginRight:2,letterSpacing:"0.04em",textTransform:"uppercase",fontWeight:600,fontFamily:SF,flexShrink:0}}>Next</span>
       {actions.map((a,i)=> a.action
-        ? <Btn key={i} variant={a.variant} onClick={()=>onAction(a.action,{})} style={{fontSize:11,padding:"6px 12px"}}>{a.label}</Btn>
+        ? <Btn key={i} variant={a.variant} disabled={a.disabled} onClick={()=>onAction(a.action,{})} style={{fontSize:11,padding:"6px 12px"}}>{a.label}</Btn>
         : <span key={i} style={{fontSize:11,color:"#86868B",fontStyle:"italic",fontFamily:SF}}>{a.hint}</span>
       )}
     </div>
@@ -1478,16 +2245,24 @@ function WorkflowActions({camp, role, onAction}) {
 }
 
 // ── DETAIL ───────────────────────────────────────────────────────────────────
-function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogTimeline,onBack,onPrev,onNext,hasPrev,hasNext}){
+function Detail({camp,role,currentUser,onAction,onSaveBrief,onSaveCampaign,onUpdateCreators,onDelete,onLogTimeline,onBack,onPrev,onNext,hasPrev,hasNext}){
   const [tab,setTab]=useState("brief");
   const [confirmDelete,setConfirmDelete]=useState(false);
   const [extending,setExtending]=useState(false);
+  const [showExec,setShowExec]=useState(false);
+  const [raisingPO,setRaisingPO]=useState(false);
   // Selecting a different campaign resets the panel to Brief — the tab chosen
   // on one campaign shouldn't leak onto the next.
-  useEffect(()=>{setTab("brief");setConfirmDelete(false);setExtending(false);},[camp.id]);
-  const stCol=T.sc[camp.stage]||T.sub,pl=PIPELINE.find(p=>p.id===camp.stage)||PIPELINE[0];
+  useEffect(()=>{setTab("brief");setConfirmDelete(false);setExtending(false);setShowExec(false);setRaisingPO(false);},[camp.id]);
+  // raise_po needs a form before it can do anything, so it opens ClientPOModal
+  // instead of firing straight through. Everything else passes untouched.
+  const handleAction=(action,data)=>action==="raise_po"?setRaisingPO(true):onAction(action,data);
+  const stCol=viewCol(camp.stage,role),pl=viewPl(camp.stage,role);
   const es=endStatus(camp.end,camp.stage);
-  const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},{id:"timeline",label:"Timeline"},...(canFin(role)?[{id:"financials",label:"Financials"}]:[])];
+  // The EA works the campaign, not its audit trail — their three-node pipeline
+  // already says where it stands, and the timeline is mostly commercial events
+  // (PO raised, advance confirmed) that sit outside their view entirely.
+  const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},...(role==="ea"?[]:[{id:"timeline",label:"Timeline"}]),...(canFin(role)||canCrFin(role)?[{id:"financials",label:"Financials"}]:[])];
   const navBtn={display:"flex",alignItems:"center",gap:4,background:"transparent",border:"none",cursor:"pointer",fontSize:11.5,fontWeight:500,color:"#6E6E73",fontFamily:SF,padding:"5px 8px",borderRadius:6};
   // Card chrome shared by the header and content panels — floating rounded
   // surfaces on the grey page rather than full-bleed white bands, so the
@@ -1524,19 +2299,21 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
             </div>
             <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:5,marginLeft:16,flexShrink:0}}>
               <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:`${stCol}14`,border:`1px solid ${stCol}28`,fontSize:10.5,fontWeight:600,color:stCol,fontFamily:SF}}>{pl.label}</span>
-              <span style={{fontSize:10,color:"#6E6E73",fontFamily:SF}}>{camp.progress}% complete</span>
+              <span style={{fontSize:10,color:"#6E6E73",fontFamily:SF}}>{progressOf(camp)}% complete</span>
               {can(role,"deleteCampaign")&&<Btn variant="danger" onClick={()=>setConfirmDelete(true)} style={{fontSize:10,padding:"4px 10px"}}>Delete</Btn>}
             </div>
           </div>
           <AnimatePresence>
             {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
             {extending&&<ExtendEndModal camp={camp} onConfirm={(end,reason)=>{setExtending(false);onAction("extend_end_date",{end,reason});}} onCancel={()=>setExtending(false)}/>}
+            {showExec&&<ExecutionModal camp={camp} onClose={()=>setShowExec(false)}/>}
+            {raisingPO&&<ClientPOModal camp={camp} invoiceAmount={camp.budget||0}
+              onConfirm={po=>{setRaisingPO(false);onAction("raise_po",po);}} onCancel={()=>setRaisingPO(false)}/>}
           </AnimatePresence>
-          <div style={{fontSize:10.5,color:"#6E6E73",marginBottom:12,fontFamily:SF,fontStyle:"italic"}}>{STAGE_HINT[camp.stage]}</div>
-          <WorkflowActions camp={camp} role={role} onAction={onAction}/>
-          {/* 16-stage pipeline scrolls inside its own lane so it never widens the card */}
+          <WorkflowActions camp={camp} role={role} onAction={handleAction}/>
+          {/* Scrolls inside its own lane so it never widens the card */}
           <div style={{overflowX:"auto",margin:"0 -22px",padding:"0 22px"}}>
-            <FullPipe stage={camp.stage}/>
+            <FullPipe camp={camp} role={role} onExecClick={()=>setShowExec(true)}/>
           </div>
         </div>
         {/* Tab strip — sliding indicator shared across tab switches AND campaign switches */}
@@ -1554,12 +2331,12 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
       <div style={{...card,padding:"22px 24px"}}>
         <AnimatePresence mode="wait" initial={false}>
           <motion.div key={tab} initial={{opacity:0,y:5}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-3}} transition={{duration:0.16,ease:"easeOut"}}>
-            {tab==="brief"        &&<TabBrief        camp={camp} role={role} onAction={onAction} onSaveBrief={onSaveBrief}/>}
+            {tab==="brief"        &&<TabBrief        camp={camp} role={role} currentUser={currentUser} onAction={onAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign}/>}
             {tab==="team"         &&<TabTeam         camp={camp} role={role} onAction={onAction}/>}
             {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
             {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} onUpdateCreators={onUpdateCreators}/>}
             {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
-            {tab==="financials"   &&canFin(role)&&<TabFinancials camp={camp} role={role}/>}
+            {tab==="financials"   &&(canFin(role)||canCrFin(role))&&<TabFinancials camp={camp} role={role}/>}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -1568,9 +2345,11 @@ function Detail({camp,role,onAction,onSaveBrief,onUpdateCreators,onDelete,onLogT
 }
 
 // ── CREATE MODAL ─────────────────────────────────────────────────────────────
-function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
+function CreateModal({onClose,onSubmit,brands,onCreateBrand,role}){
   const [step,setStep]=useState(0);
-  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",niche:"",budget:"",numCreators:5,objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
+  // creatorBudgetMode decides which of the two creator-budget inputs is live —
+  // the other is kept around so toggling back doesn't lose what was typed.
+  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",niches:[],budget:"",numCreators:5,creatorBudgetMode:"pct",creatorBudgetPct:60,creatorBudgetAmt:"",objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
   const [newBrandName,setNewBrandName]=useState("");
   // Staged only — nothing is written to the backend until the campaign is
   // actually submitted, so abandoning this modal never leaves an orphan brand.
@@ -1578,13 +2357,16 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
   const [submitting,setSubmitting]=useState(false);
   const [brandErr,setBrandErr]=useState(null);
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
+  const merge=patch=>setF(p=>({...p,...patch}));
   const STEPS=["Basics","Brief","Commercial","Internal"];
+  const budgetNum=parseInt(f.budget)||0;
+  const creatorBudget=resolveCreatorBudget(f,budgetNum);
   // Per-step required fields — Next/Create stay disabled until the current
   // step's required inputs are filled (Brief + Internal have none).
   const stepOk=[
     !!(f.name.trim()&&f.service&&f.brandId),
     true,
-    parseInt(f.budget)>0&&parseInt(f.numCreators)>0&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
+    budgetNum>0&&parseInt(f.numCreators)>0&&creatorBudget>0&&creatorBudget<=budgetNum&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
     true,
   ];
   const ok=stepOk[step];
@@ -1606,7 +2388,9 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
   };
   const handleSubmit=async()=>{
     if(!allOk)return;
-    const payload={...f,timeline:timelineLabel};
+    // creatorBudget is resolved here rather than in onCreate so the stored
+    // number is exactly the one the wizard showed, whichever mode was used.
+    const payload={...f,timeline:timelineLabel,creatorBudget};
     if(f.brandId!=="__new__"){ onSubmit(payload); return; }
     setSubmitting(true);setBrandErr(null);
     try{
@@ -1644,13 +2428,14 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand}){
         {step===2&&<>
           <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Total budget (₹) *</Lbl><MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="e.g. 12,50,000" style={{...INP,resize:"none"}}/></div>
           <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Creators required *</Lbl><input type="number" min={1} value={f.numCreators} onChange={e=>u("numCreators",e.target.value)} placeholder="5" style={{...INP,resize:"none"}}/></div>
+          <CreatorBudgetField
+            budget={budgetNum} numCreators={parseInt(f.numCreators)||0}
+            mode={f.creatorBudgetMode} pct={f.creatorBudgetPct} amount={f.creatorBudgetAmt}
+            onChange={merge} showAgency={canFF(role)}/>
           <div style={{marginBottom:14}}>
-            <Lbl style={{display:"block",marginBottom:5}}>Niche</Lbl>
-            <select value={f.niche} onChange={e=>u("niche",e.target.value)} style={{...INP,resize:"none",cursor:"pointer"}}>
-              <option value="">— Any niche —</option>
-              {NICHES.map(n=><option key={n} value={n}>{n}</option>)}
-            </select>
-            <div style={{fontSize:9,color:T.sub,marginTop:4}}>Steers Generate towards same/similar creators.</div>
+            <Lbl style={{display:"block",marginBottom:5}}>Niches</Lbl>
+            <NicheSelect value={f.niches} onChange={v=>u("niches",v)}/>
+            <div style={{fontSize:9,color:T.sub,marginTop:6}}>Steers Generate towards creators in the same or similar niches. Leave empty for any niche.</div>
           </div>
           <div style={{marginBottom:14}}>
             <Lbl style={{display:"block",marginBottom:5}}>Timeline *</Lbl>
@@ -1691,7 +2476,18 @@ export default function InternalCampaigns(){
   useEffect(()=>{
     let cancelled=false;
     CampaignsAPI.list()
-      .then(data=>{ if(!cancelled){ setCampaigns(data); setLoading(false); } })
+      // Legacy shapes are normalised once, here, so nothing downstream ever
+      // sees a retired 16-stage id (LEGACY_STAGE) or a creator still carrying
+      // `fee`/`negotiatedCost` instead of `cost` (normCreator). Nothing is
+      // written back on load — the mapped values persist with the next save the
+      // campaign makes, which self-heals the collection on its own.
+      //
+      // The creator half matters for release safety: without it, every read of
+      // `cr.cost` depends on scrap/migrate_creator_fee_to_cost.js having already
+      // run against that environment. Deploy the two in the wrong order and
+      // creator invoices render ₹0 and locked creators post an expense of zero
+      // — silently, because 0 is a legal cost.
+      .then(data=>{ if(!cancelled){ setCampaigns(data.map(c=>({...c,stage:normStage(c.stage),creators:(c.creators||[]).map(normCreator)}))); setLoading(false); } })
       .catch(err=>{ if(!cancelled){ setLoadError(err.message); setLoading(false); } });
     return ()=>{ cancelled=true; };
   },[]);
@@ -1713,33 +2509,46 @@ export default function InternalCampaigns(){
   const showToast=useCallback(msg=>{setToast(msg);setTimeout(()=>setToast(null),2800);},[]);
   const onAction=useCallback((action,data={})=>{
     let updatedCamp=null;
+    // Why a gated transition refused, if it did. The guards below re-check
+    // their condition and fall back to `c` unchanged — but the toast at the
+    // bottom used to fire regardless, so a blocked action reported success and
+    // the user was left looking at a stage that hadn't moved with no idea why.
+    let blocked=null;
     setCampaigns(prev=>prev.map(c=>{
       if(c.id!==selectedId)return c;
       const addEv=(ev,actor)=>[...(c.timeline||[]),{date:today(),event:ev,actor:actor||"Ops"}];
       let next=c;
+      // Staffing a slot is also the Draft gate: the moment all three are
+      // filled the campaign moves itself to Brief Log. Guarded on stage so
+      // reassigning someone later can never rewind a live campaign, and the
+      // check runs against the POST-assignment campaign, not `c`.
+      const assign=(campKey,id,label)=>{
+        const after={...c,[campKey]:id};
+        const starts=normStage(c.stage)==="draft"&&teamComplete(after);
+        return {...after,...(starts?{stage:"brief_log"}:{}),
+          timeline:addEv(`${label} assigned: ${getM(id)?.name||id}${starts?" — team complete, brief started":""}`)};
+      };
       switch(action){
-        case "advance_to_shortlist": next={...c,stage:"creator_shortlist",briefStatus:"shortlisting",amNote:data.note||"",timeline:addEv("AM moved to creator shortlisting")};break;
-        case "am_request_edit": next={...c,stage:"draft",briefStatus:"draft_edit",amNote:data.note||"",timeline:addEv("AM requested brief edit")};break;
-        case "raise_po": next={...c,stage:"po_raised",timeline:addEv("Purchase Order raised")};break;
-        case "advance_received": next={...c,stage:"advance_received",timeline:addEv("Advance received — execution cleared","Accounts")};break;
-        case "assign_cm": next={...c,cmId:data.cmId,timeline:addEv(`CM assigned: ${getM(data.cmId)?.name}`)};break;
-        case "assign_ea": next={...c,eaId:data.eaId,stage:"execution",timeline:addEv(`EA assigned: ${getM(data.eaId)?.name||data.eaId}`)};break;
-        case "brief_sent": next={...c,stage:"brief_sent",timeline:addEv("Creator briefs sent")};break;
-        case "concept_submitted": next={...c,stage:"concept_submitted",timeline:addEv("Creator concepts received")};break;
-        case "cm_approve_concept": next={...c,stage:"concept_approved",cmNote:data.note||"",timeline:addEv("Concept approved — production starts",role)};break;
-        case "cm_request_changes": next={...c,stage:"concept_submitted",cmNote:data.note||"",timeline:addEv("Changes requested on concept",role)};break;
-        case "start_production": next={...c,stage:"production",timeline:addEv("Content production started")};break;
-        case "video_submitted": next={...c,stage:"video_submitted",timeline:addEv("Video submitted by creator")};break;
-        case "internal_approved": next={...c,stage:"internal_review",timeline:addEv("Content approved internally — sent to client",role)};break;
-        case "internal_revision": next={...c,stage:"video_submitted",timeline:addEv("Internal revision requested",role)};break;
-        case "client_approved": next={...c,stage:"client_approved",timeline:addEv("Client approved content")};break;
-        case "client_revision": next={...c,stage:"video_submitted",timeline:addEv("Client requested revision")};break;
-        case "mark_live": next={...c,stage:"live",progress:90,timeline:addEv("Content went live")};break;
-        case "creator_paid": next={...c,stage:"creator_paid",timeline:addEv("Creator payments released","Accounts")};break;
-        case "start_reporting": next={...c,stage:"reporting",timeline:addEv("Campaign report in progress")};break;
-        case "mark_completed": next={...c,stage:"completed",progress:100,timeline:addEv("Campaign marked complete")};break;
-        // Schedule change only — stage and progress are deliberately untouched,
-        // so extending a campaign that ran long doesn't rewind its pipeline.
+        case "assign_am": next=assign("amId",data.amId,"AM");break;
+        case "assign_cm": next=assign("cmId",data.cmId,"CM");break;
+        case "assign_ea": next=assign("eaId",data.eaId,"EA");break;
+        case "brief_start": next=teamComplete(c)?{...c,stage:"brief_log",timeline:addEv("Team complete — brief started")}:(blocked="All three team slots must be filled first",c);break;
+        // The two gated transitions re-check their condition here as well as in
+        // the UI. The reducer is the only write path, so guarding it means a
+        // stale render (or a second tab) can't push a campaign through a gate
+        // that has stopped being satisfied.
+        case "brief_complete": next=briefGaps(c).length?(blocked=`Brief incomplete — ${briefGaps(c).join(", ")} still needed`,c):{...c,stage:"po",briefStatus:"signed_off",timeline:addEv("Brief signed off — moved to PO",currentUser.name||role)};break;
+        // Deliberately does NOT copy the PO onto the campaign. client_pos is
+        // the record and the timeline is the audit trail; a third copy here
+        // would go stale the moment Accounts corrects the number in Billing.
+        case "raise_po": next=data.poNumber?{...c,stage:"advance",
+          timeline:addEv(`Client PO ${data.poNumber} recorded — ${fmtINR(data.amount)}, awaiting advance`,currentUser.name||"Accounts")}:(blocked="A client PO number is required",c);break;
+        case "advance_received": next={...c,stage:"execution",advanceReceivedOn:today(),
+          timeline:addEv("Advance received — execution started",currentUser.name||"Accounts")};break;
+        case "start_reporting": next=execDone(c)?{...c,stage:"reporting",timeline:addEv("All locked creators live — reporting started")}:(blocked="Every locked creator must be live before reporting starts",c);break;
+        case "mark_completed": next={...c,stage:"completed",timeline:addEv("Campaign marked complete")};break;
+        // Schedule change only — the stage is deliberately untouched, so
+        // extending a campaign that ran long doesn't rewind its pipeline.
         case "extend_end_date": next={...c,end:data.end,timeline:addEv(
           `End date extended: ${prettyDate(c.end)||"—"} → ${prettyDate(data.end)}${data.reason?` — ${data.reason}`:""}`,
           currentUser.name||role)};break;
@@ -1750,22 +2559,118 @@ export default function InternalCampaigns(){
     }));
     // DB sync — happens after setCampaigns so updatedCamp is set
     setTimeout(()=>{
-      if(updatedCamp){
+      if(updatedCamp&&!blocked){
         const{id,...rest}=updatedCamp;
         CampaignsAPI.update(id,rest).catch(()=>showToast("Save failed — check connection"));
+        // Billing side effects. Non-blocking by design: the campaign's stage is
+        // the source of truth for the pipeline, so a failed billing write must
+        // never hold it up. Non-blocking is not the same as silent, though —
+        // these used to swallow every error, so a backend hiccup at sign-off or
+        // PO left no quote and no invoice, the stage moved anyway, and nobody
+        // found out until the books were reconciled. `warn` says so instead.
+        const warn=what=>()=>showToast(`${what} — campaign moved, but the record wasn't created. Retry from Billing.`);
+        // Sign-off is the moment the commercials stop being a draft: the budget
+        // and the creator split are agreed and the brief locks. That is what a
+        // quote is, so it is raised here — with the campaign's real numbers,
+        // not the invented percentages the old auto-quote carried.
+        //
+        // The quote's margin is expressed as a single percentage because that
+        // is the shape quoteMargin() takes, and it resolves back to exactly the
+        // campaign's own split: margin = budget − creator pool, ops = pool.
+        // `updatedCamp`, not `next` — `next` is scoped to the setCampaigns
+        // updater above, so reading it here threw a ReferenceError before the
+        // create could fire. The stage had already been PATCHed on the line
+        // above, so sign-off moved the campaign to PO and silently raised no
+        // quote at all. Caught by walking the UI; an API-level test can't see
+        // it, because the test makes the POST itself.
+        if(action==="brief_complete"&&normStage(updatedCamp.stage)==="po"){
+          const budget=updatedCamp.budget||0, pool=creatorBudgetOf(updatedCamp);
+          if(budget>0) QuotesAPI.create({
+            id:`QT-${id}`, campaignId:id, client:updatedCamp.client||"",
+            brandId:updatedCamp.brandId||null,
+            label:`${updatedCamp.name} — Quote`, status:"pending_review",
+            createdDate:today(), validTill:addDays(today(),30),
+            marginPct: Math.round(((budget-pool)/budget)*1000)/10,
+            agencyFeePct:0, agencyFeeType:"baked_in", isRetainerClient:false,
+            lines:[{desc:`Influencer Marketing — ${updatedCamp.name}`,sac:"998361",qty:1,rate:budget,gstRate:18}],
+            notes:"Raised on brief sign-off. Review and send before recording the client's PO.",
+          }).catch(warn("Quote not raised"));
+        }
+        if(action==="raise_po"&&data.poNumber){
+          const poId=`CPO-${id}`;
+          ClientPOsAPI.create({id:poId,poNumber:data.poNumber,amount:data.amount,
+            receivedDate:data.receivedDate,document:"recorded",
+            client:updatedCamp.client||"",brandId:updatedCamp.brandId||null,
+            campaign:id,campaignName:updatedCamp.name||"",closed:false}).catch(warn("Client PO not recorded"));
+          // The invoice is raised HERE, not at campaign creation — a client PO
+          // is the authorisation to bill, so this is the first point there is
+          // anything to invoice against. `dueDate` is a real ISO date (NET 30),
+          // which is what finally lets an invoice go overdue.
+          //
+          // Create-or-link: campaigns that predate this already carry an
+          // `INV-AUTO-*` stub, so an existing invoice is linked rather than
+          // duplicated.
+          const budget=updatedCamp.budget||0, half=Math.round(budget*0.5);
+          InvoicesAPI.list().then(list=>{
+            const inv=list.find(i=>i.campaign===id&&i.type==="campaign");
+            if(inv) return InvoicesAPI.update(inv.id,{clientPO:{id:poId},
+              ...(ISO_DATE.test(inv.dueDate||"")?{}:{dueDate:addDays(today(),30)})});
+            return InvoicesAPI.create({
+              id:`INV-${id}`, client:updatedCamp.client||"", clientId:updatedCamp.brandId,
+              brandId:updatedCamp.brandId||null, campaign:id, type:"campaign",
+              label:`${updatedCamp.name} — Campaign Invoice`,
+              amount:budget, gstRate:18,
+              raisedDate:today(), dueDate:addDays(today(),30), status:"pending",
+              isRetainerClient:false, clientPO:{id:poId},
+              schedule:{type:"advance_final",
+                advance:{pct:50,amount:half,status:"pending"},
+                final:{pct:50,amount:budget-half,status:"pending"}},
+              gstin:"", sac:"998361", placeOfSupply:"",
+              confirmedByAccounts:false, confirmedByFounder:false,
+            });
+          }).catch(warn("Invoice not raised"));
+        }
+        if(action==="advance_received"){
+          // Settle the advance leg only. The invoice stays `pending` until the
+          // final leg lands, so Outstanding keeps reporting what's still owed.
+          // Read-modify-write rather than a blind overwrite: the schedule may
+          // have been edited in Billing since the invoice was created.
+          InvoicesAPI.list().then(list=>{
+            const inv=list.find(i=>i.campaign===id&&i.type==="campaign");
+            if(!inv?.schedule?.advance) return;
+            InvoicesAPI.update(inv.id,{schedule:{...inv.schedule,
+              advance:{...inv.schedule.advance,status:"paid",paidDate:today()}}}).catch(warn("Advance not settled"));
+          }).catch(warn("Advance not settled"));
+        }
       }
     },0);
-    showToast(ACTION_MSGS[action]||action);
+    showToast(blocked||ACTION_MSGS[action]||action);
   },[selectedId,showToast,role,currentUser]);
   // Double-check gate: stage-changing actions go through a confirmation modal
   // before onAction applies (and persists) anything. Pure assignments skip it.
   const [pendingAction,setPendingAction]=useState(null); // {action,data}
   const requestAction=useCallback((action,data={})=>{
-    if(NO_CONFIRM_ACTIONS.has(action)){onAction(action,data);return;}
+    if(!needsConfirm(action)){onAction(action,data);return;}
     setPendingAction({action,data});
   },[onAction]);
   const onSaveBrief=useCallback(patch=>{setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,brief:{...c.brief,...patch}}));CampaignsAPI.update(selectedId,{brief:{...(campaigns.find(c=>c.id===selectedId)?.brief||{}),...patch}}).catch(()=>showToast("Save failed — check connection"));showToast("Brief updated");},[selectedId,showToast,campaigns]);
-  const onUpdateCreators=useCallback((next,extra)=>{setCampaigns(prev=>prev.map(c=>{if(c.id!==selectedId)return c;return{...c,creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}}));CampaignsAPI.update(selectedId,{creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}).catch(()=>showToast("Save failed — check connection"));if(extra==="send_to_client")showToast("Creator list sent to client");},[selectedId,showToast]);
+  // Campaign-level patch (creatorBudget from the Brief tab). onSaveBrief only
+  // touches brief{}; this writes fields that live on the campaign itself.
+  const onSaveCampaign=useCallback(patch=>{
+    setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,...patch}));
+    CampaignsAPI.update(selectedId,patch).catch(()=>showToast("Save failed — check connection"));
+    showToast("Campaign updated");
+  },[selectedId,showToast]);
+  const onUpdateCreators=useCallback((next,extra)=>{
+    // Resolved before the state update, not inside it: React state updaters
+    // must be pure, and StrictMode double-invokes them in development — which
+    // would fire every expense POST twice.
+    const camp=campaigns.find(c=>c.id===selectedId);
+    setCampaigns(prev=>prev.map(c=>{if(c.id!==selectedId)return c;return{...c,creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}}));
+    CampaignsAPI.update(selectedId,{creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}).catch(()=>showToast("Save failed — check connection"));
+    if(camp)syncCreatorExpenses(camp,camp.creators,next,()=>showToast("Creator cost saved, but Billing wasn't updated — check connection"));
+    if(extra==="send_to_client")showToast("Creator list sent to client");
+  },[selectedId,showToast,campaigns]);
   // Appends an audit entry to the selected campaign's timeline and persists it.
   const onLogTimeline=useCallback(event=>{
     const entry={date:today(),event,actor:currentUser.name||role};
@@ -1786,12 +2691,22 @@ export default function InternalCampaigns(){
       setSelId(null);
       showToast("Campaign deleted");
       // Cascade: purge billing docs that reference this campaign (auto-invoice
-      // stub, client POs) so Billing stops showing the deleted campaign.
+      // stub, client POs, and the creator expenses the roster generates) so
+      // Billing stops showing the deleted campaign. Expenses matter most here:
+      // unlike invoices and client POs they are not filtered by
+      // `hasLiveCampaign` in Billing, so an orphan would keep inflating
+      // committed spend and the derived registry forever.
       try{
-        const [invs,cpos]=await Promise.all([InvoicesAPI.list(),ClientPOsAPI.list()]);
+        const [invs,cpos,exps,qts]=await Promise.all([InvoicesAPI.list(),ClientPOsAPI.list(),ExpensesAPI.list(),QuotesAPI.list()]);
         await Promise.all([
           ...invs.filter(x=>x.campaign===id).map(x=>InvoicesAPI.remove(x.id)),
           ...cpos.filter(x=>x.campaign===id).map(x=>ClientPOsAPI.remove(x.id)),
+          ...exps.filter(x=>x.campaign===id).map(x=>ExpensesAPI.remove(x.id)),
+          // Quotes too — brief sign-off raises one, and the cascade was written
+          // before that existed. Note the field is `campaignId`, not `campaign`
+          // like every other billing doc, so Billing's `hasLiveCampaign` filter
+          // cannot hide an orphan either: it would sit in Quotations forever.
+          ...qts.filter(x=>x.campaignId===id).map(x=>QuotesAPI.remove(x.id)),
         ]);
       }catch{/* best-effort — Billing also hides docs whose campaign is gone */}
     }catch{
@@ -1810,8 +2725,8 @@ export default function InternalCampaigns(){
     const budget = parseInt(f.budget)||0;
     const c={
       id:campId, name:f.name, client:brandName(f.brandId)||"", brandId:f.brandId, service:f.service,
-      region:f.region||"TBD", niche:f.niche||"", stage:"draft", progress:0,
-      budget, creatorBudget:Math.round(budget*0.6),
+      region:f.region||"TBD", niches:f.niches||[], stage:"draft",
+      budget, creatorBudget:Math.min(f.creatorBudget||0,budget),
       numReq:parseInt(f.numCreators)||5, start:f.timelineStart||today(), end:f.timelineEnd||"TBD",
       createdBy:currentUser.teamId,
       amId, cmId, eaId,
@@ -1822,27 +2737,13 @@ export default function InternalCampaigns(){
     };
     // Save campaign
     CampaignsAPI.create(c).catch(()=>showToast("Save failed — check connection"));
-    // Auto-create a draft invoice stub in billing so the campaign appears in billing immediately
-    if(budget > 0){
-      const invId = `INV-AUTO-${campId}`;
-      InvoicesAPI.create({
-        id: invId, client: brandName(f.brandId)||"", clientId: f.brandId, brandId: f.brandId, campaign: campId,
-        type:"campaign", label:`${f.name} — Campaign Invoice`,
-        amount: budget, gstRate:18,
-        raisedDate: today(), dueDate:"TBD", status:"pending",
-        isRetainerClient:false, clientPO:null,
-        schedule:{ type:"advance_final",
-          advance:{ pct:50, amount:Math.round(budget*0.5), status:"pending" },
-          final:{ pct:50, amount:Math.round(budget*0.5), status:"pending" },
-        },
-        gstin:"", sac:"998361", placeOfSupply:"",
-        confirmedByAccounts:false, confirmedByFounder:false,
-        autoCreated:true,
-      }).catch(()=>{}); // silent — billing stub creation is best-effort
-    }
+    // No billing document is raised here. Each one is created at the point the
+    // thing it records actually happens — brief signed off → Quote, client PO
+    // recorded → Invoice (with a real NET-30 due date). See the brief_complete
+    // and raise_po side effects in onAction.
     setCampaigns(p=>[c,...p]);setSelId(c.id);setCreate(false);showToast("Campaign created");
   },[showToast,role,currentUser,brandName]);
-  const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(brandFilter&&c.brandId!==brandFilter)return false;if(stageFilter==="ended"){if(endStatus(c.end,c.stage)?.key!=="ended")return false;}else if(stageFilter!=="all"){const g={intake:["draft","creator_shortlist","po_raised"],planning:["advance_received","execution","brief_sent"],execution:["concept_submitted","concept_approved","production"],delivery:["video_submitted","internal_review","client_approved","live","creator_paid","reporting","completed"]};if(!g[stageFilter]?.includes(c.stage))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search,brandFilter]);
+  const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(brandFilter&&c.brandId!==brandFilter)return false;if(stageFilter==="ended"){if(endStatus(c.end,c.stage)?.key!=="ended")return false;}else if(stageFilter!=="all"){if(!STAGE_GROUPS[stageFilter]?.includes(normStage(c.stage)))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search,brandFilter]);
   // Selection must respect the active filters — resolve against `visible`, not
   // `campaigns`, or the detail panel (and its Creators tab) keeps showing a
   // campaign from another brand after the brand filter changes.
@@ -1859,7 +2760,9 @@ export default function InternalCampaigns(){
   const hasPrev=selIndex>0, hasNext=selIndex>=0&&selIndex<visible.length-1;
   const goPrev=useCallback(()=>{if(selIndex>0)setSelId(visible[selIndex-1].id);},[selIndex,visible]);
   const goNext=useCallback(()=>{if(selIndex>=0&&selIndex<visible.length-1)setSelId(visible[selIndex+1].id);},[selIndex,visible]);
-  const needsAttn=visible.filter(c=>["draft","po_raised","concept_submitted","video_submitted"].includes(c.stage)).length;
+  // Stages that are blocked on a person rather than on work in progress —
+  // Draft is waiting on staffing, Brief Log on sign-off, PO on Accounts.
+  const needsAttn=visible.filter(c=>["draft","brief_log","po"].includes(normStage(c.stage))).length;
   // Ended count deliberately ignores `stageFilter` (but respects role/brand
   // visibility) so the Ended tab badge reads the same from every other tab.
   const endedCount=useMemo(()=>campaigns.filter(c=>
@@ -1878,7 +2781,7 @@ export default function InternalCampaigns(){
     {toast&&<div style={{position:"fixed",bottom:24,right:24,zIndex:9999,padding:"11px 18px",background:"rgba(29,29,31,0.92)",backdropFilter:"blur(16px)",borderRadius:12,fontSize:12,color:"#FFFFFF",fontFamily:SF,boxShadow:"0 8px 32px rgba(0,0,0,0.24)",letterSpacing:"-0.01em"}}>{toast}</div>}
     <AnimatePresence mode="wait">
       {selected ? (
-        <Detail key={selected.id} camp={selected} role={role} onAction={requestAction} onSaveBrief={onSaveBrief}
+        <Detail key={selected.id} camp={selected} role={role} currentUser={currentUser} onAction={requestAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign}
           onUpdateCreators={onUpdateCreators} onDelete={onDeleteCampaign} onLogTimeline={onLogTimeline}
           onBack={()=>setSelId(null)} onPrev={goPrev} onNext={goNext} hasPrev={hasPrev} hasNext={hasNext}/>
       ) : (
@@ -1896,7 +2799,7 @@ export default function InternalCampaigns(){
             </div>
             {/* Stats row */}
             <div style={{display:"flex",gap:0,marginBottom:14,background:"rgba(0,0,0,0.03)",borderRadius:10,padding:"2px",border:"1px solid rgba(0,0,0,0.06)"}}>
-              {[{l:"All",v:visible.length},{l:"Active",v:visible.filter(c=>!["completed","draft"].includes(c.stage)).length},{l:"Live",v:visible.filter(c=>c.stage==="live").length},{l:"Attention",v:needsAttn}].map((s,i)=>(
+              {[{l:"All",v:visible.length},{l:"Active",v:visible.filter(c=>!["completed","draft"].includes(normStage(c.stage))).length},{l:"In Exec",v:visible.filter(c=>normStage(c.stage)==="execution").length},{l:"Attention",v:needsAttn}].map((s,i)=>(
                 <div key={s.l} style={{flex:1,padding:"8px 12px",textAlign:"center",borderRight:i<3?"1px solid rgba(0,0,0,0.06)":"none"}}>
                   <div style={{fontSize:18,fontWeight:700,color:s.l==="Attention"&&needsAttn>0?T.amber:"#1D1D1F",letterSpacing:"-0.03em",lineHeight:1,fontFamily:SF}}>{s.v}</div>
                   <div style={{fontSize:9.5,color:"#86868B",marginTop:2,fontFamily:SF}}>{s.l}</div>
@@ -1925,7 +2828,7 @@ export default function InternalCampaigns(){
       )}
     </AnimatePresence>
     <AnimatePresence>
-      {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand}/>}
+      {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand} role={role}/>}
     </AnimatePresence>
     <AnimatePresence>
       {pendingAction&&selected&&<ConfirmActionModal camp={selected} label={ACTION_MSGS[pendingAction.action]||pendingAction.action}

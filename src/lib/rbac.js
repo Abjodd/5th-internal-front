@@ -5,15 +5,25 @@
  * Principle of least privilege:
  * - Founder: everything
  * - PCM: own campaigns only, full financials for those
- * - CM: operational only, no financials anywhere
+ * - CM: operational only — creator-side money only, no revenue/margins
  * - AM: own brands/campaigns, execution budget only (no revenue/margins/GST/TDS)
- * - EA: assigned campaigns only, no financials
+ * - EA: assigned campaigns only — creator-side money only
  */
 
 export const PERMS = {
   // ── Who can see what in the campaign list / cards ──────────────────────────
-  seeCampaignBudget:  ["founder", "pcm", "accounts_head", "accounts_exec"],
-  seeCreatorFees:     ["founder", "pcm", "accounts_head", "accounts_exec"],
+  // The client-facing total. Deliberately narrower than seeCreatorFees below:
+  // knowing the campaign sold for ₹12.5L while the creator pot is ₹7.5L is the
+  // margin, so it stays with the two roles that own commercials. Accounts sees
+  // the total in Billing (seeCampaignBudgetInBilling) where it is the invoice
+  // amount, not on the campaign where it sits next to creator cost.
+  seeCampaignBudget:  ["founder", "pcm"],
+  // Creator-side money — the creator budget pot and the per-creator fees drawn
+  // against it. This is execution data, not commercial data: CM/AM/EA shortlist
+  // and negotiate creators, so they have to know what's left to spend. It stays
+  // separate from seeCampaignBudget (client-facing total) and seeMargins, so
+  // these roles still never see what the agency keeps.
+  seeCreatorFees:     ["founder", "pcm", "cm", "am", "ea", "accounts_head", "accounts_exec"],
   seeMargins:         ["founder"],
   seeAgencyFee:       ["founder"],
   createCampaign:     ["founder", "pcm", "cm", "am"],

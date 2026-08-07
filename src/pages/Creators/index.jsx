@@ -194,7 +194,7 @@ function CreatorDetail({ inf, canEdit, onEdit }) {
             </div>
             {c.stage && <Pill color={T.teal}>{String(c.stage).replace(/_/g, " ")}</Pill>}
             {c.status && <Pill color={c.status === "locked" ? T.green : T.amber}>{c.status}</Pill>}
-            <span style={{ fontSize: 11, color: T.text, fontWeight: 500, width: 60, textAlign: "right" }}>{fmtINR(c.fee)}</span>
+            <span style={{ fontSize: 11, color: T.text, fontWeight: 500, width: 60, textAlign: "right" }}>{fmtINR(c.cost ?? c.fee)}</span>
           </div>
         ))}
       </div>

@@ -18,7 +18,8 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";
 import { CreatorsAPI, InvoicePdfAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
-import { fmtCompact } from "../../lib/format";
+import CreatorHandle from "../../components/CreatorHandle";
+import { fmtCompact, fmtINR } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { AddCreatorModal } from "../Campaigns";
 
@@ -40,11 +41,6 @@ const INP = {
 };
 
 const PAY_LABELS = { vendor: "To Vendor", net_banking: "Net Banking", upi: "UPI" };
-
-const fmtINR = n => (!n && n !== 0) ? "—"
-  : n >= 100000 ? `₹${(n / 100000).toFixed(1)}L`
-  : n >= 1000   ? `₹${(n / 1000).toFixed(0)}K`
-  : `₹${n}`;
 
 const Av = ({ name }) => (
   <div style={{
@@ -319,7 +315,7 @@ export default function Creators() {
                         <Av name={inf.name} />
                         <div>
                           <div style={{ fontWeight: 500 }}>{inf.name}</div>
-                          <div style={{ fontSize: 9.5, color: T.sub }}>{inf.handle || "—"}{inf.niche ? ` · ${inf.niche}` : ""}</div>
+                          <div style={{ fontSize: 9.5, color: T.sub }}><CreatorHandle creator={inf} style={{ fontSize: 9.5 }}/>{inf.niche ? ` · ${inf.niche}` : ""}</div>
                         </div>
                       </div>
                     </td>

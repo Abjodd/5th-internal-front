@@ -33,6 +33,30 @@ export function prettyDate(s) {
     : (s || "");
 }
 
+// Money, on the Indian scale: 75000 → "₹75,000", 750000 → "₹7.5L",
+// 12000000 → "₹1.2Cr". Null/empty/non-numeric → "—"; a real 0 → "₹0".
+//
+// No "K" tier, deliberately. Thousands are not a unit anyone quotes a media
+// budget in here — a fee is "seventy-five thousand", and "₹75K" sitting in a
+// column next to "₹7.5L" makes two numbers one order of magnitude apart look
+// like they belong to different systems. Under a lakh the full grouped number
+// is short enough to print, and it's exact: `₹${(n/1000).toFixed(0)}K` rounded
+// ₹75,400 and ₹75,600 to the same "₹75K", which is not a rounding anyone
+// wants on a creator's fee.
+//
+// Lives here, not in each page, because Campaigns, Creators and Billing all
+// print the same amounts — they each carried their own copy and had already
+// drifted (Campaigns had no crore tier, so a ₹1.2Cr budget read "₹120.0L").
+const compactINR = (n, div, unit) => `₹${+(n / div).toFixed(1)}${unit}`;
+export function fmtINR(n) {
+  const v = Number(n);
+  if (n == null || n === "" || !Number.isFinite(v)) return "—";
+  const a = Math.abs(v), sign = v < 0 ? "-" : "";
+  if (a >= 1e7) return sign + compactINR(a, 1e7, "Cr");
+  if (a >= 1e5) return sign + compactINR(a, 1e5, "L");
+  return `${sign}₹${a.toLocaleString("en-IN")}`;
+}
+
 // Compact display for follower/like/view counts: 1200000 → "1.2M",
 // 95000 → "95K", 820 → "820". Accepts raw numbers, numeric strings
 // ("820000" / "8,20,000"), or already-compact values ("820K") which pass

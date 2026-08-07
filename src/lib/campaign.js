@@ -61,6 +61,62 @@ export const creatorBudgetOf = c => c?.creatorBudget || Math.round((c?.budget ||
 
 export const numReqOf = c => c?.numReq || 5;
 
+// ── DELIVERABLES PLANNING ────────────────────────────────────────────────────
+// Two numbers describe the scope of a campaign: how many creators, and how many
+// posts each one owes. `deliverablesPerCreator` is the PLAN — the default a
+// creator is briefed with — not a constraint, because rosters are never uniform:
+// a campaign of five creators where one hero creator does two reels and the rest
+// do one is normal, and a single campaign-wide multiplier can't express it.
+//
+// So each creator carries an optional `numDeliverables` that overrides the plan
+// for that row only. Nothing has to be set for the common case (everyone does
+// the same count); the override exists for the row that differs.
+export const perCreatorDelivOf = c => Number(c?.deliverablesPerCreator) || 1;
+
+// What THIS creator owes — their own override, else the campaign plan.
+export const delivTargetOf = (camp, cr) => Number(cr?.numDeliverables) || perCreatorDelivOf(camp);
+
+// Total posts the campaign expects. Locked creators contribute their real
+// target; slots not yet filled contribute the plan, so the number is meaningful
+// from the moment the campaign is created and only gets more accurate as the
+// roster fills. Never below the locked creators' own sum — a campaign that
+// over-locked its target still owes every post it committed to.
+export function totalDelivOf(camp) {
+  const locked = (camp?.creators || []).filter(isLockedCreator);
+  const committed = locked.reduce((s, cr) => s + delivTargetOf(camp, cr), 0);
+  const unfilled = Math.max(0, numReqOf(camp) - locked.length);
+  return committed + unfilled * perCreatorDelivOf(camp);
+}
+
+// ── LIVE LINKS ───────────────────────────────────────────────────────────────
+// A creator posts one link per deliverable, so `live` holds an ARRAY. It was a
+// single `postUrl` string, which meant a creator doing two reels had nowhere to
+// record the second — the campaign was only ever half-tracked.
+//
+// `postUrl` is still written as the first link and is NOT dead: the client
+// portal reads `cr.live?.postUrl` directly (mapping.js, Overview.jsx,
+// DetailPanel.jsx in 5th-avenue-client-front). Keeping it mirrored means the
+// portal renders unchanged against the new shape and can be migrated on its own
+// schedule instead of having to ship in lockstep with this.
+export const liveLinksOf = cr => {
+  const live = cr?.live;
+  if (!live) return [];
+  const urls = Array.isArray(live.postUrls) ? live.postUrls : live.postUrl ? [live.postUrl] : [];
+  return urls.map(u => String(u || "").trim()).filter(Boolean);
+};
+
+// Builds the `live` object to store, keeping the portal's `postUrl` mirror in
+// step. Written in one place so no caller can set the array and forget the
+// mirror — which would blank the post out of the client's view.
+export const withLiveLinks = (live, urls) => {
+  const clean = (urls || []).map(u => String(u || "").trim()).filter(Boolean);
+  return { ...(live || {}), postUrls: clean, postUrl: clean[0] || null };
+};
+
+// Posts actually up, capped at what was asked for: a creator who posted three
+// links against a target of two is 100% done, not 150%.
+export const delivDoneOf = (camp, cr) => Math.min(liveLinksOf(cr).length, delivTargetOf(camp, cr));
+
 // Even per-head slice of the creator budget — an "approx" planning number, not
 // a commitment: the real per-creator fee is negotiated on the Creators tab.
 export const perCreatorOf = c => Math.round(creatorBudgetOf(c) / numReqOf(c));
@@ -93,8 +149,94 @@ export const normCreator = cr => {
 // PAN and bank details into one registry row.
 export const creatorKeyOf = cr => String(cr?.handle || cr?.name || "").toLowerCase().trim();
 
+// ── PROFILE LINKS ────────────────────────────────────────────────────────────
+// External links pasted without a protocol ("instagram.com/p/…") would resolve
+// relative to the SPA — the new tab lands on our router with an empty
+// sessionStorage and gets bounced to /login. Always absolutize before href.
+export const extUrl = u => {
+  if (!u) return u;
+  const t = String(u).trim();
+  return /^https?:\/\//i.test(t) ? t : `https://${t}`;
+};
+
+// LinkedIn / Moj / Josh / Other have no derivable pattern from a handle alone
+// (a LinkedIn slug may be /in/ or /company/), so they're deliberately absent —
+// profileUrl returns null for them and the handle stays plain text.
+const PROFILE_URL = {
+  "Instagram":   h => `https://www.instagram.com/${h}/`,
+  "YouTube":     h => `https://www.youtube.com/@${h}`,
+  "Twitter / X": h => `https://x.com/${h}`,
+  "Snapchat":    h => `https://www.snapchat.com/add/${h}`,
+};
+const HANDLE_RE = /^[A-Za-z0-9._-]{1,50}$/;
+
+// Public profile link for a creator's handle, or null when one can't be built.
+//
+// Returning null matters: a handle with no derivable profile stays plain text
+// rather than becoming a link that 404s — and, more importantly, rather than
+// rendering as accent-coloured "link" text that isn't clickable.
+//
+// `igUrl` is checked first and is NOT Instagram-only despite the name — the
+// YouTube lookup writes the channel URL into the same field, so whenever a
+// profile was auto-fetched that URL is the canonical one.
+//
+// Handles are stored with a leading "@" ("@anjalikitchen") but not always
+// ("adidastestcr"), so the "@" is stripped before templating either way.
+//
+// Lives here rather than in the Campaigns page because a creator's handle is
+// rendered on five screens (campaign roster, suggestions, deliverables, the
+// creators directory, and the creator-applications inbox) — it was only ever a
+// link on one of them, so the same @handle was clickable in Deliverables and
+// dead text everywhere else.
+export const profileUrl = (cr) => {
+  if (cr?.igUrl) return extUrl(cr.igUrl);
+  const raw = String(cr?.handle || "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;          // already a full link
+  const h = raw.replace(/^@+/, "");
+  if (!HANDLE_RE.test(h)) return null;                // spaces, emoji, junk
+  return PROFILE_URL[cr?.platform]?.(h) || null;
+};
+
 export const isLockedCreator = c => c?.status === "locked";
 export const expenseIdFor = (campId, crId) => `EXP-${campId}-${crId}`;
+
+// ── ROSTER GATE ──────────────────────────────────────────────────────────────
+// "The roster is confirmed." One definition, three consumers, which is the
+// whole reason it lives here:
+//   - the client is auto-sent the roster the moment it goes true,
+//   - the client PO can't be recorded until it is (the PO buys these creators
+//     at these fees; raised against an unconfirmed list its value is a guess,
+//     and anyone who then backs off means reissuing it),
+//   - and the Creators tab counts down to it.
+// It used to be one hand-written `lockedCount >= required` on a button.
+//
+// Locked is the only status that counts. Shortlisted, reached out and
+// negotiating all mean "we asked" — a name that hasn't agreed a fee is not
+// something anyone downstream can rely on.
+//
+// The count it's measured against is `numReq`, the plan. That plan is editable
+// on the Brief tab right up to the PO (see canEditScope in TabBrief), which is
+// what keeps this gate from being a trap: a team that planned five, locked four
+// and decided four is the roster changes the plan to four — deliberately, in
+// the field the client was quoted from — rather than being stuck, or being let
+// through by a rule that quietly stopped meaning anything.
+//
+// `creators` is separable so a caller holding a roster it hasn't saved yet
+// (onUpdateCreators) can ask about the roster it is about to write.
+export const lockedCountOf = (camp, creators = camp?.creators) =>
+  (creators || []).filter(isLockedCreator).length;
+export const rosterReady = (camp, creators = camp?.creators) =>
+  lockedCountOf(camp, creators) >= numReqOf(camp);
+
+// Why the roster isn't confirmed, in words, or null when it is. Shared so the
+// PO button's hint, the reducer's rejection and the Creators tab all say the
+// same thing rather than three near-misses that drift apart.
+export function rosterGap(camp, creators = camp?.creators) {
+  const locked = lockedCountOf(camp, creators), req = numReqOf(camp);
+  if (locked >= req) return null;
+  return `${locked} of ${req} creators locked`;
+}
 
 // Locking a creator commits money, so Billing has to hear about it. This is the
 // DECISION half of that sync — pure in, pure out — with the network half left

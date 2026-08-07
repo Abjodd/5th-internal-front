@@ -14,6 +14,7 @@ import { useState, useEffect, useMemo } from "react";
 import { CreatorRequestsAPI } from "../../lib/api";
 import { T } from "../../theme/tokens";
 import { STATUS, statusMeta, Av, Pill, Chevron, Expandable, fmtWhen, Notice } from "./shared";
+import CreatorHandle from "../../components/CreatorHandle";
 
 /**
  * Double-check gate before an application is written into the creators
@@ -191,7 +192,9 @@ export default function CreatorRequestsPanel({ query, showToast, onCount }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 500, color: T.text }}>{r.name}</div>
                 <div style={{ fontSize: 10, color: T.sub, marginTop: 1 }}>
-                  {r.handle}{r.platform ? ` · ${r.platform}` : ""}{r.followers ? ` · ${r.followers}` : ""}
+                  {/* An applicant's handle is the single most useful thing on
+                      this row — vetting starts by opening their profile. */}
+                  <CreatorHandle creator={r} style={{ fontSize: 10 }}/>{r.platform ? ` · ${r.platform}` : ""}{r.followers ? ` · ${r.followers}` : ""}
                 </div>
               </div>
               <span style={{ fontSize: 10, color: T.label }}>{fmtWhen(r.createdAt)}</span>

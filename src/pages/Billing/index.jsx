@@ -8,7 +8,7 @@ import { useOutletContext } from "react-router-dom";
 // (see buildRegistry) rather than read from a collection nothing ever wrote to.
 import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, CampaignsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
-import { fmtCompact, prettyDate, ISO_DATE, todayISO } from "../../lib/format";
+import { fmtCompact, fmtINR, prettyDate, ISO_DATE, todayISO } from "../../lib/format";
 import { creatorBudgetOf, creatorKeyOf, normStage, stageLabel } from "../../lib/campaign";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
@@ -60,13 +60,6 @@ const canRaisePO = r => ["founder","cm","ea","pcm"].includes(r);
 const showAmt = (n, r) => isAccounts(r) ? fmtFull(n) : "₹ ——";
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
-function fmtINR(n) {
-  if (!n && n !== 0) return "—";
-  if (n >= 10000000) return `₹${(n/10000000).toFixed(1)}Cr`;
-  if (n >= 100000)   return `₹${(n/100000).toFixed(1)}L`;
-  if (n >= 1000)     return `₹${(n/1000).toFixed(0)}K`;
-  return `₹${n}`;
-}
 function fmtFull(n) { return "₹" + (n || 0).toLocaleString("en-IN"); }
 function fmtPct(n)  { return `${Number(n || 0).toFixed(1)}%`; }
 

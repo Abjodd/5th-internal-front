@@ -9,7 +9,7 @@
  *  4. Senior EA / EA / Junior EA = job titles on TEAM, single "ea" role.
  *  5. Accounts Team → placeholder for dedicated view (next build).
  *  6. CM not auto-assigned → BM selects from fixed dropdown in Team tab.
- *  7. Deliverables tab → aggregate stat cards (Views, Likes, CPV, ER, Forwards, % Positive).
+ *  7. Deliverables tab → aggregate stat cards (Views, Likes, CPV, ER, Avg Forwards).
  *  8. Fee input step = 100.
  */
 import { useState, useMemo, useCallback, useEffect } from "react";
@@ -18,11 +18,13 @@ import { motion, AnimatePresence, useSpring, useMotionValueEvent, useReducedMoti
 import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
-import { fmtCompact, prettyDate, initials, ISO_DATE, todayISO } from "../../lib/format";
+import { fmtCompact, fmtINR, prettyDate, initials, ISO_DATE, todayISO } from "../../lib/format";
 import { creatorBudgetOf, numReqOf, perCreatorOf, costOf, normCreator, creatorExpensePlan, isLockedCreator,
-         PIPELINE, PL_IDS, normStage } from "../../lib/campaign";
+         PIPELINE, PL_IDS, normStage, extUrl, rosterReady, rosterGap,
+         perCreatorDelivOf, delivTargetOf, totalDelivOf, liveLinksOf, withLiveLinks, delivDoneOf } from "../../lib/campaign";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
+import CreatorHandle from "../../components/CreatorHandle";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
 import { T as BASE_T } from "../../theme/tokens";
@@ -253,7 +255,11 @@ const mkCreator = (src={}, cost) => ({
   demo:     {status:"yet_to_receive",fileLink:null},
   live:     {postUrl:null,postedDate:null},
   invoiceNo:src.invoiceNo || null, // set once a PDF invoice is generated — locks out duplicates
-  tracking: {views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null},
+  // postsCounted = how many live links the last refresh summed, so the card can
+  // say what the totals cover. `commentAnalysis`/`positivityScore` used to sit
+  // here and are gone: nothing in the app ever wrote them (there is no sentiment
+  // analysis), so the "% Positive" card they fed read "—" on every real campaign.
+  tracking: {views:null,likes:null,comments:null,forwards:null,postsCounted:0,lastFetched:null},
   personalDetails: {
     pan:         src.personalDetails?.pan         || src.pan         || null,
     email:       src.personalDetails?.email       || src.email       || null,
@@ -353,8 +359,7 @@ const NO_CONFIRM_ACTIONS=new Set(["assign_am","assign_cm","assign_ea","extend_en
 const needsConfirm=action=>!NO_CONFIRM_ACTIONS.has(action);
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
-const fmtINR  = n => !n&&n!==0?"—":n>=100000?`₹${(n/100000).toFixed(1)}L`:`₹${(n/1000).toFixed(0)}K`;
-const fmtNum  = fmtCompact; // shared compact formatter — lib/format.js
+const fmtNum  = fmtCompact; // shared compact formatters — lib/format.js (fmtINR too)
 const getM    = id => TEAM_DIR.find(t=>t.id===id)||TEAM.find(t=>t.id===id)||null;
 const getR    = id => ROLES.find(r=>r.id===id)||ROLES[0];
 const plIdx   = id => PL_IDS.indexOf(normStage(id));
@@ -538,18 +543,32 @@ const assetIn = a => !!a?.status && a.status !== "yet_to_receive";
 // planned. The denominator is the TARGET creator count, not the locked count:
 // locking one of five creators and finishing their work has to read 20%, not
 // 100%. max() keeps it honest if more creators get locked than were planned.
+//
+// The `live` milestone is the one that isn't binary. A creator on a 3-post brief
+// who has posted 2 is two-thirds done, and counting them as 0 (not finished) or
+// 1 (finished) are both wrong — the first stalls a campaign that is visibly
+// progressing, the second calls it complete while a post is still owed. So live
+// contributes delivered/expected per creator, summed. `delivered` and
+// `expected` are reported alongside so the UI can state the real counts rather
+// than only a percentage.
 function execStats(c){
   const lockd = (c?.creators||[]).filter(isLocked);
   const target= Math.max(numReqOf(c), lockd.length);
+  const delivered = lockd.reduce((s,x)=>s+delivDoneOf(c,x),0);
+  const expected  = lockd.reduce((s,x)=>s+delivTargetOf(c,x),0);
   const done  = {
     locked:  lockd.length,
     concept: lockd.filter(x=>assetIn(x.concept)).length,
     video:   lockd.filter(x=>assetIn(x.demo)).length,
-    live:    lockd.filter(x=>!!x.live?.postUrl).length,
+    // Creators with every post up — what "live" means as a headcount.
+    live:    lockd.filter(x=>delivDoneOf(c,x)>=delivTargetOf(c,x)).length,
   };
+  // Fractional credit for partially-posted creators, in creator-equivalents so
+  // it stays commensurate with the other three milestones.
+  const liveFrac = expected>0 ? (delivered/expected)*lockd.length : 0;
   const total = target*4;
-  const pct   = total>0 ? Math.min(100,Math.round(((done.locked+done.concept+done.video+done.live)/total)*100)) : 0;
-  return {...done,target,pct};
+  const pct   = total>0 ? Math.min(100,Math.round(((done.locked+done.concept+done.video+liveFrac)/total)*100)) : 0;
+  return {...done,target,pct,delivered,expected};
 }
 // Progress is DERIVED from stage + creator milestones, never stored, so it can
 // never drift away from the stage it describes.
@@ -603,42 +622,9 @@ function progressOf(c){
   if(cur.id!=="execution") return cur.p;
   return Math.round(cur.p + (execStats(c).pct/100)*(PIPELINE[i+1].p-cur.p));
 }
-// External links pasted without a protocol ("instagram.com/p/…") would resolve
-// relative to the SPA — the new tab lands on our router with an empty
-// sessionStorage and gets bounced to /login. Always absolutize before href.
-const extUrl = u => {
-  if (!u) return u;
-  const t = String(u).trim();
-  return /^https?:\/\//i.test(t) ? t : `https://${t}`;
-};
-// Public profile link for a creator's handle, or null when one can't be built.
-// Returning null matters: a handle with no derivable profile stays plain text
-// rather than becoming a link that 404s.
-//
-// `igUrl` is checked first and is NOT Instagram-only despite the name — the
-// YouTube lookup writes the channel URL into the same field, so whenever a
-// profile was auto-fetched that URL is the canonical one.
-//
-// Handles are stored with a leading "@" ("@anjalikitchen") but not always
-// ("adidastestcr"), so the "@" is stripped before templating either way.
-// LinkedIn / Moj / Josh / Other have no derivable pattern from a handle alone
-// (a LinkedIn slug may be /in/ or /company/), so they're deliberately absent.
-const PROFILE_URL = {
-  "Instagram":   h => `https://www.instagram.com/${h}/`,
-  "YouTube":     h => `https://www.youtube.com/@${h}`,
-  "Twitter / X": h => `https://x.com/${h}`,
-  "Snapchat":    h => `https://www.snapchat.com/add/${h}`,
-};
-const HANDLE_RE = /^[A-Za-z0-9._-]{1,50}$/;
-const profileUrl = (cr) => {
-  if (cr?.igUrl) return extUrl(cr.igUrl);
-  const raw = String(cr?.handle || "").trim();
-  if (!raw) return null;
-  if (/^https?:\/\//i.test(raw)) return raw;          // already a full link
-  const h = raw.replace(/^@+/, "");
-  if (!HANDLE_RE.test(h)) return null;                // spaces, emoji, junk
-  return PROFILE_URL[cr?.platform]?.(h) || null;
-};
+// extUrl / profileUrl now live in lib/campaign.js — the creators directory and
+// the creator-applications inbox render handles too, and all three screens have
+// to agree on when a handle is a link.
 
 // Live post URLs must match the creator's platform — those are the two
 // platforms the backend /api/post-metrics endpoint can track.
@@ -1186,7 +1172,7 @@ function EndedNotice({count,onDismiss}){
 }
 
 // ── REMOVE MODAL ─────────────────────────────────────────────────────────────
-function RemoveModal({creator,onConfirm,onCancel}){const [reason,setReason]=useState("");const [note,setNote]=useState("");return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}><div onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/><div style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}><div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Remove Creator</div><div style={{fontSize:11,color:T.sub,marginBottom:16}}>{creator?.name} {creator?.handle} — select a reason</div><div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>{REMOVE_REASONS.map(r=><label key={r.id} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 12px",borderRadius:6,cursor:"pointer",background:reason===r.id?`${T.accent}10`:T.raised,border:`1px solid ${reason===r.id?`${T.accent}30`:T.border}`,transition:"all 0.1s"}}><input type="radio" value={r.id} checked={reason===r.id} onChange={()=>setReason(r.id)} style={{marginTop:2,accentColor:T.accent}}/><div><div style={{fontSize:11.5,color:T.text,fontWeight:500,marginBottom:2}}>{r.label}</div><div style={{fontSize:10,color:T.sub}}>{r.desc}</div></div></label>)}</div><textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} placeholder="Additional note (optional)…" style={{...INP,fontSize:11,marginBottom:12}}/><div style={{display:"flex",gap:8}}><Btn variant="ghost" onClick={onCancel}>Cancel</Btn><Btn variant="danger" onClick={()=>reason&&onConfirm(reason,note)} disabled={!reason}>Remove creator</Btn></div></div></div>);}
+function RemoveModal({creator,onConfirm,onCancel}){const [reason,setReason]=useState("");const [note,setNote]=useState("");return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}><div onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/><div style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}><div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Remove Creator</div><div style={{fontSize:11,color:T.sub,marginBottom:16}}>{creator?.name} <CreatorHandle creator={creator} style={{fontSize:11}} fallback=""/> — select a reason</div><div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>{REMOVE_REASONS.map(r=><label key={r.id} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 12px",borderRadius:6,cursor:"pointer",background:reason===r.id?`${T.accent}10`:T.raised,border:`1px solid ${reason===r.id?`${T.accent}30`:T.border}`,transition:"all 0.1s"}}><input type="radio" value={r.id} checked={reason===r.id} onChange={()=>setReason(r.id)} style={{marginTop:2,accentColor:T.accent}}/><div><div style={{fontSize:11.5,color:T.text,fontWeight:500,marginBottom:2}}>{r.label}</div><div style={{fontSize:10,color:T.sub}}>{r.desc}</div></div></label>)}</div><textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} placeholder="Additional note (optional)…" style={{...INP,fontSize:11,marginBottom:12}}/><div style={{display:"flex",gap:8}}><Btn variant="ghost" onClick={onCancel}>Cancel</Btn><Btn variant="danger" onClick={()=>reason&&onConfirm(reason,note)} disabled={!reason}>Remove creator</Btn></div></div></div>);}
 
 // ── DELETE CAMPAIGN MODAL ────────────────────────────────────────────────────
 // Founder-only confirm step. The backend soft-deletes (deleted:true), so the
@@ -1680,7 +1666,7 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
         <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div>
             <div style={{fontFamily:"'Newsreader',serif",fontSize:17,color:T.text,fontStyle:"italic"}}>Invoice Details — {creator.name}</div>
-            <div style={{fontSize:9.5,color:T.sub,marginTop:2}}>{PAYMENT_TYPES.find(p=>p.id===creator.payType)?.label||"—"} · {creator.handle} · {fmtINR(costOf(creator))}</div>
+            <div style={{fontSize:9.5,color:T.sub,marginTop:2}}>{PAYMENT_TYPES.find(p=>p.id===creator.payType)?.label||"—"} · <CreatorHandle creator={creator} style={{fontSize:9.5}}/> · {fmtINR(costOf(creator))}</div>
           </div>
           <button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button>
         </div>
@@ -1722,6 +1708,11 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const [editTarget,setEditTarget]=useState(null);       // creator being edited (see PERMS.editCreatorDetails)
   const [invoiceTarget,setInvoiceTarget]=useState(null); // creator to invoice
   const required=numReqOf(camp),flagged=genRounds>=4;
+  const lockedCount=creators.filter(isLocked).length;
+  // Read off the LOCAL roster, not camp.creators: the tab holds edits that
+  // haven't round-tripped yet, and the countdown has to move when you lock
+  // someone, not one save later. null once the roster is confirmed.
+  const gap=rosterGap(camp,creators);
   const cb=creatorBudgetOf(camp),perCr=perCreatorOf(camp);
   const totalFee=creators.reduce((s,c)=>s+costOf(c),0);
   const over=totalFee>cb;
@@ -1750,7 +1741,10 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
       </div>
     </div>}
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
-      <div><Lbl>Creators</Lbl><span style={{fontSize:9,color:T.sub,marginLeft:8}}>{creators.length} of {required} required</span>{camp.sentToClient&&<span style={{fontSize:9,color:T.green,marginLeft:8}}>&middot; sent to client</span>}</div>
+      {/* Both scope numbers in one line: how many creators, and how many posts
+          the roster owes in total (see totalDelivOf — per-creator overrides
+          included, so this is the real number, not creators × plan). */}
+      <div><Lbl>Creators</Lbl><span style={{fontSize:9,color:T.sub,marginLeft:8}}>{creators.length} of {required} required &middot; {lockedCount} locked &middot; {totalDelivOf(camp)} deliverables</span>{camp.sentToClient&&<span style={{fontSize:9,color:T.green,marginLeft:8}}>&middot; sent to client</span>}</div>
       <div style={{display:"flex",gap:6,alignItems:"center"}}>
         {canEdit&&<>
           <Btn variant="ghost" onClick={()=>setShowAdd(true)} style={{fontSize:9.5,padding:"4px 10px"}}>+ Add Creator</Btn>
@@ -1772,7 +1766,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
           {creators.map((cr,i)=>{
             const stCol=CR_COLOR[cr.status]||T.sub;
             return(<tr key={cr._id} style={{background:i%2===0?"transparent":T.hover}}>
-              <td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={22}/><div><div style={{fontSize:11,fontWeight:500,color:T.text}}>{cr.name}</div><div style={{fontSize:9,color:T.label}}>{cr.handle}</div></div></div></td>
+              <td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={22}/><div><div style={{fontSize:11,fontWeight:500,color:T.text}}>{cr.name}</div><CreatorHandle creator={cr} style={{fontSize:9,color:T.label,display:"block"}}/></div></div></td>
               <td style={tdS}>{cr.platform}</td>
               <td style={tdS}>{fmtNum(cr.followers)}</td>
               <td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td>
@@ -1795,7 +1789,19 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
                     <span style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",pointerEvents:"none",fontSize:7,color:stCol}}>▼</span>
                   </span>
                 : <span style={{fontSize:10.5,color:stCol}}>{CR_JOURNEY.find(s=>s.id===cr.status)?.label}</span>}</td>
-              {canCrFin(role)&&<td style={tdS}>{canEdit?<CostCell value={costOf(cr)} onCommit={n=>patch(cr._id,{cost:n})} style={{width:76,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}/>:fmtINR(costOf(cr))}</td>}
+              {/* Locking a creator is what posts their cost to Billing as a
+                  committed expense. Editing it afterwards silently re-prices a
+                  commitment the books have already recorded — and, once an
+                  invoice has been generated against it, disagrees with a PDF
+                  that has left the building. Unlock (set the status back to
+                  Negotiating) to change it; that cancels the expense, which is
+                  the honest audit trail for a re-negotiation. */}
+              {canCrFin(role)&&<td style={tdS}>{canEdit&&!isLocked(cr)
+                ? <CostCell value={costOf(cr)} onCommit={n=>patch(cr._id,{cost:n})} style={{width:76,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}/>
+                : <span title={canEdit&&isLocked(cr)?"Cost is locked — this creator's fee is committed in Billing. Set the status back to Negotiating to change it.":undefined}
+                    style={{color:T.text,...(canEdit&&isLocked(cr)?{cursor:"not-allowed"}:{})}}>
+                    {fmtINR(costOf(cr))}{canEdit&&isLocked(cr)&&<span style={{fontSize:9,color:T.label,marginLeft:5}}>🔒</span>}
+                  </span>}</td>}
               {canFin(role)&&<td style={tdS}>{canEdit?<select value={cr.payType||""} onChange={e=>patch(cr._id,{payType:e.target.value||null,payId:null})} style={{background:"transparent",border:`1px solid ${T.border}`,color:cr.payType?T.text:T.label,fontSize:10,fontFamily:"'Sora'",outline:"none",cursor:"pointer",borderRadius:4,padding:"3px 5px"}}>{PAYMENT_TYPES.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select>:<span style={{fontSize:10,color:T.text}}>{PAYMENT_TYPES.find(p=>p.id===cr.payType)?.label||"—"}</span>}</td>}
               {(canEdit||canFin(role))&&<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}>
                 {can(role,"editCreatorDetails")&&<button onClick={()=>setEditTarget(cr)} title="Edit all creator details" style={{fontSize:9,color:T.sub,background:"transparent",border:`1px solid ${T.borderMid}`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Edit</button>}
@@ -1809,9 +1815,17 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
         </tbody>
       </table>
     </div>
-    {canEdit&&creators.length>=required&&!camp.sentToClient&&<div style={{marginTop:14}}><Hr style={{marginBottom:12}}/><Btn variant="primary" onClick={()=>onUpdateCreators(creators,"send_to_client")}>Send creator list to client</Btn></div>}
+    {/* No "send to client" button. The roster goes to the client the moment it
+        is confirmed — every required slot filled by a LOCKED creator (see
+        rosterReady, applied in onUpdateCreators). Locking IS the decision; a
+        separate button only added a step someone could forget, which left the
+        brand looking at an empty roster while the team had finished picking.
+        All this says is what's left before that happens. */}
+    {canEdit&&!camp.sentToClient&&gap&&<div style={{marginTop:14}}><Hr style={{marginBottom:12}}/>
+      <div style={{fontSize:9.5,color:T.label}}>{gap} — the roster goes to the client, and the client PO becomes raisable, once it's confirmed.</div>
+    </div>}
     {suggested.length>0&&<div style={{marginTop:20}}><Hr style={{marginBottom:14}}/><div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}><Lbl>Suggested — Round {genRounds}</Lbl><span style={{fontSize:9,color:T.sub}}>{required-creators.length} spots remaining</span></div>
-      <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:500}}><thead><tr>{["Creator","Platform","Followers","Avg ER%","Niche",...(canCrFin(role)?["Est. Cost"]:[]),""].map(h=><th key={h} style={{...thS}}>{h}</th>)}</tr></thead><tbody>{suggested.map((cr,i)=><tr key={cr._id} style={{opacity:creators.length>=required?0.35:1}}><td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={20}/><div><div style={{fontSize:11,fontWeight:500}}>{cr.name}</div><div style={{fontSize:9,color:T.label}}>{cr.handle}</div></div></div></td><td style={tdS}>{cr.platform}</td><td style={tdS}>{fmtNum(cr.followers)}</td><td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td><td style={tdS}>{cr.niche||"—"}</td>{canCrFin(role)&&<td style={tdS}>{fmtINR(costOf(cr))}</td>}<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}><Btn variant="ghost" onClick={()=>addFromSugg(cr)} disabled={creators.length>=required} style={{fontSize:9,padding:"3px 9px"}}>Add</Btn><Btn variant="subtle" onClick={()=>setSuggested(p=>p.filter(c=>c._id!==cr._id))} style={{fontSize:9,padding:"3px 9px"}}>Skip</Btn></div></td></tr>)}</tbody></table></div>
+      <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:500}}><thead><tr>{["Creator","Platform","Followers","Avg ER%","Niche",...(canCrFin(role)?["Est. Cost"]:[]),""].map(h=><th key={h} style={{...thS}}>{h}</th>)}</tr></thead><tbody>{suggested.map((cr,i)=><tr key={cr._id} style={{opacity:creators.length>=required?0.35:1}}><td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={20}/><div><div style={{fontSize:11,fontWeight:500}}>{cr.name}</div><CreatorHandle creator={cr} style={{fontSize:9,color:T.label,display:"block"}}/></div></div></td><td style={tdS}>{cr.platform}</td><td style={tdS}>{fmtNum(cr.followers)}</td><td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td><td style={tdS}>{cr.niche||"—"}</td>{canCrFin(role)&&<td style={tdS}>{fmtINR(costOf(cr))}</td>}<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}><Btn variant="ghost" onClick={()=>addFromSugg(cr)} disabled={creators.length>=required} style={{fontSize:9,padding:"3px 9px"}}>Add</Btn><Btn variant="subtle" onClick={()=>setSuggested(p=>p.filter(c=>c._id!==cr._id))} style={{fontSize:9,padding:"3px 9px"}}>Skip</Btn></div></td></tr>)}</tbody></table></div>
     </div>}
     {removeTarget&&<RemoveModal creator={removeTarget} onConfirm={confirmRemove} onCancel={()=>setRemoveTarget(null)}/>}
     {showAdd&&<AddCreatorModal onAdd={cr=>sync([...creators,cr])} onClose={()=>setShowAdd(false)}/>}
@@ -1828,11 +1842,33 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
 // campaign PATCHes plus — for a locked creator — six expense PATCHes, all
 // racing each other, and every intermediate value ("1", "15", "150"…) was
 // briefly the creator's real committed cost in Billing.
-function CostCell({value,onCommit,style}){
+// Hold a local draft, commit once on blur, and re-sync when the underlying
+// value changes (so switching creators never shows a stale draft). Shared by
+// every free-text cell that writes straight to the campaign — typing "150000"
+// per keystroke fires six PATCHes racing each other, and each intermediate
+// value is briefly real.
+function useDraft(value,onCommit,parse){
   const [draft,setDraft]=useState(String(value ?? ""));
   useEffect(()=>{setDraft(String(value ?? ""));},[value]);
-  const commit=()=>{const n=parseInt(draft)||0; if(n!==value) onCommit(n);};
+  const commit=()=>{const n=parse(draft); if(n!==value) onCommit(n);};
+  return [draft,setDraft,commit];
+}
+
+function CostCell({value,onCommit,style}){
+  const [draft,setDraft,commit]=useDraft(value,onCommit,d=>parseInt(d)||0);
   return <MoneyInput value={draft} onChange={setDraft} onBlur={commit}
+    onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}} style={style}/>;
+}
+
+// How many posts this creator owes. Draft-on-blur for the same reason as
+// CostCell, and one more: every commit writes a timeline entry, so committing
+// per keystroke would log "1 → 1", "1 → 12", "1 → 123" for one edit and bury
+// the real change in noise. Clamped at 1 — a locked creator owing zero posts
+// is not a scope change, it's a mistake.
+function DelivCell({value,onCommit,style,title}){
+  const [draft,setDraft,commit]=useDraft(value,onCommit,d=>Math.max(1,parseInt(d)||1));
+  return <input type="number" min={1} value={draft} title={title}
+    onChange={e=>setDraft(e.target.value)} onBlur={commit}
     onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}} style={style}/>;
 }
 
@@ -1870,8 +1906,47 @@ function AssetCell({label,asset,canEdit,onPatch,style={}}){
   </div>);
 }
 
+// ── LIVE POST LINKS ──────────────────────────────────────────────────────────
+// One row per post the creator has put up. A creator on a multi-post brief had
+// a single URL field, so only the first post was ever recorded — and only the
+// first was ever tracked, which quietly under-reported the campaign's real
+// reach on every brief asking for more than one deliverable.
+//
+// Same draft-on-blur discipline as AssetCell and CostCell: the array is
+// rewritten on blur, not per keystroke, so typing one URL doesn't fire a
+// campaign PATCH per character.
+function LiveLinks({links,platform,canEdit,onChange}){
+  // A trailing blank row is what makes "add another" work without a button
+  // while editing; it is never persisted, because withLiveLinks drops empties.
+  const [draft,setDraft]=useState(links);
+  useEffect(()=>{setDraft(links);},[links.join("|")]);
+  const rows=canEdit?[...draft,""]:draft;
+  const commit=next=>{const clean=next.filter(Boolean); if(clean.join("|")!==links.join("|")) onChange(clean);};
+  const setAt=(i,v)=>setDraft(d=>{const n=[...d];n[i]=v;return n;});
+  const label=platform==="YouTube"?"YouTube video":"Instagram post";
+  return(<div style={{display:"flex",flexDirection:"column",gap:5}}>
+    {rows.map((u,i)=>{
+      const bad=!!u&&!livePostUrlOk(u,platform);
+      return(<div key={i}>
+        {canEdit
+          ? <div style={{display:"flex",gap:4,alignItems:"center"}}>
+              <input value={u} onChange={e=>setAt(i,e.target.value)} onBlur={()=>commit(draft)}
+                onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}}
+                placeholder={i===0?`${label} URL…`:`${label} URL (${i+1})`}
+                style={{...INP,fontSize:10,padding:"5px 8px",resize:"none",flex:1,borderColor:bad?T.red:T.border}}/>
+              {u&&<button onClick={()=>{const n=draft.filter((_,j)=>j!==i);setDraft(n);commit(n);}}
+                title="Remove this link" style={{fontSize:11,lineHeight:1,color:T.label,background:"transparent",border:"none",cursor:"pointer",padding:"0 2px"}}>✕</button>}
+            </div>
+          : u&&<a href={extUrl(u)} target="_blank" rel="noreferrer" style={{fontSize:9.5,color:T.accent}}>Post {i+1} →</a>}
+        {bad&&<div style={{fontSize:9,color:T.red,marginTop:2}}>Only {platform==="YouTube"?"YouTube":"Instagram"} URLs are supported.</div>}
+        {canEdit&&!!u&&!bad&&<a href={extUrl(u)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginTop:2}}>Open post {i+1} →</a>}
+      </div>);
+    })}
+  </div>);
+}
+
 // ── DELIVERABLES TAB ─────────────────────────────────────────────────────────
-function TabDeliverables({camp,role,onUpdateCreators}){
+function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
   // `creators` stays the FULL list so edits below splice back into the real
   // array; `rows` is what actually renders. Filtering the state itself would
   // drop every non-locked creator on the first save.
@@ -1885,13 +1960,43 @@ function TabDeliverables({camp,role,onUpdateCreators}){
   const pDem=(id,obj)=>pCr(id,{demo:{...(creators.find(c=>c._id===id)?.demo||{}),...obj}});
   const pLiv=(id,obj)=>pCr(id,{live:{...(creators.find(c=>c._id===id)?.live||{}),...obj}});
   const pTrk=(id,obj)=>pCr(id,{tracking:{...(creators.find(c=>c._id===id)?.tracking||{}),...obj}});
+  // Scope changes are audited. Cost is frozen once a creator is locked because
+  // the fee is committed in Billing — but the number of posts that fee buys
+  // stayed editable, so re-scoping a locked creator silently re-priced the deal
+  // and left no trace anywhere. Freezing it too would be worse (unlocking to
+  // re-scope cancels the expense), so it stays editable and gets logged, the
+  // same way stage changes and end-date extensions already are.
+  const setDeliv=(cr,n)=>{
+    const before=delivTargetOf(camp,cr);
+    if(n===before)return;
+    pCr(cr._id,{numDeliverables:n});
+    onLogTimeline?.(`${cr.name} — deliverables ${before} → ${n}${isLocked(cr)?" (creator already locked)":""}`);
+  };
   const [fetchErrs,setFetchErrs]=useState({});
-  const refresh=async(id,url,platform)=>{
+  // One creator can owe several posts, so Refresh fetches every link they have
+  // up and reports the SUM — the creator's total contribution to the campaign,
+  // which is what the aggregates and CPV are measuring.
+  //
+  // Links are fetched together but reduced tolerantly: one dead link (post
+  // deleted, made private, rate-limited) must not throw away the numbers from
+  // the ones that worked. A partial result is reported with a note saying how
+  // many links it covers, rather than the whole creator failing.
+  const refresh=async(id,urls,platform)=>{
     setFetching(f=>({...f,[id]:true}));setFetchErrs(e=>({...e,[id]:null}));
-    try{
-      const m=await PostMetricsAPI.fetch(url,platform);
-      pTrk(id,{views:m.views,likes:m.likes,comments:m.comments,forwards:m.forwards,lastFetched:new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})});
-    }catch(e){setFetchErrs(errs=>({...errs,[id]:e.body?.error||"Fetch failed — check connection"}));}
+    const results=await Promise.all(urls.map(u=>PostMetricsAPI.fetch(extUrl(u),platform).catch(e=>({__err:e.body?.error||"Fetch failed"}))));
+    const ok=results.filter(r=>!r.__err);
+    if(ok.length){
+      // null means "this platform doesn't expose it" (YouTube has no forward
+      // count) — summing as 0 would report a real zero. Stays null unless at
+      // least one link actually returned a number.
+      const sum=k=>ok.some(m=>m[k]!=null)?ok.reduce((s,m)=>s+(m[k]||0),0):null;
+      pTrk(id,{views:sum("views"),likes:sum("likes"),comments:sum("comments"),forwards:sum("forwards"),
+        postsCounted:ok.length,lastFetched:new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})});
+    }
+    const failed=results.length-ok.length;
+    setFetchErrs(errs=>({...errs,[id]:failed
+      ? `${failed} of ${results.length} link${results.length!==1?"s":""} couldn't be read${ok.length?" — totals cover the rest":""}.`
+      : null}));
     setFetching(f=>({...f,[id]:false}));
   };
   // Aggregates
@@ -1899,19 +2004,40 @@ function TabDeliverables({camp,role,onUpdateCreators}){
   const totV=wd.reduce((s,c)=>s+(c.tracking.views||0),0);
   const totL=wd.reduce((s,c)=>s+(c.tracking.likes||0),0);
   const totC=wd.reduce((s,c)=>s+(c.tracking.comments||0),0);
-  const totF=wd.reduce((s,c)=>s+(c.tracking.forwards||0),0);
+  // Forwards are reported as an AVERAGE PER POST, not a campaign total. A total
+  // says more about how many creators are live than about how shareable the
+  // content is, so it climbed all through execution and could never be compared
+  // against another campaign. The average is the per-post number a creator or a
+  // concept can actually be judged on.
+  //
+  // Denominator counts only posts on platforms that report forwards — YouTube
+  // returns null, and folding those posts in would halve the average of a mixed
+  // roster for no reason other than the platform mix. postsCounted is what the
+  // refresh recorded; ||1 covers rows tracked before it existed.
+  const fw=wd.filter(c=>c.tracking.forwards!=null);
+  const totF=fw.reduce((s,c)=>s+c.tracking.forwards,0);
+  const fwPosts=fw.reduce((s,c)=>s+(c.tracking.postsCounted||1),0);
+  const avgF=fwPosts>0?totF/fwPosts:null;
   const totCost=rows.reduce((s,c)=>s+costOf(c),0);
+  // Cost per view runs to five decimals. At agency scale the numerator is
+  // lakhs and the denominator is millions, so two decimals rounded almost
+  // every campaign to the same ₹0.02–₹0.05 band and the metric couldn't
+  // separate a good buy from a bad one. The precision is the whole point of
+  // the number.
   const cpv=totV>0?(totCost/totV):null;
-  const er=totV>0?(((totL+totC+totF)/totV)*100):null;
-  const ps=wd.filter(c=>c.tracking.positivityScore!=null).map(c=>c.tracking.positivityScore);
-  const avgPos=ps.length>0?Math.round(ps.reduce((s,n)=>s+n,0)/ps.length):null;
+  // ER counts reactions the audience left ON the post — likes and comments.
+  // Forwards are shares OFF-platform: they measure distribution, not
+  // engagement, and they're already reported on their own card below. Adding
+  // them in double-counted reach and made Instagram creators (the only ones
+  // with a forward count — YouTube returns null) look systematically more
+  // engaged than YouTube ones for the same real performance.
+  const er=totV>0?(((totL+totC)/totV)*100):null;
   const agg=[
     {l:"Total Views",v:fmtNum(totV||null),show:true},
     {l:"Total Likes",v:fmtNum(totL||null),show:true},
-    {l:"CPV",v:cpv!=null?`₹${cpv.toFixed(2)}`:"—",show:canCrFin(role)},  // creator fees ÷ views — creator-side, same band as the fees themselves
+    {l:"CPV",v:cpv!=null?`₹${cpv.toFixed(5)}`:"—",show:canCrFin(role)},  // creator fees ÷ views — creator-side, same band as the fees themselves
     {l:"Avg ER",v:er!=null?`${er.toFixed(1)}%`:"—",show:true},
-    {l:"Forwards",v:fmtNum(totF||null),show:true},
-    {l:"% Positive",v:avgPos!=null?`${avgPos}%`:"—",show:true},
+    {l:"Avg Forwards",v:avgF!=null?fmtNum(Math.round(avgF)):"—",show:true},
   ].filter(s=>s.show);
   return(<div>
     {wd.length>0&&<div style={{marginBottom:20}}>
@@ -1929,40 +2055,71 @@ function TabDeliverables({camp,role,onUpdateCreators}){
       {rows.map(cr=>{
         const con=cr.concept||{status:"yet_to_receive",fileLink:null};
         const dem=cr.demo||{status:"yet_to_receive",fileLink:null};
-        const liv=cr.live||{postUrl:null,postedDate:null};
-        const prof=profileUrl(cr);
+        const liv=cr.live||{postUrls:[],postedDate:null};
+        const links=liveLinksOf(cr);
+        // Only well-formed links for this platform can be fetched — a typo'd
+        // URL would just 502 the whole creator's refresh.
+        const trackable=links.filter(u=>livePostUrlOk(u,cr.platform));
+        const target=delivTargetOf(camp,cr);
         const trk=cr.tracking||{};
         const isFetch=!!fetching[cr._id];
         return(<div key={cr._id} style={{background:T.raised,borderRadius:8,border:`1px solid ${T.border}`,overflow:"hidden"}}>
           <div style={{padding:"11px 16px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10}}>
             <Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={26}/>
-            <div style={{flex:1}}><div style={{fontSize:12,fontWeight:500,color:T.text}}>{cr.name} {cr.handle&&(prof
-                ? <a href={prof} target="_blank" rel="noreferrer noopener" title={`Open ${cr.platform||"profile"} \u2192 ${cr.handle}`} style={{fontSize:9.5,color:T.accent,textDecoration:"underline",textUnderlineOffset:2}}>{cr.handle}</a>
-                : <span style={{fontSize:9.5,color:T.label}}>{cr.handle}</span>)}</div><div style={{fontSize:9.5,color:T.sub}}>{cr.platform}{cr.followers?` · ${fmtNum(cr.followers)}`:""}{ cr.avgER!=null?` · ${cr.avgER}% ER`:""}</div></div>
+            <div style={{flex:1}}><div style={{fontSize:12,fontWeight:500,color:T.text}}>{cr.name} <CreatorHandle creator={cr} style={{fontSize:9.5}} fallback=""/></div><div style={{fontSize:9.5,color:T.sub}}>{cr.platform}{cr.followers?` · ${fmtNum(cr.followers)}`:""}{ cr.avgER!=null?` · ${cr.avgER}% ER`:""}</div></div>
+            {/* The deliverable count used to sit here, immediately left of this
+                status pill — so an editable field rendered next to the word
+                "Locked" and read as though the two were related. They aren't:
+                "Locked" is the creator's journey status, not a frozen row. It
+                now lives in the Live cell as the denominator of "n/N posted",
+                which is the only place the number means anything. */}
             <span style={{fontSize:9.5,color:CR_COLOR[cr.status]||T.sub,fontWeight:500}}>{CR_JOURNEY.find(s=>s.id===cr.status)?.label||cr.status}</span>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr"}}>
             <AssetCell label="Concept"    asset={con} canEdit={canEdit} onPatch={o=>pCon(cr._id,o)} style={{borderRight:`1px solid ${T.border}`}}/>
             <AssetCell label="Demo Video" asset={dem} canEdit={canEdit} onPatch={o=>pDem(cr._id,o)} style={{borderRight:`1px solid ${T.border}`}}/>
-            {/* Live — unlocked once the demo video is received; URL must match the creator's platform */}
+            {/* Live — unlocked once the demo video is received; URLs must match
+                the creator's platform. One row per deliverable this creator
+                owes (see LiveLinks). */}
             <div style={{padding:"12px 14px",borderRight:`1px solid ${T.border}`}}>
-              <Lbl style={{display:"block",marginBottom:8}}>Live</Lbl>
+              {/* "posted" reads n / N, and N is the editable target — so the
+                  field is visibly the thing the count is measured against
+                  rather than a loose property of the creator. */}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,gap:6}}>
+                <Lbl>Live</Lbl>
+                <span style={{display:"flex",alignItems:"center",gap:3,fontSize:8.5,color:links.length>=target?T.green:T.label,whiteSpace:"nowrap"}}>
+                  {links.length} /
+                  {canEdit
+                    ? <DelivCell value={target} onCommit={n=>setDeliv(cr,n)}
+                        title="How many posts this creator owes on this campaign — changes are logged to the timeline"
+                        style={{width:34,background:"transparent",border:`1px solid ${T.border}`,borderRadius:4,color:T.text,fontSize:9.5,fontFamily:"'Sora'",outline:"none",padding:"1px 3px",textAlign:"center"}}/>
+                    : target}
+                  posted
+                </span>
+              </div>
               {!demoReceived(dem.status)?<div style={{fontSize:10.5,color:T.label,fontStyle:"italic"}}>Unlocks once the demo video is received.</div>:<>
-              {canEdit&&<input value={liv.postUrl||""} onChange={e=>pLiv(cr._id,{postUrl:e.target.value})} placeholder={`${cr.platform==="YouTube"?"YouTube video":"Instagram post"} URL…`} style={{...INP,fontSize:10,padding:"5px 8px",resize:"none",marginBottom:6,borderColor:liv.postUrl&&!livePostUrlOk(liv.postUrl,cr.platform)?T.red:T.border}}/>}
-              {liv.postUrl&&!livePostUrlOk(liv.postUrl,cr.platform)&&<div style={{fontSize:9,color:T.red,marginBottom:6}}>Only {cr.platform==="YouTube"?"YouTube":"Instagram"} URLs are supported.</div>}
-              {liv.postUrl&&livePostUrlOk(liv.postUrl,cr.platform)?<><a href={extUrl(liv.postUrl)} target="_blank" rel="noreferrer" style={{fontSize:9,color:T.accent,display:"block",marginBottom:6}}>Open post →</a>{canEdit&&<DateInput value={liv.postedDate||""} onChange={v=>pLiv(cr._id,{postedDate:v})} max={today()} placeholder="Posted date" style={{...INP,fontSize:10,padding:"5px 8px"}}/>}{liv.postedDate&&!canEdit&&<div style={{fontSize:9.5,color:T.sub}}>Posted: {prettyDate(liv.postedDate)}</div>}</>:!canEdit&&<div style={{fontSize:11,color:T.label,fontStyle:"italic"}}>Not posted</div>}
+              <LiveLinks links={links} platform={cr.platform} canEdit={canEdit}
+                onChange={urls=>pCr(cr._id,{live:withLiveLinks(cr.live,urls)})}/>
+              {links.length>0
+                ? (canEdit
+                    ? <DateInput value={liv.postedDate||""} onChange={v=>pLiv(cr._id,{postedDate:v})} max={today()} placeholder="First posted date" style={{...INP,fontSize:10,padding:"5px 8px",marginTop:6}}/>
+                    : liv.postedDate&&<div style={{fontSize:9.5,color:T.sub,marginTop:6}}>Posted: {prettyDate(liv.postedDate)}</div>)
+                : !canEdit&&<div style={{fontSize:11,color:T.label,fontStyle:"italic"}}>Not posted</div>}
               </>}
             </div>
             {/* Tracking */}
             <div style={{padding:"12px 14px"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
                 <Lbl>Tracking</Lbl>
-                {liv.postUrl&&livePostUrlOk(liv.postUrl,cr.platform)&&<button onClick={()=>refresh(cr._id,extUrl(liv.postUrl),cr.platform)} disabled={isFetch} style={{fontSize:8.5,color:T.accent,background:"transparent",border:`1px solid ${T.accent}25`,borderRadius:3,padding:"2px 6px",cursor:isFetch?"not-allowed":"pointer",fontFamily:"'Sora'",opacity:isFetch?0.5:1}}>{isFetch?"…":"↻ Refresh"}</button>}
+                {trackable.length>0&&<button onClick={()=>refresh(cr._id,trackable,cr.platform)} disabled={isFetch} style={{fontSize:8.5,color:T.accent,background:"transparent",border:`1px solid ${T.accent}25`,borderRadius:3,padding:"2px 6px",cursor:isFetch?"not-allowed":"pointer",fontFamily:"'Sora'",opacity:isFetch?0.5:1}}>{isFetch?"…":"↻ Refresh"}</button>}
               </div>
-              {!liv.postUrl&&<div style={{fontSize:9.5,color:T.label,fontStyle:"italic"}}>Post URL required</div>}
-              {liv.postUrl&&<>
+              {links.length===0&&<div style={{fontSize:9.5,color:T.label,fontStyle:"italic"}}>Post URL required</div>}
+              {links.length>0&&<>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:8}}>{[["Views",trk.views],["Likes",trk.likes],["Comments",trk.comments],["Forwards",trk.forwards]].map(([l,v])=><div key={l}><div style={{fontSize:8,color:T.label,marginBottom:1}}>{l}</div><div style={{fontSize:14,fontWeight:600,color:v!=null?T.text:T.mute}}>{fmtNum(v)}</div></div>)}</div>
-                {trk.commentAnalysis&&<><div style={{fontSize:8,color:T.label,marginBottom:3}}>Comment Analysis</div><div style={{fontSize:9.5,color:T.sub,lineHeight:1.5}}>{trk.commentAnalysis}</div>{trk.positivityScore!=null&&<div style={{fontSize:9,color:T.green,marginTop:4}}>↑ {trk.positivityScore}% positive</div>}</>}
+                {/* Says what the totals actually cover, so a creator whose
+                    second post hasn't been fetched yet doesn't read as one
+                    whose second post underperformed. */}
+                {trk.postsCounted>1&&<div style={{fontSize:8,color:T.label,marginBottom:4}}>Summed across {trk.postsCounted} posts</div>}
                 {fetchErrs[cr._id]&&<div style={{fontSize:9,color:T.red,marginBottom:4}}>{fetchErrs[cr._id]}</div>}
                 {!trk.views&&!isFetch&&!fetchErrs[cr._id]&&<div style={{fontSize:9.5,color:T.label,fontStyle:"italic"}}>No data — click Refresh</div>}
                 {trk.lastFetched&&<div style={{fontSize:8,color:T.label,marginTop:5}}>Last fetched: {trk.lastFetched}</div>}
@@ -1989,6 +2146,14 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
   // their own brief means the two people who own commercials have to retype it.
   const isCreator=!!currentUser?.teamId&&camp.createdBy===currentUser.teamId;
   const canEditBrief=(["founder","pcm"].includes(role)||isCreator)&&beforePO(camp);
+  // Scope (how many creators × how many posts each) stays editable one stage
+  // longer — THROUGH the PO stage, and frozen from Advance on, once the client
+  // has authorised the spend. The rest of the brief freezes at sign-off because
+  // an edit after that desyncs the quote; the scope numbers are different,
+  // because `numReq` is what the roster gate measures against. A team that
+  // planned five, locked four and settled on four has to be able to say so —
+  // otherwise the PO gate is a trap with no way out of it.
+  const canEditScope=(["founder","pcm"].includes(role)||isCreator)&&plIdx(camp.stage)<=plIdx("po");
   // Sign-off stays with the two roles that own commercials, regardless of who
   // wrote the brief — it's the act that commits the numbers and moves to PO,
   // and it only unlocks once the brief is actually filled in (briefGaps).
@@ -1997,13 +2162,23 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
 
   const open  = (key,value) => { setEdit(key); setDraft(value); };
   const cancel= () => { setEdit(null); setDraft(null); };
-  // Brief text fields all patch brief{}; creatorBudget lives on the campaign
-  // itself, so it takes the other setter.
+  // Brief text fields all patch brief{}; creatorBudget and the deliverables
+  // plan live on the campaign itself, so they take the other setter.
   const commit= (key) => {
     if(key==="creatorBudget"){
       const n=parseInt(draft)||0;
       if(n>(camp.budget||0)) return;              // guarded by the button too
       if(n!==creatorBudgetOf(camp)) onSaveCampaign({creatorBudget:n});
+    } else if(key==="scope"){
+      // Two numbers, one save — they're quoted to the client together, and
+      // saving them separately would put the campaign through a moment where
+      // the roster gate reads a count nobody chose.
+      const numReq=Math.max(1,parseInt(draft?.numReq)||1);
+      const deliverablesPerCreator=Math.max(1,parseInt(draft?.perDeliv)||1);
+      const patch={};
+      if(numReq!==numReqOf(camp)) patch.numReq=numReq;
+      if(deliverablesPerCreator!==perCreatorDelivOf(camp)) patch.deliverablesPerCreator=deliverablesPerCreator;
+      if(Object.keys(patch).length) onSaveCampaign(patch);
     } else if(draft!==(camp.brief[key]??(key==="deliverables"?[]:""))){
       onSaveBrief({[key]:draft});
     }
@@ -2014,7 +2189,7 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
   // Called as a function, NOT rendered as <Field/> — a component declared
   // inside render gets a fresh identity every pass, which makes React remount
   // the subtree and drop focus out of the textarea on every keystroke.
-  const field = ({fieldKey,label,value,render,children,invalid}) => {
+  const field = ({fieldKey,label,value,render,children,invalid,editable=canEditBrief}) => {
     const on = edit===fieldKey;
     return(<div style={{padding:"12px 0"}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
@@ -2022,7 +2197,7 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
         {/* Gated on `edit`, not on `on`: while any field is open the other
             Edit controls disappear, so a half-typed draft can't be silently
             discarded by clicking Edit on a different row. */}
-        {canEditBrief&&!edit&&<button onClick={()=>open(fieldKey,value)} style={{fontSize:9,color:T.accent,background:"none",border:"none",cursor:"pointer",fontFamily:"'Sora'"}}>Edit</button>}
+        {editable&&!edit&&<button onClick={()=>open(fieldKey,value)} style={{fontSize:9,color:T.accent,background:"none",border:"none",cursor:"pointer",fontFamily:"'Sora'"}}>Edit</button>}
       </div>
       {on
         ? <>{children}<div style={{display:"flex",gap:8,marginTop:8}}>
@@ -2047,6 +2222,27 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
       render:(camp.brief.deliverables||[]).length>0
         ? <div style={{display:"flex",flexWrap:"wrap",gap:5}}>{camp.brief.deliverables.map(d=><span key={d} style={{fontSize:10.5,color:T.sub,padding:"3px 8px",background:T.mute,borderRadius:3}}>{d}</span>)}</div>
         : <div style={{fontSize:12,color:T.label,fontStyle:"italic"}}>Not selected — AM to choose</div>})}<Hr/>
+    {/* Scope: how many creators, how many posts each. Both are quoted to the
+        client, and `numReq` is what the roster gate counts to, so it stays
+        editable one stage longer than the rest of the brief (see canEditScope).
+        The total shown is the live one — per-creator overrides on the
+        Deliverables tab are already counted in it. */}
+    {field({fieldKey:"scope",label:"Scope",editable:canEditScope,
+      value:{numReq:String(numReqOf(camp)),perDeliv:String(perCreatorDelivOf(camp))},
+      render:<div style={{fontSize:12,color:T.text}}>{numReqOf(camp)} creators · {perCreatorDelivOf(camp)} deliverable{perCreatorDelivOf(camp)!==1?"s":""} each <span style={{fontSize:10,color:T.label}}>· {totalDelivOf(camp)} total</span></div>,
+      children:<>
+        <div style={{display:"flex",gap:10}}>
+          {[["numReq","Creators"],["perDeliv","Deliverables each"]].map(([k,l])=>(
+            <div key={k}>
+              <Lbl style={{display:"block",marginBottom:4}}>{l}</Lbl>
+              <input type="number" min={1} value={draft?.[k]??""} onChange={e=>setDraft(d=>({...d,[k]:e.target.value}))} style={{...INP,resize:"none",maxWidth:120}}/>
+            </div>
+          ))}
+        </div>
+        <div style={{fontSize:9.5,color:T.sub,marginTop:6}}>
+          The plan, and what the client is quoted. Creators is also what the roster gate counts to — locking this many is what sends the list to the client and unlocks the PO. A single creator can still be set higher on the Deliverables tab.
+        </div>
+      </>})}<Hr/>
     {/* Total budget is the client-facing number (founder/PCM only). Creator
         budget is the pot the shortlist is built against, so every role that
         can see creator cost can see it here too. */}
@@ -2080,7 +2276,11 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
       <Btn variant="primary" onClick={()=>onAction("brief_complete")} disabled={!!edit||gaps.length>0}>Sign off brief &amp; move to PO</Btn>
     </div>}
     {!canEditBrief&&!canSignOff&&<div style={{marginTop:16,fontSize:10,color:T.label}}>
-      {beforePO(camp)?"The brief is edited by the Founder, PCM or whoever raised this campaign, and signed off by the Founder or PCM.":"The brief was locked when the Purchase Order was raised."}
+      {beforePO(camp)
+        ? "The brief is edited by the Founder, PCM or whoever raised this campaign, and signed off by the Founder or PCM."
+        : canEditScope
+          ? "The brief was locked at sign-off. Scope stays editable until the client PO is recorded, because it's what the roster is measured against."
+          : "The brief was locked when the Purchase Order was raised."}
     </div>}
   </div>);
 }
@@ -2214,9 +2414,15 @@ function WorkflowActions({camp, role, onAction}) {
   // Raising the PO writes the client PO and links it to the invoice; confirming
   // the advance settles the invoice's advance leg. The stage moves because the
   // document exists, which is the same shape as the Draft gate.
+  // The client PO buys a specific set of creators at a specific set of fees, so
+  // the roster has to be confirmed before it can be raised. Recorded against a
+  // half-locked list, the PO's value was a guess: anyone still negotiating could
+  // land above the number, and anyone who backed off meant reissuing it.
   if (stage==="po") {
-    if (isAcc) actions.push({label:"Record Client PO", action:"raise_po", variant:"primary"});
-    else actions.push({action:null, hint:"Waiting on Accounts to record the client's Purchase Order"});
+    const gap=rosterGap(camp);
+    if (isAcc) actions.push({label:"Record Client PO", action:"raise_po", variant:"primary", disabled:!!gap});
+    else if (!gap) actions.push({action:null, hint:"Waiting on Accounts to record the client's Purchase Order"});
+    if (gap) actions.push({action:null, hint:`${gap} — settle the roster on the Creators tab before the PO is raised`});
   }
   if (stage==="advance") {
     if (isAcc) actions.push({label:"Confirm Advance Received", action:"advance_received", variant:"success"});
@@ -2227,7 +2433,12 @@ function WorkflowActions({camp, role, onAction}) {
     actions.push({label:"Start Reporting", action:"start_reporting", variant:done?"success":"primary", disabled:!done});
     if (!done) actions.push({action:null, hint:s.locked===0
       ? "No creators locked yet — lock creators on the Creators tab"
-      : `${s.live} of ${s.locked} locked creator${s.locked!==1?"s":""} live · ${s.pct}% of plan delivered`});
+      // Real post counts, not `pct` — pct is overall execution progress
+      // (locked + concept + video + live), so calling it "of plan delivered"
+      // overstated what was actually posted. This is the gate's own number:
+      // Start Reporting unlocks when every locked creator has posted every
+      // deliverable, so that is what the hint should be counting down.
+      : `${s.live} of ${s.locked} locked creator${s.locked!==1?"s":""} live · ${s.delivered} of ${s.expected} deliverables posted`});
   }
   if (stage==="reporting" && isAM)
     actions.push({label:"Mark Campaign Completed", action:"mark_completed", variant:"success"});
@@ -2334,7 +2545,7 @@ function Detail({camp,role,currentUser,onAction,onSaveBrief,onSaveCampaign,onUpd
             {tab==="brief"        &&<TabBrief        camp={camp} role={role} currentUser={currentUser} onAction={onAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign}/>}
             {tab==="team"         &&<TabTeam         camp={camp} role={role} onAction={onAction}/>}
             {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
-            {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} onUpdateCreators={onUpdateCreators}/>}
+            {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
             {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
             {tab==="financials"   &&(canFin(role)||canCrFin(role))&&<TabFinancials camp={camp} role={role}/>}
           </motion.div>
@@ -2345,11 +2556,19 @@ function Detail({camp,role,currentUser,onAction,onSaveBrief,onSaveCampaign,onUpd
 }
 
 // ── CREATE MODAL ─────────────────────────────────────────────────────────────
-function CreateModal({onClose,onSubmit,brands,onCreateBrand,role}){
+function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
   const [step,setStep]=useState(0);
   // creatorBudgetMode decides which of the two creator-budget inputs is live —
   // the other is kept around so toggling back doesn't lose what was typed.
-  const [f,setF]=useState({name:"",brandId:"",service:"Influencer Marketing",region:"",niches:[],budget:"",numCreators:5,creatorBudgetMode:"pct",creatorBudgetPct:60,creatorBudgetAmt:"",objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
+  //
+  // brandId seeds from the active brand filter. Someone working inside one
+  // brand — the whole app is filtered to it, every campaign on screen is
+  // theirs — was still landing on an empty brand picker and re-choosing it,
+  // and picking the wrong one silently files the campaign (and every invoice
+  // and PO that follows) under another client. It stays a normal editable
+  // field; only the default changes. `brands` may not have loaded yet, so the
+  // id is validated against the list before it's trusted.
+  const [f,setF]=useState({name:"",brandId:brands.some(b=>b.id===brandFilter)?brandFilter:"",service:"Influencer Marketing",region:"",niches:[],budget:"",numCreators:5,deliverablesPerCreator:1,creatorBudgetMode:"pct",creatorBudgetPct:60,creatorBudgetAmt:"",objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
   const [newBrandName,setNewBrandName]=useState("");
   // Staged only — nothing is written to the backend until the campaign is
   // actually submitted, so abandoning this modal never leaves an orphan brand.
@@ -2366,7 +2585,7 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role}){
   const stepOk=[
     !!(f.name.trim()&&f.service&&f.brandId),
     true,
-    budgetNum>0&&parseInt(f.numCreators)>0&&creatorBudget>0&&creatorBudget<=budgetNum&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
+    budgetNum>0&&parseInt(f.numCreators)>0&&parseInt(f.deliverablesPerCreator)>0&&creatorBudget>0&&creatorBudget<=budgetNum&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
     true,
   ];
   const ok=stepOk[step];
@@ -2427,7 +2646,14 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role}){
         {step===1&&<>{[["Objective","objective",60],["Target audience","audience",50],["Key Messages","messages",50]].map(([l,k,h])=><div key={k} style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>{l}</Lbl><textarea value={f[k]} onChange={e=>u(k,e.target.value)} style={{...INP,minHeight:h}}/></div>)}<div><Lbl style={{display:"block",marginBottom:6}}>Deliverables</Lbl><DelvSelect value={f.deliverables} onChange={v=>u("deliverables",v)}/></div></>}
         {step===2&&<>
           <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Total budget (₹) *</Lbl><MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="e.g. 12,50,000" style={{...INP,resize:"none"}}/></div>
-          <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Creators required *</Lbl><input type="number" min={1} value={f.numCreators} onChange={e=>u("numCreators",e.target.value)} placeholder="5" style={{...INP,resize:"none"}}/></div>
+          {/* The two numbers that size a campaign. Deliverables-per-creator is
+              the PLAN — any single creator can be set higher on the
+              Deliverables tab without changing it (see delivTargetOf). */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+            <div><Lbl style={{display:"block",marginBottom:5}}>Creators required *</Lbl><input type="number" min={1} value={f.numCreators} onChange={e=>u("numCreators",e.target.value)} placeholder="5" style={{...INP,resize:"none"}}/></div>
+            <div><Lbl style={{display:"block",marginBottom:5}}>Deliverables per creator *</Lbl><input type="number" min={1} value={f.deliverablesPerCreator} onChange={e=>u("deliverablesPerCreator",e.target.value)} placeholder="1" style={{...INP,resize:"none"}}/></div>
+          </div>
+          <div style={{fontSize:9.5,color:T.label,marginTop:-8,marginBottom:14}}>{(parseInt(f.numCreators)||0)*(parseInt(f.deliverablesPerCreator)||0)} deliverables planned in total — individual creators can be set higher later.</div>
           <CreatorBudgetField
             budget={budgetNum} numCreators={parseInt(f.numCreators)||0}
             mode={f.creatorBudgetMode} pct={f.creatorBudgetPct} amount={f.creatorBudgetAmt}
@@ -2541,7 +2767,8 @@ export default function InternalCampaigns(){
         // Deliberately does NOT copy the PO onto the campaign. client_pos is
         // the record and the timeline is the audit trail; a third copy here
         // would go stale the moment Accounts corrects the number in Billing.
-        case "raise_po": next=data.poNumber?{...c,stage:"advance",
+        case "raise_po": next=rosterGap(c)?(blocked=`Roster not confirmed — ${rosterGap(c)}`,c)
+          :data.poNumber?{...c,stage:"advance",
           timeline:addEv(`Client PO ${data.poNumber} recorded — ${fmtINR(data.amount)}, awaiting advance`,currentUser.name||"Accounts")}:(blocked="A client PO number is required",c);break;
         case "advance_received": next={...c,stage:"execution",advanceReceivedOn:today(),
           timeline:addEv("Advance received — execution started",currentUser.name||"Accounts")};break;
@@ -2661,16 +2888,6 @@ export default function InternalCampaigns(){
     CampaignsAPI.update(selectedId,patch).catch(()=>showToast("Save failed — check connection"));
     showToast("Campaign updated");
   },[selectedId,showToast]);
-  const onUpdateCreators=useCallback((next,extra)=>{
-    // Resolved before the state update, not inside it: React state updaters
-    // must be pure, and StrictMode double-invokes them in development — which
-    // would fire every expense POST twice.
-    const camp=campaigns.find(c=>c.id===selectedId);
-    setCampaigns(prev=>prev.map(c=>{if(c.id!==selectedId)return c;return{...c,creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}}));
-    CampaignsAPI.update(selectedId,{creators:next,...(extra==="send_to_client"?{sentToClient:true}:{})}).catch(()=>showToast("Save failed — check connection"));
-    if(camp)syncCreatorExpenses(camp,camp.creators,next,()=>showToast("Creator cost saved, but Billing wasn't updated — check connection"));
-    if(extra==="send_to_client")showToast("Creator list sent to client");
-  },[selectedId,showToast,campaigns]);
   // Appends an audit entry to the selected campaign's timeline and persists it.
   const onLogTimeline=useCallback(event=>{
     const entry={date:today(),event,actor:currentUser.name||role};
@@ -2682,6 +2899,26 @@ export default function InternalCampaigns(){
     }));
     if(nextTimeline)CampaignsAPI.update(selectedId,{timeline:nextTimeline}).catch(()=>showToast("Save failed — check connection"));
   },[selectedId,currentUser,role,showToast]);
+  const onUpdateCreators=useCallback(next=>{
+    // Resolved before the state update, not inside it: React state updaters
+    // must be pure, and StrictMode double-invokes them in development — which
+    // would fire every expense POST twice.
+    const camp=campaigns.find(c=>c.id===selectedId);
+    // Sending the roster to the client is no longer an action someone takes —
+    // it's a consequence of the roster being finished. Derived here rather than
+    // on the Creators tab because a creator can be locked from more than one
+    // place, and the rule should hold whichever one did it. Fires once: the
+    // flag is already true on every save after this one.
+    const sending=!!camp&&!camp.sentToClient&&rosterReady(camp,next);
+    const patch={creators:next,...(sending?{sentToClient:true}:{})};
+    setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,...patch}));
+    CampaignsAPI.update(selectedId,patch).catch(()=>showToast("Save failed — check connection"));
+    if(camp)syncCreatorExpenses(camp,camp.creators,next,()=>showToast("Creator cost saved, but Billing wasn't updated — check connection"));
+    if(sending){
+      showToast(`Roster complete — creator list sent to ${camp.client||"client"}`);
+      onLogTimeline(`Roster confirmed — ${next.filter(isLockedCreator).length} creators locked, creator list sent to client`);
+    }
+  },[selectedId,showToast,campaigns,onLogTimeline]);
   const onDeleteCampaign=useCallback(async(id)=>{
     if(!can(role,"deleteCampaign"))return;
     try{
@@ -2727,7 +2964,8 @@ export default function InternalCampaigns(){
       id:campId, name:f.name, client:brandName(f.brandId)||"", brandId:f.brandId, service:f.service,
       region:f.region||"TBD", niches:f.niches||[], stage:"draft",
       budget, creatorBudget:Math.min(f.creatorBudget||0,budget),
-      numReq:parseInt(f.numCreators)||5, start:f.timelineStart||today(), end:f.timelineEnd||"TBD",
+      numReq:parseInt(f.numCreators)||5, deliverablesPerCreator:parseInt(f.deliverablesPerCreator)||1,
+      start:f.timelineStart||today(), end:f.timelineEnd||"TBD",
       createdBy:currentUser.teamId,
       amId, cmId, eaId,
       brief:{objective:f.objective,audience:f.audience,messages:f.messages,deliverables:f.deliverables,budget:fmtINR(budget),timeline:f.timeline},
@@ -2828,7 +3066,7 @@ export default function InternalCampaigns(){
       )}
     </AnimatePresence>
     <AnimatePresence>
-      {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand} role={role}/>}
+      {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand} role={role} brandFilter={brandFilter}/>}
     </AnimatePresence>
     <AnimatePresence>
       {pendingAction&&selected&&<ConfirmActionModal camp={selected} label={ACTION_MSGS[pendingAction.action]||pendingAction.action}

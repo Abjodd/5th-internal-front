@@ -1697,9 +1697,16 @@ export default function InternalBilling() {
   // screen that could even show you the row. Now the cascade is a tidy-up
   // rather than the thing correctness depends on.
   const displayExpenses  = (brandFilter ? scopedExpenses.filter(e => e.brandId ? e.brandId === brandFilter : (!e.campaign || brandCampIds.has(e.campaign))) : scopedExpenses).filter(hasLiveCampaign);
-  const displayPos       = brandFilter ? scopedPos.filter(p => p.brandId ? p.brandId === brandFilter : (!p.campaign || brandCampIds.has(p.campaign))) : scopedPos;
+  // Vendor POs get the same treatment, and for the same reason: they were the
+  // last collection Billing showed unfiltered, so a PO raised against a
+  // since-deleted campaign stayed in To Vendors — in the pending-approval
+  // count, and offering to bill expenses that no longer exist.
+  const displayPos       = (brandFilter ? scopedPos.filter(p => p.brandId ? p.brandId === brandFilter : (!p.campaign || brandCampIds.has(p.campaign))) : scopedPos).filter(hasLiveCampaign);
   const displayClientPOs = (brandFilter ? scopedClientPOs.filter(matchesBrand) : scopedClientPOs).filter(hasLiveCampaign);
-  const displayQuotes    = brandFilter ? scopedQuotes.filter(matchesBrand) : scopedQuotes;
+  // Quotes key on `campaignId`, so hasLiveCampaign (which reads `campaign`)
+  // would pass every one of them through — it needs the other field name.
+  const displayQuotes    = (brandFilter ? scopedQuotes.filter(matchesBrand) : scopedQuotes)
+    .filter(q => loading || !q.campaignId || liveCampIds.has(q.campaignId));
 
   const showToast = useCallback(msg => { setToast(msg); setTimeout(() => setToast(null), 2500); }, []);
 

@@ -15,12 +15,12 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
 import { motion, AnimatePresence, useSpring, useMotionValueEvent, useReducedMotion } from "motion/react";
-import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
+import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
 import { fmtCompact, fmtINR, prettyDate, initials, ISO_DATE, todayISO } from "../../lib/format";
 import { creatorBudgetOf, numReqOf, perCreatorOf, costOf, normCreator, creatorExpensePlan, isLockedCreator,
-         PIPELINE, PL_IDS, normStage, extUrl, rosterReady, rosterGap,
+         PIPELINE, PL_IDS, normStage, extUrl, rosterReady, rosterGap, lockedCountOf,
          perCreatorDelivOf, delivTargetOf, totalDelivOf, liveLinksOf, withLiveLinks, delivDoneOf } from "../../lib/campaign";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
@@ -360,6 +360,10 @@ const needsConfirm=action=>!NO_CONFIRM_ACTIONS.has(action);
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 const fmtNum  = fmtCompact; // shared compact formatters — lib/format.js (fmtINR too)
+// "13 Jul 2026 – 30 Aug 2026". The brief stores the human form of start/end
+// because the client portal renders the brief as authored; start/end stay the
+// source of truth and this is derived from them wherever they're written.
+const timelineLabel = (start,end) => [prettyDate(start),prettyDate(end)].filter(Boolean).join(" – ");
 const getM    = id => TEAM_DIR.find(t=>t.id===id)||TEAM.find(t=>t.id===id)||null;
 const getR    = id => ROLES.find(r=>r.id===id)||ROLES[0];
 const plIdx   = id => PL_IDS.indexOf(normStage(id));
@@ -2146,14 +2150,17 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
   // their own brief means the two people who own commercials have to retype it.
   const isCreator=!!currentUser?.teamId&&camp.createdBy===currentUser.teamId;
   const canEditBrief=(["founder","pcm"].includes(role)||isCreator)&&beforePO(camp);
-  // Scope (how many creators × how many posts each) stays editable one stage
-  // longer — THROUGH the PO stage, and frozen from Advance on, once the client
-  // has authorised the spend. The rest of the brief freezes at sign-off because
-  // an edit after that desyncs the quote; the scope numbers are different,
-  // because `numReq` is what the roster gate measures against. A team that
-  // planned five, locked four and settled on four has to be able to say so —
-  // otherwise the PO gate is a trap with no way out of it.
-  const canEditScope=(["founder","pcm"].includes(role)||isCreator)&&plIdx(camp.stage)<=plIdx("po");
+  // The commercial numbers — scope, total budget, dates — stay editable one
+  // stage longer than the brief text: THROUGH the PO stage, frozen from Advance
+  // on, once the client has authorised the spend and the invoice exists.
+  //
+  // The brief text freezes at sign-off because an edit after that desyncs the
+  // quote. These three are different. `numReq` is what the roster gate measures
+  // against, so a team that planned five, locked four and settled on four has
+  // to be able to say so or the PO gate is a trap. Budget is what the PO modal
+  // and the invoice are both raised from, so it has to be right AT the PO, not
+  // one stage before it. Dates move for real reasons all the way through.
+  const canEditCommercials=(["founder","pcm"].includes(role)||isCreator)&&plIdx(camp.stage)<=plIdx("po");
   // Sign-off stays with the two roles that own commercials, regardless of who
   // wrote the brief — it's the act that commits the numbers and moves to PO,
   // and it only unlocks once the brief is actually filled in (briefGaps).
@@ -2179,6 +2186,25 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
       if(numReq!==numReqOf(camp)) patch.numReq=numReq;
       if(deliverablesPerCreator!==perCreatorDelivOf(camp)) patch.deliverablesPerCreator=deliverablesPerCreator;
       if(Object.keys(patch).length) onSaveCampaign(patch);
+    } else if(key==="budget"){
+      const n=parseInt(draft)||0;
+      if(n<creatorBudgetOf(camp)) return;          // guarded by the button too
+      // `brief.budget` is the FORMATTED string the client portal renders in the
+      // brief. It was written once at creation and never again, so it went
+      // stale the moment anyone touched the budget. Kept in step here rather
+      // than re-derived, because the portal reads the brief as authored.
+      if(n!==(camp.budget||0)) onSaveCampaign({budget:n,brief:{...camp.brief,budget:fmtINR(n)}});
+    } else if(key==="timeline"){
+      // Edits `start`/`end` — the real fields the header, the end-date nudge,
+      // the overdue check and the portal all read. `brief.timeline` is only the
+      // display string, and it was never even set at creation (the wizard wrote
+      // `f.timeline`, which doesn't exist — it collects timelineStart/End), so
+      // every campaign's Brief tab showed "—" here. Derived and stored together
+      // in one save, so the two can't disagree.
+      const start=draft?.start||"",end=draft?.end||"";
+      if(!start||!end||end<start) return;          // guarded by the button too
+      if(start===camp.start&&end===camp.end) return;
+      onSaveCampaign({start,end,brief:{...camp.brief,timeline:timelineLabel(start,end)}});
     } else if(draft!==(camp.brief[key]??(key==="deliverables"?[]:""))){
       onSaveBrief({[key]:draft});
     }
@@ -2210,7 +2236,14 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
   const txt = v => <div style={{fontSize:12,color:v?T.text:T.label,lineHeight:1.6,fontStyle:v?"normal":"italic"}}>{v||"Not specified"}</div>;
   const area = <textarea value={draft||""} onChange={e=>setDraft(e.target.value)} style={{...INP,minHeight:60}}/>;
 
-  const cbNum=parseInt(draft)||0, cbOver=edit==="creatorBudget"&&cbNum>(camp.budget||0);
+  // Draft validity for the two money rows. Same draft, two directions: the
+  // creator budget can't rise above the total, the total can't fall below it.
+  const mNum=parseInt(draft)||0;
+  const cbOver =edit==="creatorBudget"&&mNum>(camp.budget||0);
+  const tbUnder=edit==="budget"&&mNum<creatorBudgetOf(camp);
+  // Both dates required, and in order. Checked here so the Save button and the
+  // commit guard read the same condition.
+  const tlBad=edit==="timeline"&&(!draft?.start||!draft?.end||draft.end<draft.start);
 
   return(<div>
     {field({fieldKey:"objective",label:"Objective",value:camp.brief.objective||"",render:txt(camp.brief.objective),children:area})}<Hr/>
@@ -2224,10 +2257,10 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
         : <div style={{fontSize:12,color:T.label,fontStyle:"italic"}}>Not selected — AM to choose</div>})}<Hr/>
     {/* Scope: how many creators, how many posts each. Both are quoted to the
         client, and `numReq` is what the roster gate counts to, so it stays
-        editable one stage longer than the rest of the brief (see canEditScope).
+        editable one stage longer than the rest of the brief (see canEditCommercials).
         The total shown is the live one — per-creator overrides on the
         Deliverables tab are already counted in it. */}
-    {field({fieldKey:"scope",label:"Scope",editable:canEditScope,
+    {field({fieldKey:"scope",label:"Scope",editable:canEditCommercials,
       value:{numReq:String(numReqOf(camp)),perDeliv:String(perCreatorDelivOf(camp))},
       render:<div style={{fontSize:12,color:T.text}}>{numReqOf(camp)} creators · {perCreatorDelivOf(camp)} deliverable{perCreatorDelivOf(camp)!==1?"s":""} each <span style={{fontSize:10,color:T.label}}>· {totalDelivOf(camp)} total</span></div>,
       children:<>
@@ -2245,8 +2278,21 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
       </>})}<Hr/>
     {/* Total budget is the client-facing number (founder/PCM only). Creator
         budget is the pot the shortlist is built against, so every role that
-        can see creator cost can see it here too. */}
-    {canFin(role)&&<><div style={{padding:"12px 0"}}><Lbl style={{display:"block",marginBottom:5}}>Total budget</Lbl><div style={{fontSize:12,color:camp.budget?T.text:T.label}}>{camp.budget?fmtINR(camp.budget):"—"}</div></div><Hr/></>}
+        can see creator cost can see it here too.
+        The floor is the creator budget — this is the same constraint the
+        creator-budget row enforces from the other side, so the two can't be
+        crossed from either end. */}
+    {canFin(role)&&<>{field({fieldKey:"budget",label:"Total budget",editable:canEditCommercials,
+      value:String(camp.budget||0),invalid:tbUnder,
+      render:<div style={{fontSize:12,color:camp.budget?T.text:T.label}}>{camp.budget?fmtINR(camp.budget):"—"}</div>,
+      children:<>
+        <MoneyInput value={draft||""} onChange={setDraft} placeholder="e.g. 12,50,000" style={{...INP,resize:"none",maxWidth:180}}/>
+        <div style={{fontSize:9.5,color:tbUnder?T.red:T.sub,marginTop:4}}>
+          {tbUnder
+            ? `Can't be below the creator budget of ${fmtINR(creatorBudgetOf(camp))}.`
+            : "What the client is billed. The invoice raised when the PO is recorded is drawn from this."}
+        </div>
+      </>})}<Hr/></>}
     {canCrFin(role)&&<>
       {field({fieldKey:"creatorBudget",label:"Creator budget",value:String(creatorBudgetOf(camp)),invalid:cbOver,
         render:<div style={{fontSize:12,color:T.text}}>{fmtINR(creatorBudgetOf(camp))} <span style={{fontSize:10,color:T.label}}>· ≈ {fmtINR(perCreatorOf(camp))} per creator × {numReqOf(camp)}</span></div>,
@@ -2259,7 +2305,27 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
           </div>
         </>})}<Hr/>
     </>}
-    <div style={{padding:"12px 0"}}><Lbl style={{display:"block",marginBottom:5}}>Timeline</Lbl><div style={{fontSize:12,color:camp.brief.timeline?T.text:T.label}}>{camp.brief.timeline||"—"}</div></div>
+    {/* Reads start/end, not brief.timeline — those are the fields everything
+        else in the app uses, and the stored string is only their display form.
+        After the PO this row goes read-only and the end date moves through
+        "Extend" in the header instead, which takes a reason and logs it. */}
+    {field({fieldKey:"timeline",label:"Timeline",editable:canEditCommercials,invalid:tlBad,
+      value:{start:camp.start||"",end:ISO_DATE.test(camp.end||"")?camp.end:""},
+      render:<div style={{fontSize:12,color:camp.start?T.text:T.label}}>{timelineLabel(camp.start,camp.end)||"—"}</div>,
+      children:<>
+        <div style={{display:"flex",gap:10}}>
+          {[["start","Start"],["end","End"]].map(([k,l])=>(
+            <div key={k}>
+              <Lbl style={{display:"block",marginBottom:4}}>{l}</Lbl>
+              <DateInput value={draft?.[k]||""} onChange={v=>setDraft(d=>({...d,[k]:v}))}
+                min={k==="end"?draft?.start:undefined} style={{...INP,resize:"none",maxWidth:170}}/>
+            </div>
+          ))}
+        </div>
+        <div style={{fontSize:9.5,color:tlBad?T.red:T.sub,marginTop:6}}>
+          {tlBad?"Both dates are required, and the end can't be before the start.":"The campaign's run dates. Drives the end-date warning and what the client sees on the brief."}
+        </div>
+      </>})}
     {camp.cmNote&&role!=="ea"&&<div style={{marginTop:14,paddingLeft:10,borderLeft:`2px solid ${T.accent}`}}><Lbl color={T.accent} style={{display:"block",marginBottom:4}}>CM Note</Lbl><div style={{fontSize:11.5,color:T.sub,lineHeight:1.6}}>{camp.cmNote}</div></div>}
     {role!=="ea"&&camp.internalNotes&&<div style={{marginTop:12,paddingLeft:10,borderLeft:`2px solid ${T.amber}`}}><Lbl color={T.amber} style={{display:"block",marginBottom:4}}>Internal — not visible to client</Lbl><div style={{fontSize:11.5,color:T.sub,lineHeight:1.6}}>{camp.internalNotes}</div></div>}
     {/* Sign-off is the only way out of Brief Log. Blocked while a field is open
@@ -2278,8 +2344,8 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
     {!canEditBrief&&!canSignOff&&<div style={{marginTop:16,fontSize:10,color:T.label}}>
       {beforePO(camp)
         ? "The brief is edited by the Founder, PCM or whoever raised this campaign, and signed off by the Founder or PCM."
-        : canEditScope
-          ? "The brief was locked at sign-off. Scope stays editable until the client PO is recorded, because it's what the roster is measured against."
+        : canEditCommercials
+          ? "The brief text was locked at sign-off. Scope, budget and dates stay editable until the client PO is recorded — that's what the PO and the invoice are raised from."
           : "The brief was locked when the Purchase Order was raised."}
     </div>}
   </div>);
@@ -2881,13 +2947,6 @@ export default function InternalCampaigns(){
     setPendingAction({action,data});
   },[onAction]);
   const onSaveBrief=useCallback(patch=>{setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,brief:{...c.brief,...patch}}));CampaignsAPI.update(selectedId,{brief:{...(campaigns.find(c=>c.id===selectedId)?.brief||{}),...patch}}).catch(()=>showToast("Save failed — check connection"));showToast("Brief updated");},[selectedId,showToast,campaigns]);
-  // Campaign-level patch (creatorBudget from the Brief tab). onSaveBrief only
-  // touches brief{}; this writes fields that live on the campaign itself.
-  const onSaveCampaign=useCallback(patch=>{
-    setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,...patch}));
-    CampaignsAPI.update(selectedId,patch).catch(()=>showToast("Save failed — check connection"));
-    showToast("Campaign updated");
-  },[selectedId,showToast]);
   // Appends an audit entry to the selected campaign's timeline and persists it.
   const onLogTimeline=useCallback(event=>{
     const entry={date:today(),event,actor:currentUser.name||role};
@@ -2899,6 +2958,27 @@ export default function InternalCampaigns(){
     }));
     if(nextTimeline)CampaignsAPI.update(selectedId,{timeline:nextTimeline}).catch(()=>showToast("Save failed — check connection"));
   },[selectedId,currentUser,role,showToast]);
+  // Campaign-level patch (creatorBudget from the Brief tab). onSaveBrief only
+  // touches brief{}; this writes fields that live on the campaign itself.
+  const onSaveCampaign=useCallback(patch=>{
+    // The roster gate reads `numReq`, which the Scope field can change — so
+    // editing the plan down to what's already locked confirms the roster just
+    // as surely as locking the last creator does. Without this the PO unlocked
+    // but the client was never sent the list and nothing was logged, and the
+    // Creators tab showed neither the countdown nor the "sent" badge.
+    // Same derivation as onUpdateCreators, from the other direction.
+    const camp=campaigns.find(c=>c.id===selectedId);
+    const next=camp&&{...camp,...patch};
+    const sending=!!next&&!camp.sentToClient&&rosterReady(next);
+    const full=sending?{...patch,sentToClient:true}:patch;
+    setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,...full}));
+    CampaignsAPI.update(selectedId,full).catch(()=>showToast("Save failed — check connection"));
+    showToast("Campaign updated");
+    if(sending){
+      showToast(`Roster complete — creator list sent to ${camp.client||"client"}`);
+      onLogTimeline(`Roster confirmed — ${lockedCountOf(next)} creators locked, creator list sent to client`);
+    }
+  },[selectedId,showToast,campaigns,onLogTimeline]);
   const onUpdateCreators=useCallback(next=>{
     // Resolved before the state update, not inside it: React state updaters
     // must be pure, and StrictMode double-invokes them in development — which
@@ -2927,23 +3007,26 @@ export default function InternalCampaigns(){
       setCampaigns(prev=>prev.filter(c=>c.id!==id));
       setSelId(null);
       showToast("Campaign deleted");
-      // Cascade: purge billing docs that reference this campaign (auto-invoice
-      // stub, client POs, and the creator expenses the roster generates) so
-      // Billing stops showing the deleted campaign. Expenses matter most here:
-      // unlike invoices and client POs they are not filtered by
-      // `hasLiveCampaign` in Billing, so an orphan would keep inflating
-      // committed spend and the derived registry forever.
+      // Cascade: purge every billing doc that references this campaign, so
+      // Billing stops showing a campaign that no longer exists. All five
+      // collections, keyed the same way (`campaign`) except quotes.
+      //
+      // Two of these are load-bearing rather than cosmetic. Expenses and
+      // VENDOR POs are the ones Billing does not hide on its own, so an orphan
+      // of either keeps inflating committed spend, the approval queue and the
+      // derived registry forever — a deleted campaign's vendor PO sat in
+      // Purchase Orders → To vendors with nothing left to reconcile it against.
       try{
-        const [invs,cpos,exps,qts]=await Promise.all([InvoicesAPI.list(),ClientPOsAPI.list(),ExpensesAPI.list(),QuotesAPI.list()]);
+        const [invs,cpos,exps,qts,pos]=await Promise.all([
+          InvoicesAPI.list(),ClientPOsAPI.list(),ExpensesAPI.list(),QuotesAPI.list(),PurchaseOrdersAPI.list()]);
+        const forCamp=(rows,key="campaign")=>(rows||[]).filter(x=>x[key]===id);
         await Promise.all([
-          ...invs.filter(x=>x.campaign===id).map(x=>InvoicesAPI.remove(x.id)),
-          ...cpos.filter(x=>x.campaign===id).map(x=>ClientPOsAPI.remove(x.id)),
-          ...exps.filter(x=>x.campaign===id).map(x=>ExpensesAPI.remove(x.id)),
-          // Quotes too — brief sign-off raises one, and the cascade was written
-          // before that existed. Note the field is `campaignId`, not `campaign`
-          // like every other billing doc, so Billing's `hasLiveCampaign` filter
-          // cannot hide an orphan either: it would sit in Quotations forever.
-          ...qts.filter(x=>x.campaignId===id).map(x=>QuotesAPI.remove(x.id)),
+          ...forCamp(invs).map(x=>InvoicesAPI.remove(x.id)),
+          ...forCamp(cpos).map(x=>ClientPOsAPI.remove(x.id)),
+          ...forCamp(exps).map(x=>ExpensesAPI.remove(x.id)),
+          ...forCamp(pos).map(x=>PurchaseOrdersAPI.remove(x.id)),
+          // Quotes key on `campaignId`, not `campaign` like the rest.
+          ...forCamp(qts,"campaignId").map(x=>QuotesAPI.remove(x.id)),
         ]);
       }catch{/* best-effort — Billing also hides docs whose campaign is gone */}
     }catch{
@@ -2968,7 +3051,7 @@ export default function InternalCampaigns(){
       start:f.timelineStart||today(), end:f.timelineEnd||"TBD",
       createdBy:currentUser.teamId,
       amId, cmId, eaId,
-      brief:{objective:f.objective,audience:f.audience,messages:f.messages,deliverables:f.deliverables,budget:fmtINR(budget),timeline:f.timeline},
+      brief:{objective:f.objective,audience:f.audience,messages:f.messages,deliverables:f.deliverables,budget:fmtINR(budget),timeline:timelineLabel(f.timelineStart,f.timelineEnd)},
       briefStatus:"draft", amNote:"", cmNote:"", creators:[], genRounds:0,
       sentToClient:false, internalNotes:f.internalNotes,
       timeline:[{date:today(),event:"Campaign created",actor:currentUser.name||role.toUpperCase()}],

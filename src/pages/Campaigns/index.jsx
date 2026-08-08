@@ -12,7 +12,7 @@
  *  7. Deliverables tab → aggregate stat cards (Views, Likes, CPV, ER, Avg Forwards).
  *  8. Fee input step = 100.
  */
-import { useState, useMemo, useCallback, useEffect } from "react";
+ import { useState, useMemo, useCallback, useEffect, forwardRef } from "react";
 import { useOutletContext } from "react-router-dom";
 import { motion, AnimatePresence, useSpring, useMotionValueEvent, useReducedMotion } from "motion/react";
 import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
@@ -1038,12 +1038,13 @@ function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAge
 }
 
 // ── CAMPAIGN CARD (grid tile) ─────────────────────────────────────────────────
-function CampCard({camp,onClick,role}){
+const CampCard = forwardRef(function CampCard({camp,onClick,role}, ref){
   const col=viewCol(camp.stage,role),pl=viewPl(camp.stage,role);
   const am=getM(camp.amId),cm=getM(camp.cmId),ea=getM(camp.eaId);
   const es=endStatus(camp.end,camp.stage);
   return(
     <motion.div
+      ref={ref}
       initial={{opacity:0,y:10,scale:0.98}}
       animate={{opacity:1,y:0,scale:1}}
       exit={{opacity:0,scale:0.96,transition:{duration:0.12}}}
@@ -1067,7 +1068,8 @@ function CampCard({camp,onClick,role}){
       {(am||cm||ea)&&<div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>{[{m:am,l:"AM"},{m:cm,l:"CM"},{m:ea,l:"EA"}].filter(x=>x.m).map(({m,l})=><div key={l} style={{display:"flex",alignItems:"center",gap:4}}><Av init={m.avatar} size={18}/><span style={{fontSize:9,color:"#6E6E73",fontFamily:SF}}>{l}</span></div>)}</div>}
     </motion.div>
   );
-}
+  });
+
 
 // ── BRAND IDENTITY ────────────────────────────────────────────────────────────
 // A stable accent colour + initials per brand, derived from the name so the
@@ -2301,7 +2303,7 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
           <div style={{fontSize:9.5,color:cbOver?T.red:T.sub,marginTop:4}}>
             {cbOver
               ? `Can't exceed the total budget of ${fmtINR(camp.budget)}.`
-              : `≈ ${fmtINR(numReqOf(camp)>0?Math.round(cbNum/numReqOf(camp)):0)} per creator × ${numReqOf(camp)}`}
+              : `≈ ${fmtINR(numReqOf(camp)>0?Math.round(mNum/numReqOf(camp)):0)} per creator × ${numReqOf(camp)}`}
           </div>
         </>})}<Hr/>
     </>}

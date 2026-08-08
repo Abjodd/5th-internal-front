@@ -83,6 +83,26 @@ body {
   font-family: 'Sora', sans-serif;
 }
 
+/* Founder summary hero: retain breathing room for its copy on narrow screens.
+   Inline styles own the desktop layout; these overrides only apply where the
+   original fixed gutters made the headline wrap or clip. */
+@media (max-width: 640px) {
+  .summary-hero {
+    height: 100svh !important;
+    min-height: 540px !important;
+  }
+
+  .summary-hero__content {
+    padding: 0 24px max(48px, env(safe-area-inset-bottom)) !important;
+  }
+
+  .summary-hero__title {
+    font-size: clamp(42px, 14vw, 62px) !important;
+    line-height: 1.02 !important;
+    overflow-wrap: anywhere;
+  }
+}
+
 ::selection {
   background: rgba(47, 62, 107, 0.16);
 }
@@ -171,4 +191,3 @@ button:not(:disabled):active {
 /* DateInput popover hovers */
 .dp-day:hover { background: rgba(47, 62, 107, 0.10) !important; }
 .dp-nav:not(:disabled):hover { background: rgba(28, 24, 16, 0.06); color: #1C1A15; }
-

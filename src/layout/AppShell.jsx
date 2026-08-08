@@ -1,13 +1,3 @@
-/**
- * 5th Avenue — AppShell
- * Top bar driven by real logged-in user from AuthContext.
- * No more role dropdown — role comes from the authenticated user.
- * Each page receives `user` (full user object) via Outlet context.
- *
- * Visual identity: quiet modern formal — ivory surfaces, deep navy accent,
- * Newsreader for display type, Sora for UI. Soft elevation instead of
- * ornament. Styling only; logic below is unchanged from the original.
- */
 import { useState, useEffect, useRef } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
@@ -19,15 +9,6 @@ import { SECTIONS, canAccess, getRole } from "../routes/sections";
 import { useAuth } from "../context/AuthContext";
 import { ClientsAPI } from "../lib/api";
 
-/**
- * Section icons are named as strings in routes/sections.js so that registry
- * stays a plain data file with no React imports.
- *
- * Resolved through this explicit map rather than `import * as Icons` — a
- * namespace import read with a computed key (`Icons[name]`) can't be
- * tree-shaken, and pulls all ~1500 lucide icons into the bundle. Add an entry
- * here when you add a section.
- */
 const SECTION_ICONS = {
   LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck, Building2,
 };
@@ -51,15 +32,13 @@ const F = {
   shadowSm:  "0 1px 2px rgba(20,21,26,0.04)",
   shadowMd:  "0 1px 2px rgba(20,21,26,0.04), 0 8px 20px rgba(20,21,26,0.08)",
   shadowLg:  "0 4px 12px rgba(20,21,26,0.06), 0 24px 48px -12px rgba(20,21,26,0.16)",
+  glass:     "rgba(255,255,255,0.72)",
+  glassStrong: "rgba(255,255,255,0.92)",
+  glassBorder: "rgba(255,255,255,0.5)",
 };
 
-/**
- * One tab inside the nav capsule. The white "pill" behind the active tab is a
- * single shared element — every tab renders it under the same `layoutId`, so
- * when the route changes React tears it out of the old tab and into the new
- * one, and motion tweens the gap. That's what makes the switch read as one
- * object moving rather than two states swapping.
- */
+const TOPBAR_H = 68;
+
 function SectionTab({ section }) {
   const [hovered, setHovered] = useState(false);
   return (
@@ -88,7 +67,8 @@ function SectionTab({ section }) {
               transition={{ type: "spring", stiffness: 420, damping: 36, mass: 0.9 }}
               style={{
                 position: "absolute", inset: 0, borderRadius: 8,
-                background: F.surface, boxShadow: F.shadowSm,
+                background: F.glassStrong, boxShadow: F.shadowMd,
+                backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
                 zIndex: 0,
               }}
             />
@@ -119,13 +99,16 @@ function UserMenu({ user, onLogout }) {
         style={{
           display: "flex", alignItems: "center", gap: 10,
           padding: "5px 13px 5px 5px",
-          background: F.surface, border: `1px solid ${F.hairline}`,
+          background: F.glassStrong,
+          backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
+          border: `1px solid ${F.glassBorder}`,
           borderRadius: 22, cursor: "pointer",
           fontFamily: "'Sora', sans-serif", fontSize: 12, color: F.ink,
+          boxShadow: F.shadowSm,
           transition: "box-shadow 0.15s",
         }}
-        onMouseOver={e => e.currentTarget.style.boxShadow = F.shadowSm}
-        onMouseOut={e => e.currentTarget.style.boxShadow = "none"}
+        onMouseOver={e => e.currentTarget.style.boxShadow = F.shadowMd}
+        onMouseOut={e => e.currentTarget.style.boxShadow = F.shadowSm}
       >
         <div style={{
           width: 30, height: 30, borderRadius: "50%",
@@ -233,12 +216,6 @@ function ReadOnlyBanner() {
 const initials = (s) =>
   (s || "?").split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
 
-/**
- * Brand filter. Was a bare <select>, which gave no visual signal that it held
- * options — this is a real dropdown: a swatch of the selected brand, its name,
- * and a chevron that rotates open. Filters as you type once the list is long
- * enough to need it.
- */
 function BrandSelect({ brands, value, onChange }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -295,12 +272,14 @@ function BrandSelect({ brands, value, onChange }) {
         style={{
           display: "flex", alignItems: "center", gap: 9,
           padding: "9px 13px", maxWidth: 210,
-          background: value ? F.navyTint : F.paper,
-          border: `1px solid ${value ? "rgba(30,42,68,0.25)" : F.hairline}`,
+          background: value ? "rgba(30,42,68,0.14)" : F.glassStrong,
+          backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
+          border: `1px solid ${value ? "rgba(30,42,68,0.3)" : F.glassBorder}`,
           borderRadius: 9, cursor: "pointer",
           fontFamily: "'Sora', sans-serif", fontSize: 12.5,
           fontWeight: value ? 600 : 500,
           color: value ? F.ink : F.inkSoft,
+          boxShadow: F.shadowSm,
           transition: "background 0.15s, border-color 0.15s",
         }}
       >
@@ -372,7 +351,6 @@ function BrandSelect({ brands, value, onChange }) {
   );
 }
 
-/** Square icon button in the top-bar's right rail. */
 function RailButton({ label, onClick, children }) {
   const [h, setH] = useState(false);
   return (
@@ -385,10 +363,12 @@ function RailButton({ label, onClick, children }) {
       style={{
         width: 36, height: 36, borderRadius: 9,
         display: "flex", alignItems: "center", justifyContent: "center",
-        background: h ? F.paper : F.surface,
-        border: `1px solid ${F.hairline}`,
+        background: h ? F.glassStrong : F.glass,
+        backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
+        border: `1px solid ${F.glassBorder}`,
         color: F.inkSoft, cursor: "pointer",
-        transition: "background 0.15s, color 0.15s",
+        boxShadow: h ? F.shadowSm : "none",
+        transition: "background 0.15s, color 0.15s, box-shadow 0.15s",
       }}
     >
       {children}
@@ -396,11 +376,6 @@ function RailButton({ label, onClick, children }) {
   );
 }
 
-/**
- * Command palette — ⌘K / Ctrl-K. Jumps between the sections this user can
- * reach and switches the brand filter, so both live in one keyboard surface
- * instead of only being reachable by mouse.
- */
 function CommandPalette({ open, onClose, sections, brands, onBrand, brandFilter }) {
   const [q, setQ] = useState("");
   const [i, setI] = useState(0);
@@ -493,7 +468,6 @@ export default function AppShell() {
   const navigate  = useNavigate();
   const [searchOpen, setSearchOpen] = useState(false);
 
-  // ── Brand filter ──────────────────────────────────────────────────────────
   const [brandFilter, setBrandFilter] = useState(() => {
     try { return sessionStorage.getItem("5av_brandFilter") || null; } catch { return null; }
   });
@@ -514,14 +488,13 @@ export default function AppShell() {
         setBrands(brandsList);
         setBrandFilter(prev => (prev && !brandsList.some(b => b.id === prev) ? null : prev));
       })
-      .catch(() => {}); // non-critical — silent fail
+      .catch(() => {});
   };
 
   useEffect(() => {
     loadBrands();
   }, []);
 
-  // ⌘K / Ctrl-K opens the palette from anywhere in the app.
   useEffect(() => {
     const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -534,67 +507,68 @@ export default function AppShell() {
   }, []);
 
   const handleLogout = () => {
-    handleBrandChange(null); // clear brand filter on logout
+    handleBrandChange(null);
     logout();
     navigate("/login", { replace: true });
   };
 
-  // Which sections can this user see in the nav?
   const visibleSections = SECTIONS.filter(s => canAccess(s, user.role));
-
-  // What section is currently active?
   const activeSec = SECTIONS.find(s => location.pathname === s.path || location.pathname.startsWith(s.path + "/"));
-
   const hasAccess  = activeSec ? canAccess(activeSec, user.role) : true;
 
   return (
     <div style={{
       display: "flex", flexDirection: "column",
-      // 100% not 100vh/vw: viewport units ignore the `zoom` set on <html> in
-      // index.css, so they'd render 10% larger than the layout around them and
-      // put a horizontal scrollbar on every page. html/body/#root are already
-      // sized 100%, so percentages resolve to the same box and do scale.
       height: "100%", width: "100%",
       background: F.paper, color: F.ink,
-      fontFamily: "'Sora', sans-serif", overflow: "hidden",
+      fontFamily: "'Sora', sans-serif",
+      overflow: "hidden",
     }}>
       {/* ── TOP BAR ──
-          Wordmark · brand filter · nav capsule · right rail. The capsule lifts
-          the tabs off the bar onto their own recessed track, which is what
-          frees the right-hand side for tools rather than crowding the user
-          menu. Nothing here scrolls horizontally: the capsule shrinks before
-          the rail does. */}
+          Transparent glass bar, floated over the page (position: absolute)
+          so full-bleed hero photography can show through it. Every
+          interactive element inside carries its own frosted-glass chip
+          (background blur + border + shadow) so it stays legible over
+          light or dark content underneath. */}
       <div style={{
-        height: 68, flexShrink: 0,
+        position: "absolute", top: 0, left: 0, right: 0, zIndex: 60,
+        height: TOPBAR_H, flexShrink: 0,
         display: "flex", alignItems: "center", gap: 18,
-        background: F.surface,
-        borderBottom: `1px solid ${F.hairline}`,
+        background: "rgba(255,255,255,0.08)",
+        backdropFilter: "blur(14px) saturate(1.4)",
+        WebkitBackdropFilter: "blur(14px) saturate(1.4)",
+        borderBottom: "1px solid rgba(255,255,255,0.14)",
         padding: "0 18px",
       }}>
-        {/* Wordmark */}
         <span style={{
           fontFamily: "'Sora', sans-serif",
-          fontSize: 14, fontWeight: 300, textTransform: "uppercase",
+          fontSize: 14, fontWeight: 600, textTransform: "uppercase",
           color: F.ink, letterSpacing: "0.24em",
           whiteSpace: "nowrap", flexShrink: 0,
+          padding: "6px 12px", borderRadius: 8,
+          background: F.glassStrong,
+          backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
+          border: `1px solid ${F.glassBorder}`,
+          boxShadow: F.shadowSm,
         }}>
           Fifth Avenue
         </span>
 
-        {/* Brand Filter */}
         <BrandSelect brands={brands} value={brandFilter} onChange={handleBrandChange} />
 
-        {/* Nav capsule */}
         <div style={{
           display: "flex", alignItems: "center",
-          background: F.paper, borderRadius: 12,
+          background: F.glass,
+          backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
+          border: `1px solid ${F.glassBorder}`,
+          borderRadius: 12,
           padding: 4, height: 44, gap: 2,
           minWidth: 0, overflowX: "auto", scrollbarWidth: "none",
+          boxShadow: F.shadowSm,
         }}>
           {visibleSections.map(s => <SectionTab key={s.id} section={s} />)}
         </div>
 
-        {/* Right rail */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flexShrink: 0 }}>
           <RailButton label="Search  (⌘K)" onClick={() => setSearchOpen(true)}>
             <Search size={17} strokeWidth={1.9} />
@@ -612,13 +586,21 @@ export default function AppShell() {
         onBrand={handleBrandChange}
       />
 
-      {/* ── PAGE CONTENT ── */}
-      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      {/* ── PAGE CONTENT ──
+          Since the top bar is now absolutely positioned (floating over the
+          page), this pane starts at the very top and owns the full height;
+          pages that want to sit under a transparent bar (e.g. a full-bleed
+          hero) can do so, while pages with plain content should pad their
+          own top by TOPBAR_H (exported below) so nothing is hidden under
+          the glass bar. */}
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", display: "flex", flexDirection: "column" }}>
         {hasAccess
-          ? <Outlet context={{ user, role: user.role, brandFilter, setBrandFilter, brands, refreshBrands: loadBrands }} />
+          ? <Outlet context={{ user, role: user.role, brandFilter, setBrandFilter, brands, refreshBrands: loadBrands, topBarHeight: TOPBAR_H }} />
           : <AccessDenied section={activeSec} />
         }
       </div>
     </div>
   );
 }
+
+export { TOPBAR_H };

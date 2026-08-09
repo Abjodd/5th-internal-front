@@ -32,12 +32,61 @@ const F = {
   shadowSm:  "0 1px 2px rgba(20,21,26,0.04)",
   shadowMd:  "0 1px 2px rgba(20,21,26,0.04), 0 8px 20px rgba(20,21,26,0.08)",
   shadowLg:  "0 4px 12px rgba(20,21,26,0.06), 0 24px 48px -12px rgba(20,21,26,0.16)",
-  glass:     "rgba(255,255,255,0.72)",
-  glassStrong: "rgba(255,255,255,0.92)",
-  glassBorder: "rgba(255,255,255,0.5)",
 };
 
-const TOPBAR_H = 68;
+// ── Liquid-glass pill system ──────────────────────────────────────
+// The nav is NOT one bar — it's several independent floating pills
+// (logo · brand filter · section tabs · search+user) with visible
+// transparent gaps between them, each its own pane of glass. That's
+// what makes it read as "not a navbar": no single container ties
+// them together, they just happen to float in a row.
+//
+// "Liquid glass" tuning: fill opacity is kept very low so page
+// content genuinely shows through, the blur carries all the
+// legibility work, and a bright inner top-edge + soft outer edge
+// stand in for a specular highlight, the way real glass catches light.
+const GLASS = {
+  fill: "rgba(255,255,255,0.10)",
+  fillScrolled: "rgba(255,255,255,0.20)",
+  border: "rgba(255,255,255,0.65)",
+  outline: "rgba(255,255,255,0.30)",
+  blur: "blur(28px) saturate(2.4)",
+  shadow: "inset 0 1px 0 rgba(255,255,255,0.65), inset 0 0 0 1px rgba(255,255,255,0.10), inset 0 -12px 20px -14px rgba(255,255,255,0.35), 0 1px 2px rgba(20,21,26,0.03), 0 20px 44px -14px rgba(20,21,26,0.20)",
+
+  hoverFill: "rgba(255,255,255,0.28)",
+  chipBorder: "rgba(255,255,255,0.35)",
+};
+
+function Pill({ children, style = {}, padded = true }) {
+  const [scrolled] = usePaneScroll();
+  return (
+    <div style={{
+      display: "flex", alignItems: "center",
+      height: 52, borderRadius: 999,
+      background: scrolled ? GLASS.fillScrolled : GLASS.fill,
+      backdropFilter: GLASS.blur,
+      WebkitBackdropFilter: GLASS.blur,
+      border: `1px solid ${GLASS.border}`,
+      outline: `1px solid ${GLASS.outline}`,
+      boxShadow: GLASS.shadow,
+      padding: padded ? "0 8px" : 0,
+      transition: "background 0.25s ease",
+      flexShrink: 0,
+      pointerEvents: "auto",
+      ...style,
+    }}>
+      {children}
+    </div>
+  );
+}
+
+// Tiny shared context so every independent pill can react to page
+// scroll together (deepen slightly) without being wired through props.
+import { createContext, useContext } from "react";
+const ScrollCtx = createContext([false]);
+function usePaneScroll() { return useContext(ScrollCtx); }
+
+const TOPBAR_H = 84;
 
 function SectionTab({ section }) {
   const [hovered, setHovered] = useState(false);
@@ -48,12 +97,12 @@ function SectionTab({ section }) {
       onMouseLeave={() => setHovered(false)}
       style={({ isActive }) => ({
         position: "relative",
-        display: "flex", alignItems: "center", gap: 8,
-        padding: "0 18px", height: 36, borderRadius: 8,
+        display: "flex", alignItems: "center", gap: 7,
+        padding: "0 15px", height: 38, borderRadius: 999,
         background: "transparent", border: "none",
         cursor: "pointer", fontFamily: "'Sora', sans-serif",
         fontSize: 13, fontWeight: isActive ? 600 : 500,
-        color: isActive ? F.ink : hovered ? F.ink : F.inkSoft,
+        color: isActive ? "#FFFFFF" : F.inkSoft,
         transition: "color 0.18s",
         whiteSpace: "nowrap", textDecoration: "none",
         WebkitTapHighlightColor: "transparent",
@@ -65,21 +114,14 @@ function SectionTab({ section }) {
             <motion.span
               layoutId="nav-pill"
               transition={{ type: "spring", stiffness: 420, damping: 36, mass: 0.9 }}
-              style={{
-                position: "absolute", inset: 0, borderRadius: 8,
-                background: F.glassStrong, boxShadow: F.shadowMd,
-                backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
-                zIndex: 0,
-              }}
+              style={{ position: "absolute", inset: 0, borderRadius: 999, background: F.navy, zIndex: 0 }}
             />
           )}
-          <span style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: 8 }}>
-            <SecIcon
-              name={section.lucide}
-              size={16}
-              color={isActive ? F.navy : F.label}
-              style={{ transition: "color 0.18s" }}
-            />
+          {!isActive && hovered && (
+            <span style={{ position: "absolute", inset: 0, borderRadius: 999, background: GLASS.hoverFill, zIndex: 0 }} />
+          )}
+          <span style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: 7 }}>
+            <SecIcon name={section.lucide} size={15} color={isActive ? "#FFFFFF" : F.label} style={{ transition: "color 0.18s" }} />
             {section.shortLabel}
           </span>
         </>
@@ -90,25 +132,31 @@ function SectionTab({ section }) {
 
 function UserMenu({ user, onLogout }) {
   const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const location = useLocation();
   const roleLabel = getRole(user.role)?.label || user.role;
+
+  // Close the menu whenever the route changes, so it can never be left
+  // open (or appear "stuck") when navigating between pages.
+  useEffect(() => {
+    setOpen(false);
+  }, [location.pathname]);
 
   return (
     <div style={{ position: "relative" }}>
       <button
         onClick={() => setOpen(o => !o)}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         style={{
-          display: "flex", alignItems: "center", gap: 10,
-          padding: "5px 13px 5px 5px",
-          background: F.glassStrong,
-          backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
-          border: `1px solid ${F.glassBorder}`,
-          borderRadius: 22, cursor: "pointer",
-          fontFamily: "'Sora', sans-serif", fontSize: 12, color: F.ink,
-          boxShadow: F.shadowSm,
-          transition: "box-shadow 0.15s",
+          display: "flex", alignItems: "center", gap: 9,
+          padding: "4px 12px 4px 4px", height: 44,
+          background: open || hovered ? GLASS.hoverFill : "transparent",
+          border: "none",
+          borderRadius: 999, cursor: "pointer",
+          fontFamily: "'Sora', sans-serif", fontSize: 12,
+          transition: "background 0.15s",
         }}
-        onMouseOver={e => e.currentTarget.style.boxShadow = F.shadowMd}
-        onMouseOut={e => e.currentTarget.style.boxShadow = F.shadowSm}
       >
         <div style={{
           width: 30, height: 30, borderRadius: "50%",
@@ -135,9 +183,9 @@ function UserMenu({ user, onLogout }) {
 
       {open && (
         <>
-          <div style={{ position: "fixed", inset: 0, zIndex: 49 }} onClick={() => setOpen(false)} />
+          <div style={{ position: "fixed", inset: 0, zIndex: 899 }} onClick={() => setOpen(false)} />
           <div style={{
-            position: "absolute", top: "calc(100% + 10px)", right: 0, zIndex: 50,
+            position: "absolute", top: "calc(100% + 10px)", right: 0, zIndex: 900,
             background: F.surface, border: `1px solid ${F.hairline}`,
             borderRadius: 12, overflow: "hidden", minWidth: 210,
             boxShadow: F.shadowLg,
@@ -218,8 +266,10 @@ const initials = (s) =>
 
 function BrandSelect({ brands, value, onChange }) {
   const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const [q, setQ] = useState("");
   const ref = useRef(null);
+  const location = useLocation();
 
   useEffect(() => {
     if (!open) return;
@@ -229,6 +279,9 @@ function BrandSelect({ brands, value, onChange }) {
   }, [open]);
 
   useEffect(() => { if (!open) setQ(""); }, [open]);
+
+  // Close on route change so it never lingers open across pages.
+  useEffect(() => { setOpen(false); }, [location.pathname]);
 
   if (brands.length === 0) return null;
 
@@ -267,29 +320,30 @@ function BrandSelect({ brands, value, onChange }) {
     <div ref={ref} style={{ position: "relative", flexShrink: 0 }}>
       <button
         onClick={() => setOpen(o => !o)}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         aria-haspopup="listbox"
         aria-expanded={open}
         style={{
           display: "flex", alignItems: "center", gap: 9,
-          padding: "9px 13px", maxWidth: 210,
-          background: value ? "rgba(30,42,68,0.14)" : F.glassStrong,
-          backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
-          border: `1px solid ${value ? "rgba(30,42,68,0.3)" : F.glassBorder}`,
-          borderRadius: 9, cursor: "pointer",
+          padding: "6px 14px 6px 6px", height: 40,
+          background: open || hovered ? GLASS.hoverFill : "transparent",
+          border: "none",
+          borderRadius: 999, cursor: "pointer",
           fontFamily: "'Sora', sans-serif", fontSize: 12.5,
           fontWeight: value ? 600 : 500,
-          color: value ? F.ink : F.inkSoft,
-          boxShadow: F.shadowSm,
-          transition: "background 0.15s, border-color 0.15s",
+          color: F.ink,
+          transition: "background 0.15s",
         }}
       >
         <span style={{
-          width: 19, height: 19, borderRadius: 5, flexShrink: 0,
-          background: F.navy, color: "#FFFFFF",
+          width: 24, height: 24, borderRadius: "50%", flexShrink: 0,
+          background: value ? F.navy : F.hairline,
+          color: value ? "#FFFFFF" : F.inkSoft,
           display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 8.5, fontWeight: 600,
+          fontSize: 9, fontWeight: 700,
         }}>{selected ? initials(selected.name) : "AB"}</span>
-        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 140 }}>
           {selected ? selected.name : "All brands"}
         </span>
         <motion.span
@@ -304,14 +358,14 @@ function BrandSelect({ brands, value, onChange }) {
       <AnimatePresence>
         {open && (
           <>
-            <div style={{ position: "fixed", inset: 0, zIndex: 49 }} onClick={() => setOpen(false)} />
+            <div style={{ position: "fixed", inset: 0, zIndex: 899 }} onClick={() => setOpen(false)} />
             <motion.div
               initial={{ opacity: 0, y: -6, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -4, scale: 0.99 }}
               transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
               style={{
-                position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 50,
+                position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 900,
                 minWidth: 250, maxHeight: 340, overflowY: "auto",
                 background: F.surface, border: `1px solid ${F.hairline}`,
                 borderRadius: 12, boxShadow: F.shadowLg, padding: "6px 0",
@@ -361,14 +415,13 @@ function RailButton({ label, onClick, children }) {
       onMouseEnter={() => setH(true)}
       onMouseLeave={() => setH(false)}
       style={{
-        width: 36, height: 36, borderRadius: 9,
+        width: 36, height: 36, borderRadius: "50%",
         display: "flex", alignItems: "center", justifyContent: "center",
-        background: h ? F.glassStrong : F.glass,
-        backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
-        border: `1px solid ${F.glassBorder}`,
-        color: F.inkSoft, cursor: "pointer",
-        boxShadow: h ? F.shadowSm : "none",
-        transition: "background 0.15s, color 0.15s, box-shadow 0.15s",
+        background: h ? GLASS.hoverFill : "transparent",
+        border: "none",
+        color: h ? F.ink : F.inkSoft,
+        cursor: "pointer",
+        transition: "background 0.15s, color 0.15s",
       }}
     >
       {children}
@@ -405,7 +458,7 @@ function CommandPalette({ open, onClose, sections, brands, onBrand, brandFilter 
   return (
     <AnimatePresence>
       {open && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 700, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "12vh" }}>
+        <div style={{ position: "fixed", inset: 0, zIndex: 900, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "12vh" }}>
           <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
@@ -467,6 +520,7 @@ export default function AppShell() {
   const location = useLocation();
   const navigate  = useNavigate();
   const [searchOpen, setSearchOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
 
   const [brandFilter, setBrandFilter] = useState(() => {
     try { return sessionStorage.getItem("5av_brandFilter") || null; } catch { return null; }
@@ -506,6 +560,24 @@ export default function AppShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Close the command palette whenever the route changes (e.g. after
+  // jumping to a section from within it), so it never lingers open.
+  useEffect(() => {
+    setSearchOpen(false);
+  }, [location.pathname]);
+
+  // Cosmetic only: every independent pill deepens its glass slightly
+  // once the page pane has scrolled, via ScrollCtx below — the pills
+  // never overlap page content, so nothing is ever hidden beneath them.
+  const paneRef = useRef(null);
+  useEffect(() => {
+    const el = paneRef.current;
+    if (!el) return;
+    const onScroll = () => setScrolled(el.scrollTop > 8);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
   const handleLogout = () => {
     handleBrandChange(null);
     logout();
@@ -518,64 +590,81 @@ export default function AppShell() {
 
   return (
     <div style={{
-      display: "flex", flexDirection: "column",
+      position: "relative",
       height: "100%", width: "100%",
       background: F.paper, color: F.ink,
       fontFamily: "'Sora', sans-serif",
       overflow: "hidden",
     }}>
-      {/* ── TOP BAR ──
-          Transparent glass bar, floated over the page (position: absolute)
-          so full-bleed hero photography can show through it. Every
-          interactive element inside carries its own frosted-glass chip
-          (background blur + border + shadow) so it stays legible over
-          light or dark content underneath. */}
-      <div style={{
-        position: "absolute", top: 0, left: 0, right: 0, zIndex: 60,
-        height: TOPBAR_H, flexShrink: 0,
-        display: "flex", alignItems: "center", gap: 18,
-        background: "rgba(255,255,255,0.08)",
-        backdropFilter: "blur(14px) saturate(1.4)",
-        WebkitBackdropFilter: "blur(14px) saturate(1.4)",
-        borderBottom: "1px solid rgba(255,255,255,0.14)",
-        padding: "0 18px",
-      }}>
-        <span style={{
-          fontFamily: "'Sora', sans-serif",
-          fontSize: 14, fontWeight: 600, textTransform: "uppercase",
-          color: F.ink, letterSpacing: "0.24em",
-          whiteSpace: "nowrap", flexShrink: 0,
-          padding: "6px 12px", borderRadius: 8,
-          background: F.glassStrong,
-          backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
-          border: `1px solid ${F.glassBorder}`,
-          boxShadow: F.shadowSm,
-        }}>
-          Fifth Avenue
-        </span>
-
-        <BrandSelect brands={brands} value={brandFilter} onChange={handleBrandChange} />
-
-        <div style={{
-          display: "flex", alignItems: "center",
-          background: F.glass,
-          backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
-          border: `1px solid ${F.glassBorder}`,
-          borderRadius: 12,
-          padding: 4, height: 44, gap: 2,
-          minWidth: 0, overflowX: "auto", scrollbarWidth: "none",
-          boxShadow: F.shadowSm,
-        }}>
-          {visibleSections.map(s => <SectionTab key={s.id} section={s} />)}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flexShrink: 0 }}>
-          <RailButton label="Search  (⌘K)" onClick={() => setSearchOpen(true)}>
-            <Search size={17} strokeWidth={1.9} />
-          </RailButton>
-          <UserMenu user={user} onLogout={handleLogout} />
-        </div>
+      {/* ── PAGE CONTENT ──
+          Fills the entire shell (not squeezed below the nav in normal
+          flow) and scrolls underneath the floating nav. paddingTop just
+          keeps content clear of the pills on initial load; once the
+          user scrolls, content genuinely passes behind the glass, which
+          is what makes the blur/transparency actually visible instead
+          of just showing flat page background. */}
+      <div
+        ref={paneRef}
+        style={{
+          position: "absolute", inset: 0,
+          overflowY: "auto", overflowX: "hidden",
+          display: "flex", flexDirection: "column",
+          paddingTop: TOPBAR_H + 22,
+        }}
+      >
+        {hasAccess
+          ? <Outlet context={{ user, role: user.role, brandFilter, setBrandFilter, brands, refreshBrands: loadBrands, topBarHeight: TOPBAR_H }} />
+          : <AccessDenied section={activeSec} />
+        }
       </div>
+
+      <ScrollCtx.Provider value={[scrolled]}>
+        {/* ── NAV ──
+            Not a bar — four independent floating glass pills (logo ·
+            brand filter · section tabs · search+user) with transparent
+            gaps between them. The row itself is position:absolute and
+            pointer-events:none so it floats over the scrolling content
+            pane (letting the blur pick up real content behind it)
+            while clicks pass through the transparent gaps to whatever
+            is underneath; each Pill re-enables pointer-events so its
+            own buttons/links still work normally. Rendered once here in
+            AppShell — which wraps every routed page via <Outlet> above —
+            so the brand pill, section tabs, search, and the user/logout
+            menu are present and functional identically on every page. */}
+        <div style={{
+          position: "absolute", top: 0, left: 0, right: 0, zIndex: 30,
+          pointerEvents: "none",
+          display: "flex", alignItems: "center", gap: 14,
+          padding: "14px 18px 0", flexWrap: "wrap",
+        }}>
+          <Pill style={{ padding: "0 20px" }}>
+            <span style={{
+              fontFamily: "'Sora', sans-serif", fontSize: 13, fontWeight: 700,
+              textTransform: "uppercase", color: F.ink, letterSpacing: "0.24em",
+              whiteSpace: "nowrap",
+            }}>
+              Fifth Avenue
+            </span>
+          </Pill>
+
+          <Pill>
+            <BrandSelect brands={brands} value={brandFilter} onChange={handleBrandChange} />
+          </Pill>
+
+          <Pill style={{ flex: "1 1 auto", minWidth: 0, justifyContent: "center", overflowX: "auto" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 3, minWidth: 0 }}>
+              {visibleSections.map(s => <SectionTab key={s.id} section={s} />)}
+            </div>
+          </Pill>
+
+          <Pill style={{ padding: "0 6px 0 10px", gap: 4 }}>
+            <RailButton label="Search  (⌘K)" onClick={() => setSearchOpen(true)}>
+              <Search size={16} strokeWidth={1.9} />
+            </RailButton>
+            <UserMenu user={user} onLogout={handleLogout} />
+          </Pill>
+        </div>
+      </ScrollCtx.Provider>
 
       <CommandPalette
         open={searchOpen}
@@ -585,20 +674,6 @@ export default function AppShell() {
         brandFilter={brandFilter}
         onBrand={handleBrandChange}
       />
-
-      {/* ── PAGE CONTENT ──
-          Since the top bar is now absolutely positioned (floating over the
-          page), this pane starts at the very top and owns the full height;
-          pages that want to sit under a transparent bar (e.g. a full-bleed
-          hero) can do so, while pages with plain content should pad their
-          own top by TOPBAR_H (exported below) so nothing is hidden under
-          the glass bar. */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", display: "flex", flexDirection: "column" }}>
-        {hasAccess
-          ? <Outlet context={{ user, role: user.role, brandFilter, setBrandFilter, brands, refreshBrands: loadBrands, topBarHeight: TOPBAR_H }} />
-          : <AccessDenied section={activeSec} />
-        }
-      </div>
     </div>
   );
 }

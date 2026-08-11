@@ -122,6 +122,20 @@ body {
   background: rgba(28, 24, 16, 0.22);
 }
 
+/* The app's single primary scroll region (AppShell's content pane, every
+   route) — fully transparent rather than the thin-track treatment above, so
+   the floating nav reads as sitting on the page rather than beside a visible
+   track. Scoped to this one class, not global: dropdowns, modals and tables
+   keep the thin scrollbar rules above. */
+.app-scroll-pane::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  background: transparent;
+}
+.app-scroll-pane {
+  scrollbar-width: none;
+}
+
 select {
   appearance: none;
   -webkit-appearance: none;

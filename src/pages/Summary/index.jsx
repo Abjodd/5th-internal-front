@@ -46,9 +46,13 @@
  *    tuned down so they don't look like loading spinners.
  */
 
-import { useEffect, useMemo, useRef } from "react";
-import { useOutletContext } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, useReducedMotion, animate, useScroll, useTransform } from "motion/react";
+import {
+  CampaignsAPI, ClientsAPI, InvoicesAPI, UsersAPI, CreatorsAPI,
+  QuotesAPI, ClientRequestsAPI, CreatorRequestsAPI,
+} from "../../lib/api";
+import { buildSummary } from "../../lib/summaryMetrics";
 
 /* ────────────────────────────────────────────────────────────────
  * DESIGN TOKENS + PHOTOGRAPHY
@@ -101,10 +105,6 @@ const MOSAIC = [
   { src: IMG("photo-1551288049-bebda4e38f71", 700), caption: "Performance reviews" },
 ];
 
-function avatarUrl(seed, size = 128) {
-  return `https://i.pravatar.cc/${size}?img=${seed}`;
-}
-
 // Deterministic colour-coded initials badge — replaces the old
 // keyword-photo lookup so a thumbnail can never render the wrong
 // thing (or nothing at all). Same input always produces the same
@@ -129,114 +129,40 @@ function fmtINR(n) {
 function pct(n) { return n === null || n === undefined ? null : `${n > 0 ? "+" : ""}${n}%`; }
 
 /* ────────────────────────────────────────────────────────────────
- * SAMPLE / DEMO CONTENT — landing-page fallback, field-by-field
- * ──────────────────────────────────────────────────────────────── */
-
-const DEMO = {
-  bigNumbers: { campaigns: 128, clients: 34, team: 82, aeo: 46 },
-  health: { revenue: 78, delivery: 84, clients: 72, team: 80, growth: 65 },
-  revenue: {
-    total: 8600000,
-    deltaPct: 18,
-    trend: [58, 62, 60, 67, 71, 69, 78, 82, 86],
-    collected: 6100000,
-    outstanding: 1800000,
-    overdue: 700000,
-    renewalsDue: 5,
-  },
-  campaigns: {
-    stages: [
-      { key: "draft", label: "Draft", count: 6, note: "Concepts not yet briefed" },
-      { key: "brief", label: "Brief", count: 9, note: "Awaiting client sign-off" },
-      { key: "po", label: "PO", count: 14, note: "Purchase orders in motion" },
-      { key: "advance", label: "Advance", count: 11, note: "Creator advances processing" },
-      { key: "execution", label: "Execution", count: 22, note: "Campaigns currently live" },
-      { key: "reporting", label: "Reporting", count: 8, note: "Wrapping and reporting out" },
-      { key: "completed", label: "Completed", count: 58, note: "Delivered this period" },
-    ],
-  },
-  clients: {
-    total: 34, healthy: 24, atRisk: 7, critical: 3,
-    names: [
-      { id: "c1", name: "Meraki Skin", status: "healthy" },
-      { id: "c2", name: "Voltage Audio", status: "healthy" },
-      { id: "c3", name: "Terra Foods", status: "atRisk" },
-      { id: "c4", name: "Bloom Beauty", status: "healthy" },
-      { id: "c5", name: "Northstar Wearables", status: "critical" },
-      { id: "c6", name: "Kindle & Co", status: "healthy" },
-      { id: "c7", name: "Fizz Beverages", status: "atRisk" },
-      { id: "c8", name: "Wanderlux Travel", status: "healthy" },
-      { id: "c9", name: "Pulse Fitness", status: "healthy" },
-      { id: "c10", name: "Stitch & Sole", status: "critical" },
-    ],
-  },
-  team: {
-    members: [
-      { id: "t1", name: "Aisha", utilizationPct: 88, activeProjects: 5, avatar: 12 },
-      { id: "t2", name: "Rohan", utilizationPct: 64, activeProjects: 3, avatar: 33 },
-      { id: "t3", name: "Meera", utilizationPct: 92, activeProjects: 6, avatar: 45 },
-      { id: "t4", name: "Kabir", utilizationPct: 51, activeProjects: 2, avatar: 5 },
-      { id: "t5", name: "Sana", utilizationPct: 76, activeProjects: 4, avatar: 29 },
-      { id: "t6", name: "Devika", utilizationPct: 34, activeProjects: 1, avatar: 47 },
-      { id: "t7", name: "Arjun", utilizationPct: 81, activeProjects: 5, avatar: 15 },
-      { id: "t8", name: "Priya", utilizationPct: 69, activeProjects: 3, avatar: 23 },
-    ],
-    avgUtilizationPct: 69,
-  },
-  risks: { billing: 0.35, client: 0.52, campaign: 0.22, team: 0.6, aeo: 0.3 },
-  decisions: [
-    { id: "d1", title: "Approve Q3 retainer renewal for Bloom Beauty", impactLabel: "₹14L annual value", deadline: "14 Aug", tag: "Bloom Beauty" },
-    { id: "d2", title: "Sign off on the creator roster for the Voltage Audio launch", impactLabel: "12 creators", deadline: "18 Aug", tag: "Voltage Audio" },
-    { id: "d3", title: "Resolve the overdue invoice with Northstar Wearables", impactLabel: "₹7L overdue", deadline: "20 Aug", tag: "Northstar" },
-    { id: "d4", title: "Greenlight the festive campaign concept for Fizz Beverages", impactLabel: "Festive campaign", deadline: "25 Aug", tag: "Fizz" },
-  ],
-  performance: {
-    lines: [
-      { key: "revenue", label: "Revenue", color: F.forest, data: [52, 55, 58, 60, 65, 70, 74, 78] },
-      { key: "delivery", label: "Delivery", color: F.navy, data: [60, 62, 65, 68, 70, 73, 79, 84] },
-      { key: "clientHealth", label: "Client Health", color: F.gold, data: [58, 60, 63, 65, 68, 70, 71, 72] },
-      { key: "retention", label: "Retention", color: F.plum, data: [70, 71, 73, 74, 76, 77, 79, 81] },
-    ],
-  },
+ * DATA
+ * ────────────────────────────────────────────────────────────────
+ * There is no sample content on this page any more.
+ *
+ * What stood here was a `DEMO` object — 128 campaigns, 34 clients,
+ * ₹86.0L of revenue, ten invented brands, eight invented colleagues
+ * with invented utilisation figures and stock-photo faces — merged
+ * field-by-field under anything the backend sent. It was written as
+ * a fallback, but the page read `summaryData` off the router's outlet
+ * context and nothing ever put `summaryData` there, so the merge had
+ * nothing to merge and DEMO was, in practice, the entire page. The
+ * founder's landing screen was a brochure.
+ *
+ * Every figure now comes from lib/summaryMetrics.buildSummary(), which
+ * derives it from the live collections and returns null for anything
+ * the database cannot answer — see that file for the metric-by-metric
+ * account of what is derived and what is deliberately left blank.
+ *
+ * The shape below is what an unloaded page renders: nulls and empty
+ * arrays, which every section already knows how to draw as "—" or
+ * "not yet connected". It is not a fallback and must never gain
+ * plausible-looking values.
+ */
+const EMPTY = {
+  asOf: null,
+  bigNumbers: { campaigns: null, clients: null, team: null, creators: null },
+  health: { revenue: null, delivery: null, clients: null, team: null, growth: null },
+  revenue: { total: null, deltaPct: null, trend: [], collected: null, outstanding: null, overdue: null, renewalsDue: null },
+  campaigns: { stages: [] },
+  clients: { total: null, active: null, idle: null, healthy: null, atRisk: null, critical: null, names: [] },
+  team: { members: [], avgUtilizationPct: null, staffedPct: null },
+  decisions: [],
+  performance: { lines: [] },
 };
-
-function mergeObj(demoObj, partialObj) {
-  const out = { ...demoObj };
-  if (!partialObj) return out;
-  for (const k of Object.keys(demoObj)) {
-    const pv = partialObj[k];
-    if (Array.isArray(demoObj[k])) {
-      out[k] = Array.isArray(pv) && pv.length > 0 ? pv : demoObj[k];
-    } else if (pv !== null && pv !== undefined) {
-      out[k] = pv;
-    }
-  }
-  return out;
-}
-
-function mergeData(partial) {
-  const p = partial || {};
-  return {
-    asOf: p.asOf ?? null,
-    bigNumbers: mergeObj(DEMO.bigNumbers, p.bigNumbers),
-    health: mergeObj(DEMO.health, p.health),
-    revenue: mergeObj(DEMO.revenue, p.revenue),
-    campaigns: {
-      stages: Array.isArray(p.campaigns?.stages) && p.campaigns.stages.length > 0
-        ? p.campaigns.stages
-        : DEMO.campaigns.stages,
-    },
-    clients: mergeObj(DEMO.clients, p.clients),
-    team: mergeObj(DEMO.team, p.team),
-    risks: mergeObj(DEMO.risks, p.risks),
-    decisions: Array.isArray(p.decisions) && p.decisions.length > 0 ? p.decisions : DEMO.decisions,
-    performance: {
-      lines: Array.isArray(p.performance?.lines) && p.performance.lines.length > 0
-        ? p.performance.lines
-        : DEMO.performance.lines,
-    },
-  };
-}
 
 /* ────────────────────────────────────────────────────────────────
  * AMBIENT / TEXTURE LAYER
@@ -316,7 +242,10 @@ function PhotoInterlude({ src, kicker, headline, height = 520, dark = true }) {
   const y = useTransform(scrollYProgress, [0, 1], reduce ? [0, 0] : [-40, 40]);
 
   return (
-    <section ref={ref} style={{ position: "relative", height, overflow: "hidden", background: F.ink }}>
+    // The section's own background is what the shell's nav reads to decide
+    // whether the floating pills need their dark material (see AppShell
+    // isDarkBlock) — so a light interlude must not declare itself as ink.
+    <section ref={ref} style={{ position: "relative", height, overflow: "hidden", background: dark ? F.ink : F.paper }}>
       <motion.div
         style={{ position: "absolute", inset: -40, y }}
         animate={reduce ? undefined : { scale: [1, 1.08] }}
@@ -557,6 +486,56 @@ function InitialsBadge({ seed, size = 40, radius = 10 }) {
   );
 }
 
+// A thin, quiet divider between two sections that would otherwise share the
+// exact same background colour — the studio PhotoInterlude running straight
+// into Agency Health (both F.ink) and Decisions running straight into
+// Performance (both F.cream) had no seam at all between them, so they read
+// as one long section rather than two, each with its own heading. This
+// doesn't try to look like a section of its own — no eyebrow, no title —
+// just enough breathing room and a faint gradient line to mark where one
+// ends and the next begins.
+function SectionSeam({ tone = "light" }) {
+  const dark = tone === "dark";
+  return (
+    <div
+      aria-hidden
+      style={{
+        position: "relative", height: dark ? 72 : 56,
+        background: dark ? F.ink : F.cream,
+      }}
+    >
+      <div style={{
+        position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)",
+        width: 120, height: 1,
+        background: dark
+          ? "linear-gradient(90deg, transparent, rgba(255,255,255,0.22), transparent)"
+          : `linear-gradient(90deg, transparent, ${F.hairlineStrong}, transparent)`,
+      }} />
+    </div>
+  );
+}
+
+// A single photo tile matching the ContentMosaic treatment (rounded corners,
+// gradient caption) — used to fill the empty side column a text-only section
+// left blank, rather than a chart or diagram standing there half-drawn.
+function SideTile({ src, caption, height = 280 }) {
+  return (
+    <Reveal delay={0.24}>
+      <motion.div
+        whileHover={{ scale: 1.02 }}
+        transition={{ duration: 0.35, ease: EASE }}
+        style={{ position: "relative", borderRadius: 18, overflow: "hidden", height, background: F.hairline }}
+      >
+        <img src={src} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, transparent 50%, rgba(20,21,26,0.65) 100%)" }} />
+        <div style={{ position: "absolute", left: 16, right: 16, bottom: 14, fontFamily: T.ui, fontSize: 11, fontWeight: 600, color: "#FFFFFF", letterSpacing: "0.04em" }}>
+          {caption}
+        </div>
+      </motion.div>
+    </Reveal>
+  );
+}
+
 /* ────────────────────────────────────────────────────────────────
  * 1 — HERO: full-bleed cover photograph
  * ──────────────────────────────────────────────────────────────── */
@@ -570,7 +549,13 @@ function Hero({ asOfLabel }) {
   const fade = useTransform(scrollYProgress, [0, 0.9], [1, 0]);
 
   return (
-    <section ref={ref} className="fs-hero" style={{ position: "relative", height: "94vh", minHeight: 780, overflow: "hidden", background: F.ink }}>
+    // `data-nav-merge` asks the shell's floating nav to drop its glass chrome
+    // while this section is behind it, so the pills read as sitting directly
+    // on the cover photograph rather than as a row of chips on top of it —
+    // the same photo the nav already darkens for its own copy, so white nav
+    // text stays exactly as legible as the "Founder Summary" label above it.
+    <section ref={ref} className="fs-hero" data-nav-merge data-nav-tone="dark"
+      style={{ position: "relative", height: "94vh", minHeight: 780, overflow: "hidden", background: F.ink }}>
       <motion.div style={{ position: "absolute", inset: -60, y: imgY }}
         animate={reduce ? undefined : { scale: [1, 1.06] }}
         transition={{ duration: 26, repeat: Infinity, repeatType: "mirror", ease: "easeInOut" }}
@@ -695,8 +680,11 @@ function BigNumbers({ revenue = {}, bigNumbers = {} }) {
           {[
             { label: "Campaigns", value: bigNumbers.campaigns, color: F.navy },
             { label: "Clients", value: bigNumbers.clients, color: F.rust },
-            { label: "Team", value: bigNumbers.team, color: F.plum, suffix: bigNumbers.team != null ? "%" : "" },
-            { label: "AEO", value: bigNumbers.aeo, color: F.gold },
+            { label: "Team", value: bigNumbers.team, color: F.plum },
+            // Was "AEO", scored out of a findings collection that is empty and
+            // sits behind a section disabled in routes/sections.js. The
+            // creators directory is a live count the founder actually has.
+            { label: "Creators", value: bigNumbers.creators, color: F.gold },
           ].map((item, i) => (
             <Reveal key={item.label} delay={i * 0.08}>
               <motion.div whileHover={{ y: -2 }} transition={{ duration: 0.25 }}>
@@ -717,17 +705,27 @@ function BigNumbers({ revenue = {}, bigNumbers = {} }) {
  * 4 — AGENCY HEALTH
  * ──────────────────────────────────────────────────────────────── */
 
-function HealthOrbitArc({ pct: value, color, r, size, stroke = 3 }) {
+// `cx`/`cy` are the node's actual position in the PARENT svg's coordinate
+// space — this used to take a `size` prop and self-center at (size/2, size/2)
+// as if it owned its own local viewport, but it's rendered directly into
+// AgencyHealth's shared 520×520 canvas alongside four siblings, all with the
+// same `size`. Every arc landed at the identical (36, 36), stacked on top of
+// each other near the corner of the diagram — the "random progress circle
+// floating about" bug: five overlapping rings in colours that don't belong
+// to any single node, sitting nowhere near the signal they were meant to
+// wrap. Positioning explicitly by the node's own (x, y) is what the visible
+// halo circle beside it already does correctly.
+function HealthOrbitArc({ pct: value, color, cx, cy, r, stroke = 3 }) {
   const reduce = useReducedMotion();
   const c = 2 * Math.PI * r;
   const v = value === null ? 0 : Math.max(0, Math.min(100, value));
   const offset = c - (v / 100) * c;
   return (
     <motion.circle
-      cx={size / 2} cy={size / 2} r={r} fill="none"
+      cx={cx} cy={cy} r={r} fill="none"
       stroke={value === null ? F.hairlineStrong : color}
       strokeWidth={stroke} strokeLinecap="round" strokeDasharray={c}
-      transform={`rotate(-90 ${size / 2} ${size / 2})`}
+      transform={`rotate(-90 ${cx} ${cy})`}
       initial={{ strokeDashoffset: c }}
       whileInView={{ strokeDashoffset: value === null ? c : offset }}
       viewport={{ once: true }}
@@ -747,9 +745,14 @@ function AgencyHealth({ health = {} }) {
     { key: "growth", label: "Growth", angle: 198, color: "#E0A08F", value: health.growth },
   ];
   const R = 190;
-  const strongest = [...items].filter((i) => i.value != null).sort((a, b) => b.value - a.value)[0];
-  const weakest = [...items].filter((i) => i.value != null).sort((a, b) => a.value - b.value)[0];
-  const avg = items.filter((i) => i.value != null).reduce((s, i, _, arr) => s + i.value / arr.length, 0);
+  // Only the signals the database can actually answer take part in the
+  // ranking and the average — and the cards below say how many that is, so
+  // "strongest of five" is never claimed when three of the five are blank.
+  const measured = items.filter((i) => i.value != null);
+  const strongest = [...measured].sort((a, b) => b.value - a.value)[0];
+  const weakest = [...measured].sort((a, b) => a.value - b.value)[0];
+  const avg = measured.length ? measured.reduce((s, i) => s + i.value, 0) / measured.length : null;
+  const measuredNote = `${measured.length} of ${items.length} signals are measured today`;
 
   const ref = useRef(null);
   const { scrollYProgress } = useScroll({ target: ref, offset: ["start end", "end start"] });
@@ -792,7 +795,7 @@ function AgencyHealth({ health = {} }) {
                       transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
                       style={{ backdropFilter: "blur(6px)" }}
                     />
-                    <HealthOrbitArc pct={it.value} color={it.color} r={nodeSize / 2 - 6} size={nodeSize} stroke={3} />
+                    <HealthOrbitArc pct={it.value} color={it.color} cx={x} cy={y} r={nodeSize / 2 - 6} stroke={3} />
                     <foreignObject x={x - nodeSize / 2} y={y - nodeSize / 2} width={nodeSize} height={nodeSize}>
                       <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: T.ui, fontWeight: 700, fontSize: 13, color: "#FFFFFF" }}>
                         {it.value != null ? `${it.value}${it.key === "revenue" || it.key === "growth" ? "" : "%"}` : <span style={{ color: "rgba(255,255,255,0.5)", fontSize: 16 }}>—</span>}
@@ -816,9 +819,9 @@ function AgencyHealth({ health = {} }) {
         {/* Fills the space around the ring with legible, concrete takeaways
             instead of leaving the diagram to stand alone on a flat field. */}
         <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap", marginTop: 64, textAlign: "left" }}>
-          <InsightCard dark label="Strongest signal" value={strongest ? strongest.label : "—"} note={strongest ? `Sitting at ${strongest.value}${strongest.key === "revenue" || strongest.key === "growth" ? "" : "%"}, ahead of the rest` : "Awaiting data"} color="#8FBBA8" delay={0.05} />
-          <InsightCard dark label="Needs attention" value={weakest ? weakest.label : "—"} note={weakest ? `Currently the softest of the five signals` : "Awaiting data"} color="#E0A08F" delay={0.12} />
-          <InsightCard dark label="Overall average" value={items.some((i) => i.value != null) ? `${Math.round(avg)}` : "—"} note="Blended across all five health signals" color="#9DB4D9" delay={0.19} />
+          <InsightCard dark label="Strongest signal" value={strongest ? strongest.label : "—"} note={strongest ? `Sitting at ${strongest.value}%, the highest of those we can measure` : "No signal is measurable yet"} color="#8FBBA8" delay={0.05} />
+          <InsightCard dark label="Needs attention" value={measured.length > 1 ? weakest.label : "—"} note={measured.length > 1 ? `Sitting at ${weakest.value}%, the softest of those we can measure` : "Needs at least two measured signals to compare"} color="#E0A08F" delay={0.12} />
+          <InsightCard dark label="Overall average" value={avg != null ? `${Math.round(avg)}` : "—"} note={measuredNote} color="#9DB4D9" delay={0.19} />
         </div>
       </div>
     </section>
@@ -857,11 +860,17 @@ function RevenueSection({ data = {} }) {
             </div>
           </Reveal>
         </div>
-        <Reveal delay={0.2}>
-          <div style={{ paddingTop: 60 }}>
-            <EditorialLine data={data.trend} color={F.forest} height={230} />
-          </div>
-        </Reveal>
+        <div>
+          {/* A tile fills the column the chart used to sit alone in — the
+              chart itself (or its dashed placeholder line) still renders
+              below it once there's a trend worth drawing. */}
+          <SideTile src={MOSAIC[3].src} caption="Every invoice, traced to the work behind it" height={220} />
+          <Reveal delay={0.28}>
+            <div style={{ paddingTop: 28 }}>
+              <EditorialLine data={data.trend} color={F.forest} height={180} />
+            </div>
+          </Reveal>
+        </div>
       </div>
     </section>
   );
@@ -875,38 +884,48 @@ function CampaignFlow({ stages = [] }) {
   const reduce = useReducedMotion();
   return (
     <section style={{ padding: "140px 44px", background: F.cream }}>
-      <div style={{ maxWidth: 720, margin: "0 auto" }}>
-        <SectionHeader eyebrow="Campaign operations" eyebrowColor={F.navy} title="The campaign journey." center={false} />
+      <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 56, alignItems: "start" }}>
+        <div>
+          <SectionHeader eyebrow="Campaign operations" eyebrowColor={F.navy} title="The campaign journey." center={false} />
 
-        <div style={{ position: "relative", paddingLeft: 8 }}>
-          <div style={{ position: "absolute", left: 19, top: 8, bottom: 8, width: 1, background: F.hairlineStrong }} />
-          {!reduce && (
-            <motion.div
-              style={{ position: "absolute", left: 19, top: 8, width: 1, height: 40, background: `linear-gradient(${F.navy}, transparent)` }}
-              animate={{ y: [0, 420, 0] }}
-              transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
-            />
-          )}
-          {stages.map((s, i) => (
-            <Reveal key={s.key} delay={i * 0.06} y={14}>
-              <motion.div whileHover={{ x: 4 }} transition={{ duration: 0.25 }} style={{ display: "flex", gap: 22, alignItems: "flex-start", position: "relative", paddingBottom: i < stages.length - 1 ? 40 : 0 }}>
-                <div style={{
-                  width: 40, height: 40, borderRadius: "50%", flexShrink: 0, zIndex: 1,
-                  background: F.surface, border: `1.5px solid ${s.key === "execution" ? F.navy : F.hairlineStrong}`,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontFamily: T.ui, fontWeight: 700, fontSize: 13, color: s.count != null ? F.navy : F.muted,
-                }}>
-                  {s.count ?? "–"}
-                </div>
-                <div>
-                  <div style={{ fontFamily: T.ui, fontSize: 13, fontWeight: 700, color: F.ink, letterSpacing: "0.03em", marginBottom: 3 }}>
-                    {s.label.toUpperCase()}
+          <div style={{ position: "relative", paddingLeft: 8 }}>
+            <div style={{ position: "absolute", left: 19, top: 8, bottom: 8, width: 1, background: F.hairlineStrong }} />
+            {!reduce && (
+              <motion.div
+                style={{ position: "absolute", left: 19, top: 8, width: 1, height: 40, background: `linear-gradient(${F.navy}, transparent)` }}
+                animate={{ y: [0, 420, 0] }}
+                transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
+              />
+            )}
+            {stages.map((s, i) => (
+              <Reveal key={s.key} delay={i * 0.06} y={14}>
+                <motion.div whileHover={{ x: 4 }} transition={{ duration: 0.25 }} style={{ display: "flex", gap: 22, alignItems: "flex-start", position: "relative", paddingBottom: i < stages.length - 1 ? 40 : 0 }}>
+                  <div style={{
+                    width: 40, height: 40, borderRadius: "50%", flexShrink: 0, zIndex: 1,
+                    background: F.surface, border: `1.5px solid ${s.key === "execution" ? F.navy : F.hairlineStrong}`,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontFamily: T.ui, fontWeight: 700, fontSize: 13, color: s.count != null ? F.navy : F.muted,
+                  }}>
+                    {s.count ?? "–"}
                   </div>
-                  <div style={{ fontFamily: T.ui, fontSize: 12, color: F.inkSoft }}>{s.note}</div>
-                </div>
-              </motion.div>
-            </Reveal>
-          ))}
+                  <div>
+                    <div style={{ fontFamily: T.ui, fontSize: 13, fontWeight: 700, color: F.ink, letterSpacing: "0.03em", marginBottom: 3 }}>
+                      {s.label.toUpperCase()}
+                    </div>
+                    <div style={{ fontFamily: T.ui, fontSize: 12, color: F.inkSoft }}>{s.note}</div>
+                  </div>
+                </motion.div>
+              </Reveal>
+            ))}
+          </div>
+        </div>
+
+        {/* The timeline used to be the whole section — a single narrow
+            column of text on an otherwise empty field. PHOTOS.close was
+            curated for this page (camera / photoshoot) but never actually
+            placed anywhere. */}
+        <div style={{ paddingTop: 68 }}>
+          <SideTile src={PHOTOS.close} caption="What 'execution' looks like on set" height={420} />
         </div>
       </div>
     </section>
@@ -919,24 +938,24 @@ function CampaignFlow({ stages = [] }) {
 
 function ClientConstellation({ clients = {} }) {
   const reduce = useReducedMotion();
-  const size = 560, cx = size / 2, cy = size / 2;
+  const size = 620, cx = size / 2, cy = size / 2;
   const names = clients.names || [];
   const count = Math.max(names.length, 0);
-  const R = 220;
-  const tones = { healthy: F.forest, atRisk: F.gold, critical: F.rust };
-  const critical = names.filter((n) => n.status === "critical");
+  const R = 250;
+  const idle = names.filter((n) => n.status === "idle");
 
   return (
     <section style={{ padding: "150px 44px 120px", background: F.surface, position: "relative" }}>
-      <div style={{ maxWidth: 1000, margin: "0 auto", textAlign: "center" }}>
-        <SectionHeader eyebrow="Portfolio" eyebrowColor={F.rust} title="The client constellation." />
+      <div style={{ maxWidth: 1040, margin: "0 auto", textAlign: "center" }}>
+        <SectionHeader eyebrow="Portfolio" eyebrowColor={F.rust} title="The client constellation."
+          sub="Every brand on the books, and which of them we are running work for right now." />
 
         <Reveal delay={0.14}>
-          <div style={{ display: "flex", gap: 24, justifyContent: "center", marginBottom: 54, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 24, justifyContent: "center", marginBottom: 40, flexWrap: "wrap" }}>
             {[
-              { label: "Healthy", value: clients.healthy, color: F.forest },
-              { label: "At risk", value: clients.atRisk, color: F.gold },
-              { label: "Critical", value: clients.critical, color: F.rust },
+              { label: "On the books", value: clients.total, color: F.rust },
+              { label: "With live work", value: clients.active, color: F.forest },
+              { label: "No live campaign", value: clients.idle, color: F.muted },
             ].map((s) => (
               <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 7 }}>
                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.color }} />
@@ -946,51 +965,75 @@ function ClientConstellation({ clients = {} }) {
           </div>
         </Reveal>
 
+        {/* Framed, not floating on plain white — a soft multi-hue wash gives
+            the diagram the same presence PerformanceGraph's chart panel and
+            AgencyHealth's photo backdrop already have, instead of a lone SVG
+            standing alone on an empty field. */}
         <Reveal delay={0.2}>
-          <div style={{ position: "relative", width: "100%", maxWidth: size, margin: "0 auto" }}>
-            <DriftParticles color={F.rust} area={size} count={10} />
-            <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ overflow: "visible", position: "relative" }}>
-              <circle cx={cx} cy={cy} r={R} fill="none" stroke={F.hairline} strokeDasharray="2 6" />
-              <circle cx={cx} cy={cy} r={90} fill={F.rustTint} opacity={0.5} />
-              <circle cx={cx} cy={cy} r={90} fill="none" stroke={F.rust} strokeOpacity={0.25} />
-              <text x={cx} y={cy - 6} textAnchor="middle" fontFamily={T.ui} fontSize={11} fontWeight={700} fill={F.rust} letterSpacing="0.08em">CLIENT</text>
-              <text x={cx} y={cy + 10} textAnchor="middle" fontFamily={T.ui} fontSize={11} fontWeight={700} fill={F.rust} letterSpacing="0.08em">PORTFOLIO</text>
+          <div style={{
+            position: "relative", width: "100%", maxWidth: size + 60, margin: "0 auto",
+            borderRadius: 28, border: `1px solid ${F.hairline}`, overflow: "hidden",
+            background: `radial-gradient(75% 65% at 30% 20%, ${F.rustTint}, transparent 60%),
+                         radial-gradient(70% 60% at 75% 80%, ${F.goldTint}, transparent 65%),
+                         radial-gradient(60% 55% at 80% 15%, ${F.forestTint}, transparent 60%)`,
+            padding: "36px 20px",
+            boxShadow: "0 24px 50px rgba(20,21,26,0.06)",
+          }}>
+            <div style={{ position: "relative", width: "100%", maxWidth: size, margin: "0 auto" }}>
+              <DriftParticles color={F.rust} area={size} count={12} />
+              <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ overflow: "visible", position: "relative" }}>
+                <circle cx={cx} cy={cy} r={R} fill="none" stroke={F.hairline} strokeDasharray="2 6" />
+                <circle cx={cx} cy={cy} r={98} fill={F.rustTint} opacity={0.6} />
+                <circle cx={cx} cy={cy} r={98} fill="none" stroke={F.rust} strokeOpacity={0.3} />
+                <text x={cx} y={cy - 6} textAnchor="middle" fontFamily={T.ui} fontSize={12} fontWeight={700} fill={F.rust} letterSpacing="0.08em">CLIENT</text>
+                <text x={cx} y={cy + 11} textAnchor="middle" fontFamily={T.ui} fontSize={12} fontWeight={700} fill={F.rust} letterSpacing="0.08em">PORTFOLIO</text>
 
-              {count === 0 && (
-                <text x={cx} y={cy + R + 8} textAnchor="middle" fontFamily={T.ui} fontSize={11} fill={F.muted}>
-                  Client portfolio data not yet connected
-                </text>
-              )}
+                {count === 0 && (
+                  <text x={cx} y={cy + R + 8} textAnchor="middle" fontFamily={T.ui} fontSize={11} fill={F.muted}>
+                    Client portfolio data not yet connected
+                  </text>
+                )}
 
-              {names.map((n, i) => {
-                const angle = (i / Math.max(count, 1)) * Math.PI * 2 - Math.PI / 2;
-                const x = cx + Math.cos(angle) * R, y = cy + Math.sin(angle) * R;
-                const color = tones[n.status] || F.muted;
-                const [fg, bg] = badgeTone(n.name || String(i));
-                const badgeR = 17;
-                return (
-                  <g key={n.id || i}>
-                    <line x1={cx} y1={cy} x2={x} y2={y} stroke={color} strokeOpacity={0.14} />
-                    <motion.circle cx={x} cy={y} r={badgeR + 3} fill="none" stroke={color} strokeWidth={1.6}
-                      animate={reduce ? undefined : { r: [badgeR + 3, badgeR + 5, badgeR + 3] }}
-                      transition={{ duration: 4 + (i % 3), repeat: Infinity, ease: "easeInOut" }} />
-                    <circle cx={x} cy={y} r={badgeR} fill={bg} />
-                    <text x={x} y={y + 4} textAnchor="middle" fontFamily={T.ui} fontSize={11} fontWeight={700} fill={fg}>
-                      {initials(n.name)}
-                    </text>
-                    <rect x={x - 40} y={y - badgeR - 24} width={80} height={15} rx={7.5} fill={F.surface} opacity={0.92} />
-                    <text x={x} y={y - badgeR - 13} textAnchor="middle" fontFamily={T.ui} fontSize={10} fontWeight={600} fill={F.inkSoft}>{n.name}</text>
-                  </g>
-                );
-              })}
-            </svg>
+                {names.map((n, i) => {
+                  const angle = (i / Math.max(count, 1)) * Math.PI * 2 - Math.PI / 2;
+                  const x = cx + Math.cos(angle) * R, y = cy + Math.sin(angle) * R;
+                  // Each node takes its colour from the same deterministic
+                  // badge palette as the initials inside it, rather than a
+                  // flat two-tone active/idle split — five clients used to
+                  // render as five identical grey or green dots; now each is
+                  // visually distinct, the way the palette already treats
+                  // decision tags and team avatars elsewhere on the page.
+                  // Engagement still reads, just as a small status dot at
+                  // the badge's edge instead of recolouring the whole node.
+                  const [fg, bg] = badgeTone(n.name || String(i));
+                  const statusColor = n.status === "active" ? F.forest : F.muted;
+                  const badgeR = 20;
+                  return (
+                    <g key={n.id || i}>
+                      <line x1={cx} y1={cy} x2={x} y2={y} stroke={fg} strokeOpacity={0.18} />
+                      <motion.circle cx={x} cy={y} r={badgeR + 4} fill="none" stroke={fg} strokeOpacity={0.35} strokeWidth={1.6}
+                        animate={reduce ? undefined : { r: [badgeR + 4, badgeR + 7, badgeR + 4] }}
+                        transition={{ duration: 4 + (i % 3), repeat: Infinity, ease: "easeInOut" }} />
+                      <circle cx={x} cy={y} r={badgeR} fill={bg} stroke={fg} strokeOpacity={0.25} strokeWidth={1} />
+                      <text x={x} y={y + 4.5} textAnchor="middle" fontFamily={T.ui} fontSize={12} fontWeight={700} fill={fg}>
+                        {initials(n.name)}
+                      </text>
+                      <circle cx={x + badgeR - 5} cy={y + badgeR - 5} r={5} fill={F.surface} stroke={statusColor} strokeWidth={1.4} />
+                      <circle cx={x + badgeR - 5} cy={y + badgeR - 5} r={2.4} fill={statusColor} />
+                      <rect x={x - 44} y={y - badgeR - 26} width={88} height={16} rx={8} fill={F.surface} opacity={0.94} />
+                      <text x={x} y={y - badgeR - 14} textAnchor="middle" fontFamily={T.ui} fontSize={10.5} fontWeight={600} fill={F.inkSoft}>{n.name}</text>
+                    </g>
+                  );
+                })}
+              </svg>
+            </div>
           </div>
         </Reveal>
 
-        {critical.length > 0 && (
+        {idle.length > 0 && (
           <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap", marginTop: 56, textAlign: "left" }}>
-            {critical.slice(0, 3).map((n, i) => (
-              <InsightCard key={n.id} label="Critical" value={n.name} note="Flagged for founder review this period" color={F.rust} delay={i * 0.07} />
+            {idle.slice(0, 3).map((n, i) => (
+              <InsightCard key={n.id} label="No live campaign" value={n.name} note="On the books with nothing currently in flight" color={F.gold} delay={i * 0.07} />
             ))}
           </div>
         )}
@@ -1027,8 +1070,12 @@ function UtilizationRing({ pct: value, color, size = 54, stroke = 3.5 }) {
 
 function TeamField({ team = {} }) {
   const members = team.members || [];
-  const avg = team.avgUtilizationPct;
-  const busiest = [...members].sort((a, b) => (b.utilizationPct ?? 0) - (a.utilizationPct ?? 0))[0];
+  // Ranked by live campaign load — a real count — rather than by the
+  // utilisation percentage the platform does not measure. Sorting on a field
+  // that is null for everyone would have made "Highest load" whoever happened
+  // to be first in the array, and captioned them "Running at null% capacity".
+  const busiest = [...members].sort((a, b) => (b.activeProjects ?? 0) - (a.activeProjects ?? 0))[0];
+  const busiestLoad = busiest?.activeProjects ?? 0;
 
   return (
     <section style={{ position: "relative", background: F.cream, overflow: "hidden" }}>
@@ -1055,17 +1102,33 @@ function TeamField({ team = {} }) {
           ) : (
             <>
               <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 44 }}>
-                <InsightCard label="Average utilization" value={avg != null ? `${avg}%` : "—"} note="Across the full active roster" color={F.plum} delay={0.02} />
-                <InsightCard label="Highest load" value={busiest ? busiest.name : "—"} note={busiest ? `Running at ${busiest.utilizationPct}% capacity` : "Awaiting data"} color={F.rust} delay={0.08} />
-                <InsightCard label="Team size" value={`${members.length}`} note="People actively staffed on campaigns" color={F.gold} delay={0.14} />
+                <InsightCard
+                  label="Roster staffed"
+                  value={team.staffedPct != null ? `${team.staffedPct}%` : "—"}
+                  note="Share of the team on at least one live campaign"
+                  color={F.plum} delay={0.02}
+                />
+                <InsightCard
+                  label="Highest load"
+                  value={busiestLoad > 0 ? busiest.name : "—"}
+                  note={busiestLoad > 0
+                    ? `Carrying ${busiestLoad} live campaign${busiestLoad === 1 ? "" : "s"}`
+                    : "Nobody is on a live campaign right now"}
+                  color={F.rust} delay={0.08}
+                />
+                <InsightCard label="Team size" value={`${members.length}`} note="People who can own a campaign" color={F.gold} delay={0.14} />
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16 }}>
                 {members.map((m, i) => {
-                  const util = m.utilizationPct ?? 0;
-                  const hot = util >= 85;
-                  const low = util < 40;
-                  const color = hot ? F.rust : low ? F.gold : F.plum;
+                  // The ring reads campaign load against the busiest person on
+                  // the roster — a relative picture built from real counts.
+                  // It used to read `utilizationPct ?? 0`, which drew an empty
+                  // ring captioned "0% utilized" for anyone the platform had
+                  // no capacity figure for, i.e. everyone.
+                  const load = m.activeProjects ?? 0;
+                  const share = busiestLoad > 0 ? Math.round((load / busiestLoad) * 100) : 0;
+                  const color = load === 0 ? F.gold : share >= 85 ? F.rust : F.plum;
                   return (
                     <Reveal key={m.id || i} delay={Math.min(i * 0.04, 0.4)}>
                       <motion.div
@@ -1073,19 +1136,26 @@ function TeamField({ team = {} }) {
                         transition={{ duration: 0.3, ease: EASE }}
                         style={{ background: F.surface, border: `1px solid ${F.hairline}`, borderRadius: 16, padding: "18px 18px 20px", display: "flex", gap: 14, alignItems: "center" }}
                       >
-                        <div style={{ position: "relative" }}>
-                          <UtilizationRing pct={util} color={color} />
-                          {m.avatar && (
-                            <img src={avatarUrl(m.avatar, 96)} alt="" style={{
-                              position: "absolute", inset: 7, width: "calc(100% - 14px)", height: "calc(100% - 14px)",
-                              borderRadius: "50%", objectFit: "cover",
-                            }} />
-                          )}
+                        <div style={{ position: "relative", display: "flex" }}>
+                          <UtilizationRing pct={share} color={color} />
+                          {/* The user's own initials, from the users record —
+                              the old card pulled a random stranger's face off
+                              pravatar.cc keyed on a made-up seed number. */}
+                          <div style={{
+                            position: "absolute", inset: 7, borderRadius: "50%",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            background: F.navyTint, color: F.navy,
+                            fontFamily: T.ui, fontWeight: 700, fontSize: 12,
+                          }}>
+                            {m.avatar || initials(m.name)}
+                          </div>
                         </div>
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontFamily: T.ui, fontSize: 14, fontWeight: 700, color: F.ink, marginBottom: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.name}</div>
-                          <div style={{ fontFamily: T.ui, fontSize: 11, color, fontWeight: 700, marginBottom: 2 }}>{util}% utilized</div>
-                          <div style={{ fontFamily: T.ui, fontSize: 10.5, color: F.muted }}>{m.activeProjects ?? 0} active project{m.activeProjects === 1 ? "" : "s"}</div>
+                          <div style={{ fontFamily: T.ui, fontSize: 11, color, fontWeight: 700, marginBottom: 2 }}>
+                            {load} live campaign{load === 1 ? "" : "s"}
+                          </div>
+                          <div style={{ fontFamily: T.ui, fontSize: 10.5, color: F.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.title || "—"}</div>
                         </div>
                       </motion.div>
                     </Reveal>
@@ -1094,7 +1164,7 @@ function TeamField({ team = {} }) {
               </div>
 
               <div style={{ display: "flex", justifyContent: "center", gap: 28, marginTop: 36, flexWrap: "wrap" }}>
-                {[["Low capacity", F.gold], ["Healthy", F.plum], ["High capacity", F.rust]].map(([l, c]) => (
+                {[["No live campaign", F.gold], ["Carrying work", F.plum], ["Heaviest load", F.rust]].map(([l, c]) => (
                   <div key={l} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ width: 7, height: 7, borderRadius: "50%", background: c }} />
                     <span style={{ fontFamily: T.ui, fontSize: 10.5, color: F.muted, letterSpacing: "0.04em" }}>{l.toUpperCase()}</span>
@@ -1110,90 +1180,13 @@ function TeamField({ team = {} }) {
 }
 
 /* ────────────────────────────────────────────────────────────────
- * 9 — RISK RADAR
- * ──────────────────────────────────────────────────────────────── */
-
-function RiskRadar({ risks = {} }) {
-  const reduce = useReducedMotion();
-  const size = 460, cx = size / 2, cy = size / 2, R = 170;
-  const items = [
-    { key: "billing", label: "Billing", angle: -90, color: F.forest },
-    { key: "client", label: "Client", angle: -18, color: F.rust },
-    { key: "campaign", label: "Campaign", angle: 54, color: F.navy },
-    { key: "team", label: "Team", angle: 126, color: F.plum },
-    { key: "aeo", label: "AEO", angle: 198, color: F.gold },
-  ];
-  const ranked = [...items].filter((i) => risks[i.key] != null).sort((a, b) => risks[b.key] - risks[a.key]);
-
-  return (
-    <section style={{ padding: "150px 44px 120px", background: F.surface, position: "relative" }}>
-      <div style={{ maxWidth: 900, margin: "0 auto", textAlign: "center" }}>
-        <SectionHeader eyebrow="Signals" eyebrowColor={F.rust} title="Where attention is needed." />
-
-        <Reveal delay={0.16}>
-          <div style={{ position: "relative", width: "100%", maxWidth: size, margin: "0 auto" }}>
-            <DriftParticles color={F.rust} area={size} count={9} />
-            <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ overflow: "visible", position: "relative" }}>
-              {[0.4, 0.7, 1].map((f) => <circle key={f} cx={cx} cy={cy} r={R * f} fill="none" stroke={F.hairline} strokeDasharray="2 6" />)}
-              <circle cx={cx} cy={cy} r={40} fill={F.navyTint} />
-              <text x={cx} y={cy + 4} textAnchor="middle" fontFamily={T.ui} fontSize={9.5} fontWeight={700} fill={F.navy} letterSpacing="0.06em">AGENCY</text>
-
-              {items.map((it) => {
-                const rad = (it.angle * Math.PI) / 180;
-                const level = risks[it.key];
-                const r = level == null ? R * 0.85 : R * (0.4 + (1 - level) * 0.5);
-                const x = cx + Math.cos(rad) * r, y = cy + Math.sin(rad) * r;
-                const critical = level != null && level > 0.66;
-                return (
-                  <g key={it.key}>
-                    <line x1={cx} y1={cy} x2={x} y2={y} stroke={it.color} strokeOpacity={0.15} />
-                    {critical && !reduce && (
-                      <motion.circle cx={x} cy={y} r={9} fill="none" stroke={F.rust}
-                        animate={{ scale: [1, 1.6], opacity: [0.45, 0] }}
-                        transition={{ duration: 2.2, repeat: Infinity, ease: "easeOut" }}
-                        style={{ transformOrigin: `${x}px ${y}px` }} />
-                    )}
-                    <circle cx={x} cy={y} r={7} fill={F.surface} stroke={level == null ? F.hairlineStrong : it.color} strokeWidth={1.6} />
-                    <rect x={x - 32} y={y - 30} width={64} height={15} rx={7.5} fill={F.surface} opacity={0.92} />
-                    <text x={x} y={y - 19} textAnchor="middle" fontFamily={T.ui} fontSize={10} fontWeight={600} fill={F.inkSoft} letterSpacing="0.04em">
-                      {it.label.toUpperCase()}
-                    </text>
-                  </g>
-                );
-              })}
-            </svg>
-          </div>
-        </Reveal>
-
-        {/* Concrete list beneath the radar so the abstract diagram is
-            always backed by legible numbers. */}
-        <Reveal delay={0.22}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 420, margin: "56px auto 0" }}>
-            {ranked.length === 0 && <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted }}>Risk signals not yet connected</div>}
-            {ranked.map((it) => (
-              <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <span style={{ width: 82, fontFamily: T.ui, fontSize: 11, fontWeight: 600, color: F.inkSoft, textAlign: "left" }}>{it.label}</span>
-                <div style={{ flex: 1, height: 5, borderRadius: 3, background: F.hairline, overflow: "hidden" }}>
-                  <motion.div
-                    initial={{ width: 0 }}
-                    whileInView={{ width: `${Math.round(risks[it.key] * 100)}%` }}
-                    viewport={{ once: true }}
-                    transition={{ duration: 1, ease: EASE }}
-                    style={{ height: "100%", background: it.color, borderRadius: 3 }}
-                  />
-                </div>
-                <span style={{ width: 34, fontFamily: T.ui, fontSize: 11, fontWeight: 700, color: F.ink, textAlign: "right" }}>{Math.round(risks[it.key] * 100)}%</span>
-              </div>
-            ))}
-          </div>
-        </Reveal>
-      </div>
-    </section>
-  );
-}
-
-/* ────────────────────────────────────────────────────────────────
- * 10 — DECISIONS ON THE HORIZON
+ * 9 — DECISIONS ON THE HORIZON
+ * (was preceded by a Risk Radar section — removed. It scored five
+ * signals — billing/client/campaign/team/AEO risk — that nothing in
+ * the platform actually measures, so it only ever drew five hollow
+ * grey rings under "Where attention is needed" with no attention to
+ * report. See lib/summaryMetrics.js for the fuller account of why
+ * that data doesn't exist yet; the section comes back if it ever does.)
  * ──────────────────────────────────────────────────────────────── */
 
 function DecisionsHorizon({ items = [] }) {
@@ -1238,31 +1231,44 @@ function DecisionsHorizon({ items = [] }) {
 }
 
 /* ────────────────────────────────────────────────────────────────
- * 11 — PERFORMANCE
+ * 10 — PERFORMANCE
  * ──────────────────────────────────────────────────────────────── */
 
 function PerformanceGraph({ lines = [] }) {
   const reduce = useReducedMotion();
   const W = 900, H = 340, pad = 20;
-  const hasAny = lines.some((l) => l.data && l.data.length > 1);
+  // Two different bars: `hasChips` is "is there at least one real number to
+  // show" (one invoiced month is a real number); `hasTrend` is "is there a
+  // shape worth drawing a line through" (needs two). A line with exactly one
+  // point used to be discarded entirely by lib/summaryMetrics before it ever
+  // reached this component, which is why this section was always either a
+  // full chart or a giant empty box — there was no state in between for the
+  // very common case of "we have this month's number, just not last
+  // month's". It now renders that case as a compact row of current values
+  // and skips the chart, rather than pretending there's nothing to report.
+  const hasChips = lines.some((l) => l.data && l.data.length >= 1);
+  const hasTrend = lines.some((l) => l.data && l.data.length >= 2);
 
   return (
-    <section style={{ padding: "140px 44px", background: F.cream }}>
+    <section style={{ padding: hasTrend ? "140px 44px" : "100px 44px", background: F.cream }}>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <SectionHeader eyebrow="Trajectory" eyebrowColor={F.forest} title="Performance." center={false}
-          sub="Eight periods, four signals — the shape of where the agency is headed." />
+          sub={hasTrend
+            ? "Month by month, from what has actually been invoiced and delivered."
+            : "What's on the books right now — a full trend line needs a second month to compare against."} />
 
-        {!hasAny ? (
+        {!hasChips ? (
           <Reveal delay={0.16}>
-            <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", border: `1px dashed ${F.hairlineStrong}`, borderRadius: 14, background: F.surface }}>
+            <div style={{ padding: "26px 28px", display: "flex", alignItems: "center", gap: 12, border: `1px dashed ${F.hairlineStrong}`, borderRadius: 14, background: F.surface }}>
               <span style={{ fontFamily: T.ui, fontSize: 12, color: F.muted }}>Performance trend will appear once operating history accumulates</span>
             </div>
           </Reveal>
         ) : (
           <>
-            {/* Value chips — turns "a chart" into a set of concrete,
-                scannable numbers before you even read the lines. */}
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 28 }}>
+            {/* Value chips — the number itself, not just "a chart". This row
+                is the whole section once there's no second month to compare
+                it against. */}
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: hasTrend ? 28 : 0 }}>
               {lines.map((line, i) => {
                 const d = line.data || [];
                 const latest = d[d.length - 1];
@@ -1288,60 +1294,63 @@ function PerformanceGraph({ lines = [] }) {
               })}
             </div>
 
-            {/* Framed chart panel — previously the SVG floated directly on
-                the section background with no definition of its own. */}
-            <Reveal delay={0.18}>
-              <div style={{ background: F.surface, border: `1px solid ${F.hairline}`, borderRadius: 20, padding: "36px 32px 24px", boxShadow: "0 20px 44px rgba(20,21,26,0.05)" }}>
-                <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ overflow: "visible" }}>
-                  <defs>
-                    {lines.map((line) => (
-                      <linearGradient key={line.key} id={`perf-grad-${line.key}`} x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={line.color} stopOpacity="0.16" />
-                        <stop offset="100%" stopColor={line.color} stopOpacity="0" />
-                      </linearGradient>
-                    ))}
-                  </defs>
-                  {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={0} y1={H * f} x2={W} y2={H * f} stroke={F.hairline} strokeDasharray="2 6" />)}
-                  {lines.map((line, li) => {
-                    const d = line.data || [];
-                    if (d.length < 2) return null;
-                    const min = Math.min(...d), max = Math.max(...d), span = max - min || 1;
-                    const pts = d.map((v, i) => [
-                      (i / (d.length - 1)) * W,
-                      H - pad - ((v - min) / span) * (H - pad * 2),
-                    ]);
-                    const path = pts.map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-                    const area = path + ` L${W} ${H} L0 ${H} Z`;
-                    const last = pts[pts.length - 1];
-                    return (
-                      <g key={line.key}>
-                        <motion.path
-                          d={area} fill={`url(#perf-grad-${line.key})`}
-                          initial={reduce ? false : { opacity: 0 }}
-                          whileInView={{ opacity: 1 }}
-                          viewport={{ once: true, amount: 0.4 }}
-                          transition={{ duration: 1, delay: li * 0.1 }}
-                        />
-                        <motion.path
-                          d={path} fill="none" stroke={line.color} strokeWidth={2.25} strokeLinecap="round"
-                          initial={reduce ? false : { pathLength: 0 }}
-                          whileInView={{ pathLength: 1 }}
-                          viewport={{ once: true, amount: 0.4 }}
-                          transition={{ duration: 1.6, ease: EASE, delay: li * 0.1 }}
-                        />
-                        <motion.circle
-                          cx={last[0]} cy={last[1]} r={4} fill={line.color}
-                          animate={reduce ? undefined : { r: [4, 6, 4] }}
-                          transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
-                        />
-                        <rect x={last[0] + 8} y={last[1] - 10} width={line.label.length * 6.4 + 12} height={16} rx={8} fill={F.surface} opacity={0.95} />
-                        <text x={last[0] + 14} y={last[1] + 4} fontFamily={T.ui} fontSize={11} fontWeight={600} fill={line.color}>{line.label}</text>
-                      </g>
-                    );
-                  })}
-                </svg>
-              </div>
-            </Reveal>
+            {/* Framed chart panel — only when a line actually has a second
+                point to draw toward. An empty grid with no path drawn on it
+                would read emptier than no panel at all. */}
+            {hasTrend && (
+              <Reveal delay={0.18}>
+                <div style={{ background: F.surface, border: `1px solid ${F.hairline}`, borderRadius: 20, padding: "36px 32px 24px", boxShadow: "0 20px 44px rgba(20,21,26,0.05)" }}>
+                  <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ overflow: "visible" }}>
+                    <defs>
+                      {lines.map((line) => (
+                        <linearGradient key={line.key} id={`perf-grad-${line.key}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={line.color} stopOpacity="0.16" />
+                          <stop offset="100%" stopColor={line.color} stopOpacity="0" />
+                        </linearGradient>
+                      ))}
+                    </defs>
+                    {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={0} y1={H * f} x2={W} y2={H * f} stroke={F.hairline} strokeDasharray="2 6" />)}
+                    {lines.map((line, li) => {
+                      const d = line.data || [];
+                      if (d.length < 2) return null;
+                      const min = Math.min(...d), max = Math.max(...d), span = max - min || 1;
+                      const pts = d.map((v, i) => [
+                        (i / (d.length - 1)) * W,
+                        H - pad - ((v - min) / span) * (H - pad * 2),
+                      ]);
+                      const path = pts.map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+                      const area = path + ` L${W} ${H} L0 ${H} Z`;
+                      const last = pts[pts.length - 1];
+                      return (
+                        <g key={line.key}>
+                          <motion.path
+                            d={area} fill={`url(#perf-grad-${line.key})`}
+                            initial={reduce ? false : { opacity: 0 }}
+                            whileInView={{ opacity: 1 }}
+                            viewport={{ once: true, amount: 0.4 }}
+                            transition={{ duration: 1, delay: li * 0.1 }}
+                          />
+                          <motion.path
+                            d={path} fill="none" stroke={line.color} strokeWidth={2.25} strokeLinecap="round"
+                            initial={reduce ? false : { pathLength: 0 }}
+                            whileInView={{ pathLength: 1 }}
+                            viewport={{ once: true, amount: 0.4 }}
+                            transition={{ duration: 1.6, ease: EASE, delay: li * 0.1 }}
+                          />
+                          <motion.circle
+                            cx={last[0]} cy={last[1]} r={4} fill={line.color}
+                            animate={reduce ? undefined : { r: [4, 6, 4] }}
+                            transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+                          />
+                          <rect x={last[0] + 8} y={last[1] - 10} width={line.label.length * 6.4 + 12} height={16} rx={8} fill={F.surface} opacity={0.95} />
+                          <text x={last[0] + 14} y={last[1] + 4} fontFamily={T.ui} fontSize={11} fontWeight={600} fill={line.color}>{line.label}</text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </div>
+              </Reveal>
+            )}
           </>
         )}
       </div>
@@ -1350,7 +1359,7 @@ function PerformanceGraph({ lines = [] }) {
 }
 
 /* ────────────────────────────────────────────────────────────────
- * 12 — THE BIG PICTURE
+ * 11 — THE BIG PICTURE
  * ──────────────────────────────────────────────────────────────── */
 
 function BigPicture() {
@@ -1429,13 +1438,13 @@ function BigPicture() {
 }
 
 /* ────────────────────────────────────────────────────────────────
- * 13 — CLOSING
+ * 12 — CLOSING
  * ──────────────────────────────────────────────────────────────── */
 
 
 
 /* ────────────────────────────────────────────────────────────────
- * 14 — FOOTER
+ * 13 — FOOTER
  * Reuses the same dark full-bleed-photo treatment as the closing
  * section (per feedback: "the last tab is good, make it footer bg").
  * ──────────────────────────────────────────────────────────────── */
@@ -1552,11 +1561,41 @@ function Footer() {
  * ──────────────────────────────────────────────────────────────── */
 
 export default function FounderSummary() {
-  const ctx = useOutletContext() || {};
-  const { brandFilter, brands, summaryData } = ctx;
+  const [data, setData] = useState(EMPTY);
 
-  const data = useMemo(() => mergeData(summaryData), [summaryData]);
-  const brandName = brands?.find((b) => b.id === brandFilter)?.name || null;
+  // The Summary is an agency-wide report — it deliberately does not take the
+  // shell's brand filter (which is hidden on this route for the same reason):
+  // "the state of the agency" scoped to one brand is a different document.
+  useEffect(() => {
+    let live = true;
+
+    // Each collection is fetched independently and a failure is contained to
+    // its own slice: if `quotes` 404s, the decisions list loses its quote rows
+    // and every other section still reports. The alternative — one rejected
+    // Promise.all — would blank the whole page over one bad endpoint.
+    const safe = (p) => p.then((r) => r).catch(() => []);
+
+    Promise.all([
+      safe(CampaignsAPI.list()),
+      safe(ClientsAPI.list()),
+      safe(InvoicesAPI.list()),
+      safe(UsersAPI.list()),
+      safe(CreatorsAPI.list()),
+      safe(QuotesAPI.list()),
+      safe(ClientRequestsAPI.list()),
+      safe(CreatorRequestsAPI.list()),
+    ]).then(([campaigns, clients, invoices, users, creators, quotes, clientRequests, creatorRequests]) => {
+      if (!live) return;
+      setData(
+        buildSummary(
+          { campaigns, clients, invoices, users, creators, quotes, clientRequests, creatorRequests },
+          F,
+        ),
+      );
+    });
+
+    return () => { live = false; };
+  }, []);
 
   const asOfLabel = useMemo(() => {
     if (data.asOf) return data.asOf;
@@ -1568,17 +1607,14 @@ export default function FounderSummary() {
     <div style={{ background: F.paper, fontFamily: T.ui, color: F.ink, position: "relative" }}>
       <GrainOverlay />
 
-      {brandName && (
-        <div style={{ position: "relative", zIndex: 2, padding: "14px 44px", background: F.navyTint, borderBottom: `1px solid ${F.hairline}`, textAlign: "center" }}>
-          <span style={{ fontFamily: T.ui, fontSize: 11, fontWeight: 600, color: F.navy }}>Filtered to: {brandName}</span>
-        </div>
-      )}
-
       <Hero asOfLabel={asOfLabel} />
       <ExecutiveStatement />
       <BigNumbers revenue={data.revenue} bigNumbers={data.bigNumbers} />
       <ContentMosaic />
       <PhotoInterlude src={PHOTOS.studio} kicker="Behind the work" headline="Every number on this page traces back to a room full of people making things." height={480} />
+      {/* Both this interlude and Agency Health are full-bleed F.ink — without
+          a seam they ran together as one section instead of two. */}
+      <SectionSeam tone="dark" />
       <AgencyHealth health={data.health} />
       <RevenueSection data={data.revenue} />
       <PhotoInterlude src={PHOTOS.city} kicker="Momentum" headline="Campaigns move through the agency like light through a city." height={480} />
@@ -1586,11 +1622,12 @@ export default function FounderSummary() {
       <ClientConstellation clients={data.clients} />
       <PhotoInterlude src={PHOTOS.desk} kicker="Craft" headline="Client health is built one relationship, one delivery, at a time." height={480} dark={false} />
       <TeamField team={data.team} />
-      <RiskRadar risks={data.risks} />
       <DecisionsHorizon items={data.decisions} />
+      {/* Same reasoning — Decisions and Performance are both F.cream. */}
+      <SectionSeam tone="light" />
       <PerformanceGraph lines={data.performance.lines} />
       <BigPicture />
-      
+
       <Footer />
     </div>
   );

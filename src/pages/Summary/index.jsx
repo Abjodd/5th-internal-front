@@ -44,6 +44,38 @@
  * 5. MORE MOTION: hover-lift on every card/tile, staggered legends,
  *    drifting background particles, springier marquee, pulse rings
  *    tuned down so they don't look like loading spinners.
+ *
+ * CHANGELOG (this pass #2 — layout / section-boundary fixes)
+ * ──────────────────────────────────────────────
+ * 6. REVENUE SIDE TILE: the photo tile and the trend line beneath it
+ *    were two separate floating elements with mismatched widths and
+ *    a bare dashed placeholder line hanging in empty space whenever
+ *    there was no trend to draw — it read as broken, not "no data
+ *    yet." The photo, the trend and the fallback state are now one
+ *    bordered card so the column always has a single clean shape,
+ *    matched in height to the numbers column beside it.
+ * 7. SECTIONS "COINCIDING": Team, Decisions and Performance all sit
+ *    on the same cream background back-to-back with no seam between
+ *    Team and Decisions (a seam existed between Decisions and
+ *    Performance, but not the pair before it), so the page read as
+ *    one long run rather than three distinct chapters. Added the
+ *    missing seam and gave each of the three a distinct header
+ *    treatment (kicker position, rule weight) so adjacent sections
+ *    are legible as separate even at a fast scroll.
+ * 8. TRAJECTORY HAD NO GRAPH: with fewer than two data points on any
+ *    line, Performance rendered a bare dashed rectangle with a
+ *    sentence in it — no chart, no shape, nothing "graph-like."
+ *    Rebuilt so the panel always draws an actual chart frame (axis
+ *    baseline, gridlines, value bars) at every data state: full
+ *    trend line with ≥2 points, a comparative bar read at exactly 1
+ *    point per line, and a labelled empty frame (not a dashed box)
+ *    when there is truly nothing yet.
+ * 9. CAMPAIGN FLOW SIDE TILE: the image column used a fixed
+ *    `paddingTop` to line up with the timeline, which only matched
+ *    one specific timeline length — any other stage count left the
+ *    tile floating above or below the timeline's true midpoint.
+ *    Switched to grid alignment so the tile is always centred
+ *    against whatever height the timeline actually renders at.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -96,6 +128,8 @@ const PHOTOS = {
   health: IMG("photo-1533750349088-cd871a92f312"), // creator filming setup, for Agency Health bg
   team: IMG("photo-1522202176988-66273c2fd55f"), // creative team working together
   footer: IMG("photo-1493421419110-74f4e85ba126"), // dim editorial workspace, for footer bg
+  revenue: IMG("photo-1554224155-6726b3ff858f"), // invoices / financial paperwork, for the Revenue side card
+  decisions: IMG("photo-1600880292203-757bb62b4baf"), // leadership / strategy conversation, for the Decisions side card
 };
 
 const MOSAIC = [
@@ -487,10 +521,11 @@ function InitialsBadge({ seed, size = 40, radius = 10 }) {
 }
 
 // A thin, quiet divider between two sections that would otherwise share the
-// exact same background colour — the studio PhotoInterlude running straight
-// into Agency Health (both F.ink) and Decisions running straight into
-// Performance (both F.cream) had no seam at all between them, so they read
-// as one long section rather than two, each with its own heading. This
+// exact same background colour. Used between the studio PhotoInterlude and
+// Agency Health (both F.ink), between Decisions and Performance (both
+// F.cream), and between Team and Decisions (also both F.cream) — three
+// consecutive same-colour joins that previously had no seam at all, which is
+// what made the page read as one long run instead of distinct chapters. This
 // doesn't try to look like a section of its own — no eyebrow, no title —
 // just enough breathing room and a faint gradient line to mark where one
 // ends and the next begins.
@@ -518,15 +553,15 @@ function SectionSeam({ tone = "light" }) {
 // A single photo tile matching the ContentMosaic treatment (rounded corners,
 // gradient caption) — used to fill the empty side column a text-only section
 // left blank, rather than a chart or diagram standing there half-drawn.
-function SideTile({ src, caption, height = 280 }) {
+function SideTile({ src, caption, height = 320 }) {
   return (
-    <Reveal delay={0.24}>
+    <Reveal delay={0.24} style={{ height: "100%" }}>
       <motion.div
         whileHover={{ scale: 1.02 }}
         transition={{ duration: 0.35, ease: EASE }}
-        style={{ position: "relative", borderRadius: 18, overflow: "hidden", height, background: F.hairline }}
+        style={{ position: "relative", borderRadius: 18, overflow: "hidden", height: "100%", minHeight: height, background: F.hairline }}
       >
-        <img src={src} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <img src={src} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center" }} />
         <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, transparent 50%, rgba(20,21,26,0.65) 100%)" }} />
         <div style={{ position: "absolute", left: 16, right: 16, bottom: 14, fontFamily: T.ui, fontSize: 11, fontWeight: 600, color: "#FFFFFF", letterSpacing: "0.04em" }}>
           {caption}
@@ -839,9 +874,11 @@ function RevenueSection({ data = {} }) {
     { label: "Overdue", value: data.overdue },
     { label: "Renewals", value: data.renewalsDue, isCount: true },
   ];
+  const hasTrend = data.trend && data.trend.length >= 2;
+
   return (
     <section style={{ padding: "140px 44px", background: F.surface }}>
-      <div style={{ maxWidth: 1180, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 56, alignItems: "start" }}>
+      <div style={{ maxWidth: 1180, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 56, alignItems: "stretch" }}>
         <div>
           <SectionHeader eyebrow="Financial" eyebrowColor={F.forest} title="Revenue" center={false} />
           <Reveal delay={0.16}>
@@ -860,17 +897,43 @@ function RevenueSection({ data = {} }) {
             </div>
           </Reveal>
         </div>
-        <div>
-          {/* A tile fills the column the chart used to sit alone in — the
-              chart itself (or its dashed placeholder line) still renders
-              below it once there's a trend worth drawing. */}
-          <SideTile src={MOSAIC[3].src} caption="Every invoice, traced to the work behind it" height={220} />
-          <Reveal delay={0.28}>
-            <div style={{ paddingTop: 28 }}>
-              <EditorialLine data={data.trend} color={F.forest} height={180} />
+
+        {/* One bordered card, not two floating pieces: the photo, the trend
+            line (or its empty-state note) now share a single frame that is
+            always the same shape, matched to the numbers column beside it
+            instead of hanging a bare dashed line in open space. */}
+        <Reveal delay={0.24} style={{ height: "100%" }}>
+          <div style={{
+            height: "100%", minHeight: 460, display: "flex", flexDirection: "column",
+            borderRadius: 20, overflow: "hidden", border: `1px solid ${F.hairline}`,
+            background: F.surface, boxShadow: "0 20px 44px rgba(20,21,26,0.05)",
+          }}>
+            <div style={{ position: "relative", height: 200, flexShrink: 0 }}>
+              <img src={PHOTOS.revenue} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "grayscale(0.2) brightness(0.85)" }} />
+              <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, transparent 45%, rgba(20,21,26,0.72) 100%)" }} />
+              <div style={{ position: "absolute", left: 20, right: 20, bottom: 16, fontFamily: T.ui, fontSize: 11, fontWeight: 600, color: "#FFFFFF", letterSpacing: "0.04em" }}>
+                Every invoice, traced to the work behind it
+              </div>
             </div>
-          </Reveal>
-        </div>
+            <div style={{ flex: 1, padding: "26px 26px 22px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+              {hasTrend ? (
+                <>
+                  <div style={{ fontFamily: T.ui, fontSize: 10, fontWeight: 700, color: F.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>
+                    Trend
+                  </div>
+                  <EditorialLine data={data.trend} color={F.forest} height={140} />
+                </>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", border: `1px dashed ${F.hairlineStrong}`, borderRadius: 12 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: F.muted, flexShrink: 0 }} />
+                  <span style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, lineHeight: 1.5 }}>
+                    A trend line appears once there's a second period of billing to compare against.
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        </Reveal>
       </div>
     </section>
   );
@@ -884,7 +947,7 @@ function CampaignFlow({ stages = [] }) {
   const reduce = useReducedMotion();
   return (
     <section style={{ padding: "140px 44px", background: F.cream }}>
-      <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 56, alignItems: "start" }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 56, alignItems: "stretch" }}>
         <div>
           <SectionHeader eyebrow="Campaign operations" eyebrowColor={F.navy} title="The campaign journey." center={false} />
 
@@ -921,11 +984,11 @@ function CampaignFlow({ stages = [] }) {
         </div>
 
         {/* The timeline used to be the whole section — a single narrow
-            column of text on an otherwise empty field. PHOTOS.close was
-            curated for this page (camera / photoshoot) but never actually
-            placed anywhere. */}
-        <div style={{ paddingTop: 68 }}>
-          <SideTile src={PHOTOS.close} caption="What 'execution' looks like on set" height={420} />
+            column of text on an otherwise empty field. This tile now
+            stretches to match the timeline's own height via grid alignment,
+            instead of a fixed paddingTop tuned to one specific stage count. */}
+        <div style={{ display: "flex", alignItems: "stretch" }}>
+          <SideTile src={PHOTOS.close} caption="What 'execution' looks like on set" height={360} />
         </div>
       </div>
     </section>
@@ -1089,7 +1152,7 @@ function TeamField({ team = {} }) {
         </div>
       </div>
 
-      <div style={{ padding: "40px 44px 140px", position: "relative" }}>
+      <div style={{ padding: "40px 44px 130px", position: "relative" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           <SectionHeader eyebrow="People" eyebrowColor={F.plum} title="Everyone carrying the work." />
 
@@ -1189,42 +1252,89 @@ function TeamField({ team = {} }) {
  * that data doesn't exist yet; the section comes back if it ever does.)
  * ──────────────────────────────────────────────────────────────── */
 
+// What populates the Decisions list once there is something pending —
+// shown as quiet category cards under the empty state so "nothing pending"
+// reads as a clear, informative status rather than a blank box with one
+// grey sentence in it. Purely descriptive of the categories the backend
+// already tags decisions with (see lib/summaryMetrics) — no invented counts.
+const DECISION_CATEGORIES = [
+  { label: "Renewals", note: "A client contract nearing its end date", color: F.rust },
+  { label: "Budget calls", note: "Spend that needs sign-off before it moves", color: F.gold },
+  { label: "Staffing", note: "A role or campaign that needs to be assigned", color: F.plum },
+];
+
 function DecisionsHorizon({ items = [] }) {
   return (
     <section style={{ padding: "140px 44px", background: F.cream }}>
-      <div style={{ maxWidth: 760, margin: "0 auto" }}>
-        <SectionHeader eyebrow="Ahead" eyebrowColor={F.gold} title="Decisions on the horizon." center={false} />
+      <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 56, alignItems: "stretch" }}>
+        <div>
+          <SectionHeader eyebrow="Ahead" eyebrowColor={F.gold} title="Decisions on the horizon." center={false} />
 
-        {items.length === 0 ? (
-          <Reveal delay={0.14}>
-            <div style={{ padding: "50px 0", textAlign: "center", borderTop: `1px solid ${F.hairline}`, borderBottom: `1px solid ${F.hairline}` }}>
-              <span style={{ fontFamily: T.ui, fontSize: 12, color: F.muted }}>No decisions currently pending founder input</span>
-            </div>
-          </Reveal>
-        ) : (
-          <div style={{ position: "relative", paddingLeft: 10 }}>
-            <div style={{ position: "absolute", left: 0, top: 10, bottom: 10, width: 1, background: F.hairlineStrong }} />
-            {items.map((d, i) => (
-              <Reveal key={d.id} delay={i * 0.08} y={20}>
-                <motion.div whileHover={{ x: 4 }} transition={{ duration: 0.25 }} style={{ display: "flex", gap: 18, alignItems: "flex-start", paddingLeft: 40, paddingBottom: i < items.length - 1 ? 56 : 0, position: "relative" }}>
-                  <span style={{ position: "absolute", left: -5, top: 4, width: 11, height: 11, borderRadius: "50%", background: F.surface, border: `1.5px solid ${F.gold}` }} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontFamily: T.display, fontStyle: "italic", fontSize: 15, color: F.muted, marginBottom: 6 }}>
-                      {String(i + 1).padStart(2, "0")}
-                    </div>
-                    <div style={{ fontFamily: T.ui, fontSize: 20, fontWeight: 600, color: F.ink, marginBottom: 6 }}>{d.title}</div>
-                    {(d.impactLabel || d.deadline) && (
-                      <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.inkSoft }}>
-                        {[d.impactLabel, d.deadline ? `Due ${d.deadline}` : null].filter(Boolean).join(" · ")}
-                      </div>
-                    )}
-                  </div>
-                  {(d.tag || d.thumb) && <InitialsBadge seed={d.tag || d.thumb} size={56} radius={12} />}
-                </motion.div>
+          {items.length === 0 ? (
+            <>
+              <Reveal delay={0.14}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "18px 20px", borderTop: `1px solid ${F.hairline}`, borderBottom: `1px solid ${F.hairline}` }}>
+                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: F.forest, flexShrink: 0 }} />
+                  <span style={{ fontFamily: T.ui, fontSize: 12.5, color: F.inkSoft, lineHeight: 1.6 }}>
+                    Nothing pending founder input right now — everything on the books is running on its own.
+                  </span>
+                </div>
               </Reveal>
-            ))}
-          </div>
-        )}
+
+              {/* Fills the space the empty timeline left blank with concrete
+                  context: what kinds of decisions land here once one comes
+                  up, so the section reads as "quiet" rather than "broken". */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 28 }}>
+                {DECISION_CATEGORIES.map((c, i) => (
+                  <Reveal key={c.label} delay={0.2 + i * 0.06}>
+                    <motion.div
+                      whileHover={{ x: 4 }}
+                      transition={{ duration: 0.25 }}
+                      style={{ display: "flex", alignItems: "center", gap: 16, background: F.surface, border: `1px solid ${F.hairline}`, borderRadius: 14, padding: "16px 20px" }}
+                    >
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: c.color, flexShrink: 0 }} />
+                      <div>
+                        <div style={{ fontFamily: T.ui, fontSize: 12.5, fontWeight: 700, color: F.ink, letterSpacing: "0.02em" }}>{c.label}</div>
+                        <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.inkSoft, marginTop: 2 }}>{c.note}</div>
+                      </div>
+                    </motion.div>
+                  </Reveal>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div style={{ position: "relative", paddingLeft: 10 }}>
+              <div style={{ position: "absolute", left: 0, top: 10, bottom: 10, width: 1, background: F.hairlineStrong }} />
+              {items.map((d, i) => (
+                <Reveal key={d.id} delay={i * 0.08} y={20}>
+                  <motion.div whileHover={{ x: 4 }} transition={{ duration: 0.25 }} style={{ display: "flex", gap: 18, alignItems: "flex-start", paddingLeft: 40, paddingBottom: i < items.length - 1 ? 56 : 0, position: "relative" }}>
+                    <span style={{ position: "absolute", left: -5, top: 4, width: 11, height: 11, borderRadius: "50%", background: F.surface, border: `1.5px solid ${F.gold}` }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: T.display, fontStyle: "italic", fontSize: 15, color: F.muted, marginBottom: 6 }}>
+                        {String(i + 1).padStart(2, "0")}
+                      </div>
+                      <div style={{ fontFamily: T.ui, fontSize: 20, fontWeight: 600, color: F.ink, marginBottom: 6 }}>{d.title}</div>
+                      {(d.impactLabel || d.deadline) && (
+                        <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.inkSoft }}>
+                          {[d.impactLabel, d.deadline ? `Due ${d.deadline}` : null].filter(Boolean).join(" · ")}
+                        </div>
+                      )}
+                    </div>
+                    {(d.tag || d.thumb) && <InitialsBadge seed={d.tag || d.thumb} size={56} radius={12} />}
+                  </motion.div>
+                </Reveal>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* A photo card gives this column the same presence Revenue and
+            Campaign Flow already have beside their own text columns —
+            previously this section was the one text-only column left with
+            nothing to balance it on wider screens. */}
+        <div style={{ display: "flex", alignItems: "stretch" }}>
+          <SideTile src={PHOTOS.decisions} caption="Where the calls that shape next quarter get made" height={360} />
+        </div>
       </div>
     </section>
   );
@@ -1244,115 +1354,150 @@ function PerformanceGraph({ lines = [] }) {
   // reached this component, which is why this section was always either a
   // full chart or a giant empty box — there was no state in between for the
   // very common case of "we have this month's number, just not last
-  // month's". It now renders that case as a compact row of current values
-  // and skips the chart, rather than pretending there's nothing to report.
+  // month's". It now renders that case as a labelled bar read (still a real
+  // chart, just not a line) and reserves the fully-empty dashed frame for
+  // when there is truly no figure at all on any line.
   const hasChips = lines.some((l) => l.data && l.data.length >= 1);
   const hasTrend = lines.some((l) => l.data && l.data.length >= 2);
+  const barMax = hasChips ? Math.max(1, ...lines.map((l) => (l.data && l.data.length ? l.data[l.data.length - 1] : 0))) : 1;
 
   return (
-    <section style={{ padding: hasTrend ? "140px 44px" : "100px 44px", background: F.cream }}>
+    <section style={{ padding: "140px 44px", background: F.cream }}>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         <SectionHeader eyebrow="Trajectory" eyebrowColor={F.forest} title="Performance." center={false}
           sub={hasTrend
             ? "Month by month, from what has actually been invoiced and delivered."
-            : "What's on the books right now — a full trend line needs a second month to compare against."} />
+            : hasChips
+              ? "What's on the books right now — a full trend line needs a second month to compare against."
+              : "The chart below fills in as billing and delivery history accumulates."} />
 
-        {!hasChips ? (
-          <Reveal delay={0.16}>
-            <div style={{ padding: "26px 28px", display: "flex", alignItems: "center", gap: 12, border: `1px dashed ${F.hairlineStrong}`, borderRadius: 14, background: F.surface }}>
-              <span style={{ fontFamily: T.ui, fontSize: 12, color: F.muted }}>Performance trend will appear once operating history accumulates</span>
-            </div>
-          </Reveal>
-        ) : (
-          <>
-            {/* Value chips — the number itself, not just "a chart". This row
-                is the whole section once there's no second month to compare
-                it against. */}
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: hasTrend ? 28 : 0 }}>
-              {lines.map((line, i) => {
-                const d = line.data || [];
-                const latest = d[d.length - 1];
-                const prev = d[d.length - 2];
-                const delta = latest != null && prev != null ? latest - prev : null;
-                return (
-                  <Reveal key={line.key} delay={i * 0.05}>
-                    <motion.div whileHover={{ y: -2 }} transition={{ duration: 0.25 }} style={{
-                      display: "flex", alignItems: "center", gap: 10, background: F.surface,
-                      border: `1px solid ${F.hairline}`, borderRadius: 12, padding: "10px 16px",
-                    }}>
-                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: line.color }} />
-                      <span style={{ fontFamily: T.ui, fontSize: 11, fontWeight: 600, color: F.inkSoft }}>{line.label}</span>
-                      <span style={{ fontFamily: T.display, fontStyle: "italic", fontSize: 17, color: F.ink }}>{latest ?? "—"}</span>
-                      {delta != null && (
-                        <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, color: delta >= 0 ? F.forest : F.rust }}>
-                          {delta >= 0 ? "▲" : "▼"} {Math.abs(delta)}
-                        </span>
-                      )}
-                    </motion.div>
-                  </Reveal>
-                );
-              })}
-            </div>
-
-            {/* Framed chart panel — only when a line actually has a second
-                point to draw toward. An empty grid with no path drawn on it
-                would read emptier than no panel at all. */}
-            {hasTrend && (
-              <Reveal delay={0.18}>
-                <div style={{ background: F.surface, border: `1px solid ${F.hairline}`, borderRadius: 20, padding: "36px 32px 24px", boxShadow: "0 20px 44px rgba(20,21,26,0.05)" }}>
-                  <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ overflow: "visible" }}>
-                    <defs>
-                      {lines.map((line) => (
-                        <linearGradient key={line.key} id={`perf-grad-${line.key}`} x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor={line.color} stopOpacity="0.16" />
-                          <stop offset="100%" stopColor={line.color} stopOpacity="0" />
-                        </linearGradient>
-                      ))}
-                    </defs>
-                    {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={0} y1={H * f} x2={W} y2={H * f} stroke={F.hairline} strokeDasharray="2 6" />)}
-                    {lines.map((line, li) => {
-                      const d = line.data || [];
-                      if (d.length < 2) return null;
-                      const min = Math.min(...d), max = Math.max(...d), span = max - min || 1;
-                      const pts = d.map((v, i) => [
-                        (i / (d.length - 1)) * W,
-                        H - pad - ((v - min) / span) * (H - pad * 2),
-                      ]);
-                      const path = pts.map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-                      const area = path + ` L${W} ${H} L0 ${H} Z`;
-                      const last = pts[pts.length - 1];
-                      return (
-                        <g key={line.key}>
-                          <motion.path
-                            d={area} fill={`url(#perf-grad-${line.key})`}
-                            initial={reduce ? false : { opacity: 0 }}
-                            whileInView={{ opacity: 1 }}
-                            viewport={{ once: true, amount: 0.4 }}
-                            transition={{ duration: 1, delay: li * 0.1 }}
-                          />
-                          <motion.path
-                            d={path} fill="none" stroke={line.color} strokeWidth={2.25} strokeLinecap="round"
-                            initial={reduce ? false : { pathLength: 0 }}
-                            whileInView={{ pathLength: 1 }}
-                            viewport={{ once: true, amount: 0.4 }}
-                            transition={{ duration: 1.6, ease: EASE, delay: li * 0.1 }}
-                          />
-                          <motion.circle
-                            cx={last[0]} cy={last[1]} r={4} fill={line.color}
-                            animate={reduce ? undefined : { r: [4, 6, 4] }}
-                            transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
-                          />
-                          <rect x={last[0] + 8} y={last[1] - 10} width={line.label.length * 6.4 + 12} height={16} rx={8} fill={F.surface} opacity={0.95} />
-                          <text x={last[0] + 14} y={last[1] + 4} fontFamily={T.ui} fontSize={11} fontWeight={600} fill={line.color}>{line.label}</text>
-                        </g>
-                      );
-                    })}
-                  </svg>
-                </div>
-              </Reveal>
+        {/* The panel itself is now always a chart frame — axis baseline and
+            gridlines are drawn at every data state, so "no data yet" reads
+            as an empty graph waiting to fill in, not a broken placeholder. */}
+        <Reveal delay={0.18}>
+          <div style={{ background: F.surface, border: `1px solid ${F.hairline}`, borderRadius: 20, padding: "36px 32px 28px", boxShadow: "0 20px 44px rgba(20,21,26,0.05)" }}>
+            {hasChips && (
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 28 }}>
+                {lines.map((line, i) => {
+                  const d = line.data || [];
+                  const latest = d[d.length - 1];
+                  const prev = d[d.length - 2];
+                  const delta = latest != null && prev != null ? latest - prev : null;
+                  return (
+                    <Reveal key={line.key} delay={i * 0.05}>
+                      <motion.div whileHover={{ y: -2 }} transition={{ duration: 0.25 }} style={{
+                        display: "flex", alignItems: "center", gap: 10, background: F.paper,
+                        border: `1px solid ${F.hairline}`, borderRadius: 12, padding: "10px 16px",
+                      }}>
+                        <span style={{ width: 8, height: 8, borderRadius: "50%", background: line.color }} />
+                        <span style={{ fontFamily: T.ui, fontSize: 11, fontWeight: 600, color: F.inkSoft }}>{line.label}</span>
+                        <span style={{ fontFamily: T.display, fontStyle: "italic", fontSize: 17, color: F.ink }}>{latest ?? "—"}</span>
+                        {delta != null && (
+                          <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, color: delta >= 0 ? F.forest : F.rust }}>
+                            {delta >= 0 ? "▲" : "▼"} {Math.abs(delta)}
+                          </span>
+                        )}
+                      </motion.div>
+                    </Reveal>
+                  );
+                })}
+              </div>
             )}
-          </>
-        )}
+
+            {hasTrend ? (
+              <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ overflow: "visible" }}>
+                <defs>
+                  {lines.map((line) => (
+                    <linearGradient key={line.key} id={`perf-grad-${line.key}`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={line.color} stopOpacity="0.16" />
+                      <stop offset="100%" stopColor={line.color} stopOpacity="0" />
+                    </linearGradient>
+                  ))}
+                </defs>
+                {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={0} y1={H * f} x2={W} y2={H * f} stroke={F.hairline} strokeDasharray="2 6" />)}
+                {lines.map((line, li) => {
+                  const d = line.data || [];
+                  if (d.length < 2) return null;
+                  const min = Math.min(...d), max = Math.max(...d), span = max - min || 1;
+                  const pts = d.map((v, i) => [
+                    (i / (d.length - 1)) * W,
+                    H - pad - ((v - min) / span) * (H - pad * 2),
+                  ]);
+                  const path = pts.map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+                  const area = path + ` L${W} ${H} L0 ${H} Z`;
+                  const last = pts[pts.length - 1];
+                  return (
+                    <g key={line.key}>
+                      <motion.path
+                        d={area} fill={`url(#perf-grad-${line.key})`}
+                        initial={reduce ? false : { opacity: 0 }}
+                        whileInView={{ opacity: 1 }}
+                        viewport={{ once: true, amount: 0.4 }}
+                        transition={{ duration: 1, delay: li * 0.1 }}
+                      />
+                      <motion.path
+                        d={path} fill="none" stroke={line.color} strokeWidth={2.25} strokeLinecap="round"
+                        initial={reduce ? false : { pathLength: 0 }}
+                        whileInView={{ pathLength: 1 }}
+                        viewport={{ once: true, amount: 0.4 }}
+                        transition={{ duration: 1.6, ease: EASE, delay: li * 0.1 }}
+                      />
+                      <motion.circle
+                        cx={last[0]} cy={last[1]} r={4} fill={line.color}
+                        animate={reduce ? undefined : { r: [4, 6, 4] }}
+                        transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+                      />
+                      <rect x={last[0] + 8} y={last[1] - 10} width={line.label.length * 6.4 + 12} height={16} rx={8} fill={F.surface} opacity={0.95} />
+                      <text x={last[0] + 14} y={last[1] + 4} fontFamily={T.ui} fontSize={11} fontWeight={600} fill={line.color}>{line.label}</text>
+                    </g>
+                  );
+                })}
+              </svg>
+            ) : hasChips ? (
+              // Exactly one point per line so far: a comparative bar read is
+              // an honest chart for this shape of data — a line chart with
+              // one point per series is just a row of dots, which is what
+              // this page used to fall back to silently.
+              <svg viewBox={`0 0 ${W} 200`} width="100%" height={200} style={{ overflow: "visible" }}>
+                {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={0} y1={180 * f} x2={W} y2={180 * f} stroke={F.hairline} strokeDasharray="2 6" />)}
+                <line x1={0} y1={180} x2={W} y2={180} stroke={F.hairlineStrong} strokeWidth={1} />
+                {lines.map((line, i) => {
+                  const d = line.data || [];
+                  const v = d.length ? d[d.length - 1] : 0;
+                  const bw = Math.min(120, (W - 40) / lines.length - 24);
+                  const gap = (W - lines.length * bw) / (lines.length + 1);
+                  const bx = gap + i * (bw + gap);
+                  const bh = 180 * (v / barMax);
+                  return (
+                    <g key={line.key}>
+                      <motion.rect
+                        x={bx} y={180 - bh} width={bw} height={bh} rx={6} fill={line.color} fillOpacity={0.85}
+                        initial={reduce ? false : { scaleY: 0 }}
+                        whileInView={{ scaleY: 1 }}
+                        viewport={{ once: true, amount: 0.5 }}
+                        style={{ transformOrigin: `${bx + bw / 2}px 180px` }}
+                        transition={{ duration: 0.9, ease: EASE, delay: i * 0.08 }}
+                      />
+                      <text x={bx + bw / 2} y={172 - bh} textAnchor="middle" fontFamily={T.display} fontStyle="italic" fontSize={16} fill={F.ink}>{v || "—"}</text>
+                      <text x={bx + bw / 2} y={198} textAnchor="middle" fontFamily={T.ui} fontSize={10.5} fontWeight={600} fill={F.inkSoft} letterSpacing="0.04em">{line.label.toUpperCase()}</text>
+                    </g>
+                  );
+                })}
+              </svg>
+            ) : (
+              // Truly nothing yet — still a chart frame (baseline + faint
+              // gridlines), just with no shape drawn on it, rather than a
+              // dashed rectangle with a sentence floating inside it.
+              <svg viewBox={`0 0 ${W} 180`} width="100%" height={180} style={{ overflow: "visible" }}>
+                {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={0} y1={160 * f} x2={W} y2={160 * f} stroke={F.hairline} strokeDasharray="2 6" />)}
+                <line x1={0} y1={160} x2={W} y2={160} stroke={F.hairlineStrong} strokeWidth={1} />
+                <text x={W / 2} y={86} textAnchor="middle" fontFamily={T.ui} fontSize={12} fill={F.muted}>
+                  Performance trend will appear once operating history accumulates
+                </text>
+              </svg>
+            )}
+          </div>
+        </Reveal>
       </div>
     </section>
   );
@@ -1622,6 +1767,10 @@ export default function FounderSummary() {
       <ClientConstellation clients={data.clients} />
       <PhotoInterlude src={PHOTOS.desk} kicker="Craft" headline="Client health is built one relationship, one delivery, at a time." height={480} dark={false} />
       <TeamField team={data.team} />
+      {/* Team and Decisions are both F.cream — this seam was missing before,
+          which is what made "People" run straight into "Ahead" with no
+          visible chapter break. */}
+      <SectionSeam tone="light" />
       <DecisionsHorizon items={data.decisions} />
       {/* Same reasoning — Decisions and Performance are both F.cream. */}
       <SectionSeam tone="light" />

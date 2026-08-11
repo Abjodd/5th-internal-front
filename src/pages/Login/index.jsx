@@ -35,7 +35,7 @@ export default function LoginPage() {
     const result = await login(email, password);
     setLoading(false);
     if (result.ok) {
-      navigate("/campaigns", { replace: true });
+      navigate("/summary", { replace: true });
     } else {
       setErr(result.error);
     }

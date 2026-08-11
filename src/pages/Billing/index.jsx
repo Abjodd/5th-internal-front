@@ -8,7 +8,8 @@ import { useOutletContext } from "react-router-dom";
 // (see buildRegistry) rather than read from a collection nothing ever wrote to.
 import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, CampaignsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
-import { fmtCompact, fmtINR, prettyDate, ISO_DATE, todayISO } from "../../lib/format";
+import { fmtCompact, fmtINR, prettyDate, todayISO } from "../../lib/format";
+import { receivedOf, isOverdue } from "../../lib/invoiceMoney";
 import { creatorBudgetOf, creatorKeyOf, normStage, stageLabel } from "../../lib/campaign";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
@@ -116,21 +117,9 @@ function calcMargin(clientBudget, creatorBudget) {
 //
 // Declared above isOverdue because it calls it: both are const arrow functions,
 // so this only works today by virtue of the call happening after module init.
-// Money actually in the bank against an invoice. An invoice confirmed paid in
-// full is the whole amount; otherwise it's whichever schedule legs have been
-// settled — which is how a campaign's 50% advance shows up as received while
-// the invoice itself correctly stays outstanding for the balance.
-const receivedOf = inv => {
-  if (inv?.status === "paid") return inv.amount || 0;
-  const s = inv?.schedule;
-  if (!s) return 0;
-  return ["advance","final"].reduce((t, k) => t + (s[k]?.status === "paid" ? (s[k].amount || 0) : 0), 0);
-};
-const isOverdue = inv => {
-  if (!inv || inv.type === "credit_note" || inv.status === "paid") return false;
-  if (!ISO_DATE.test(inv.dueDate || "")) return false;
-  return inv.dueDate < todayISO() && receivedOf(inv) < (inv.amount || 0);
-};
+// receivedOf / isOverdue moved to lib/invoiceMoney (imported at the top of
+// this file) once the Founder Summary began reporting the same figures — two
+// copies of "what counts as collected" is how the two pages would drift.
 
 // Outbound (us → vendor): the bills are expenses tagged with this PO.
 const billedAgainstPO = (poId, expenses) =>

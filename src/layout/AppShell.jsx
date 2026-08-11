@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -45,7 +45,22 @@ const F = {
 // content genuinely shows through, the blur carries all the
 // legibility work, and a bright inner top-edge + soft outer edge
 // stand in for a specular highlight, the way real glass catches light.
-const GLASS = {
+//
+// ── Why there are two materials ───────────────────────────────────
+// A 10%-opaque white pane cannot carry its own contrast: whatever is
+// behind it sets its brightness. Over the paper background that's
+// fine, but the Founder Summary scrolls full-bleed near-black
+// sections (hero, Agency Health, the photo interludes, the footer)
+// under the nav — the glass went dark while the ink stayed #14151A,
+// and the wordmark, the tab labels and the user's role all vanished.
+// That is the "navbar colour disappears when I scroll" bug.
+//
+// Raising the fill opacity until dark ink survives a black backdrop
+// needs ~0.85 alpha, which throws the material away. So instead the
+// material INVERTS: over dark backdrops the pills become smoked
+// glass with light ink. Both variants stay genuinely transparent —
+// only which side of the contrast they sit on changes.
+const GLASS_LIGHT = {
   fill: "rgba(255,255,255,0.10)",
   fillScrolled: "rgba(255,255,255,0.20)",
   border: "rgba(255,255,255,0.65)",
@@ -55,22 +70,193 @@ const GLASS = {
 
   hoverFill: "rgba(255,255,255,0.28)",
   chipBorder: "rgba(255,255,255,0.35)",
+
+  // Ink + accents that ride on this material.
+  text: F.ink,
+  textSoft: F.inkSoft,
+  label: F.label,
+  activeFill: F.navy,
+  activeText: "#FFFFFF",
+  chipOnFill: F.navy,
+  chipOnText: "#FFFFFF",
+  chipOffFill: F.hairline,
+  chipOffText: F.inkSoft,
 };
 
+const GLASS_DARK = {
+  fill: "rgba(16,17,22,0.30)",
+  fillScrolled: "rgba(16,17,22,0.46)",
+  border: "rgba(255,255,255,0.34)",
+  outline: "rgba(255,255,255,0.10)",
+  blur: "blur(28px) saturate(1.7)",
+  shadow: "inset 0 1px 0 rgba(255,255,255,0.38), inset 0 0 0 1px rgba(255,255,255,0.06), inset 0 -12px 20px -14px rgba(255,255,255,0.18), 0 1px 2px rgba(0,0,0,0.22), 0 20px 44px -14px rgba(0,0,0,0.55)",
+
+  hoverFill: "rgba(255,255,255,0.16)",
+  chipBorder: "rgba(255,255,255,0.35)",
+
+  text: "#FFFFFF",
+  textSoft: "rgba(255,255,255,0.74)",
+  label: "rgba(255,255,255,0.60)",
+  // The navy active pill is invisible against a dark backdrop, so it
+  // inverts too: a bright pill carrying navy text.
+  activeFill: "#FFFFFF",
+  activeText: F.navy,
+  chipOnFill: "#FFFFFF",
+  chipOnText: F.navy,
+  chipOffFill: "rgba(255,255,255,0.20)",
+  chipOffText: "#FFFFFF",
+};
+
+// Shared context so every independent pill reacts together — to page
+// scroll (deepen slightly) and to what is currently passing beneath
+// them (swap material) — without wiring either through props.
+const NavCtx = createContext({ scrolled: false, merged: false, glass: GLASS_LIGHT });
+function useNavSurface() { return useContext(NavCtx); }
+
+const TOPBAR_H = 84;
+
+// ── Backdrop tone detection ───────────────────────────────────────
+// Which material the pills wear is decided by what is actually passing
+// beneath them. The cost of knowing that is kept off the scroll path:
+// the dark blocks' positions are MEASURED ONCE (per route, per resize,
+// per content-height change) into a list of [top, bottom] offsets, and
+// the only thing scrolling does is compare `scrollTop` against those
+// cached numbers. No getBoundingClientRect, no getComputedStyle and no
+// forced layout while the user is scrolling — just a few numeric
+// comparisons inside the scroll listener the nav already had.
+//
+// Blocks classify themselves. `data-nav-tone="dark|light"` is an
+// explicit override; otherwise the block's own computed background is
+// measured, so the full-bleed #14151A editorial spreads register as
+// dark with no annotation, and every other page — all of which are
+// paper-coloured — keeps the light material by default.
+const LUMA_DARK_MAX = 0.35;
+
+function relativeLuminance(cssColor) {
+  const m = /rgba?\(([^)]+)\)/.exec(cssColor || "");
+  if (!m) return null;
+  const [r, g, b, a = 1] = m[1].split(",").map(Number);
+  if (a < 0.5) return null; // transparent — tells us nothing about the backdrop
+  const lin = (c) => {
+    const s = c / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+function isDarkBlock(el) {
+  const declared = el.dataset.navTone;
+  if (declared === "dark") return true;
+  if (declared === "light") return false;
+  const luma = relativeLuminance(getComputedStyle(el).backgroundColor);
+  return luma != null && luma < LUMA_DARK_MAX;
+}
+
+// Owns both bits of nav surface state — "has the page scrolled at all"
+// and "is a dark block under the pills right now" — behind the single
+// passive scroll listener the nav already had. Deliberately NOT
+// rAF-coalesced: the per-event work is one `scrollTop` read and a
+// handful of numeric comparisons, which is cheaper than the closure a
+// rAF gate would allocate each frame, and `setState` bails out on an
+// unchanged result so React re-renders only on an actual transition.
+function useNavSurfaceState(paneRef, navRef, routeKey) {
+  const [state, setState] = useState({ scrolled: false, onDark: false, merged: false });
+  const darkRef = useRef([]);
+  const mergeRef = useRef([]);
+  const navBandRef = useRef(TOPBAR_H);
+
+  const evaluate = useCallback(() => {
+    const pane = paneRef.current;
+    if (!pane) return;
+    const top = pane.scrollTop;
+    const bottom = top + navBandRef.current;
+    // Overlap tests against the cached bands.
+    const covers = (bands) => {
+      for (const [a, b] of bands) if (a < bottom && b > top) return true;
+      return false;
+    };
+    const next = { scrolled: top > 8, onDark: covers(darkRef.current), merged: covers(mergeRef.current) };
+    setState((prev) =>
+      prev.scrolled === next.scrolled && prev.onDark === next.onDark && prev.merged === next.merged
+        ? prev
+        : next,
+    );
+  }, [paneRef]);
+
+  const measure = useCallback(() => {
+    const pane = paneRef.current;
+    const nav = navRef.current;
+    if (!pane) return;
+    // The band the pills physically cover, measured rather than assumed
+    // so a nav that has wrapped onto two rows is fully accounted for.
+    navBandRef.current = Math.max(nav ? nav.offsetHeight : 0, TOPBAR_H);
+
+    const paneTop = pane.getBoundingClientRect().top;
+    const scroll = pane.scrollTop;
+    const dark = [];
+    const merge = [];
+    for (const el of pane.querySelectorAll("section, footer, [data-nav-tone], [data-nav-merge]")) {
+      const isDark = isDarkBlock(el);
+      const isMerge = el.dataset.navMerge != null;
+      if (!isDark && !isMerge) continue;
+      const r = el.getBoundingClientRect();
+      const band = [r.top - paneTop + scroll, r.top - paneTop + scroll + r.height];
+      if (isDark) dark.push(band);
+      if (isMerge) merge.push(band);
+    }
+    darkRef.current = dark;
+    mergeRef.current = merge;
+    evaluate();
+  }, [paneRef, navRef, evaluate]);
+
+  useEffect(() => {
+    const pane = paneRef.current;
+    if (!pane) return undefined;
+
+    pane.addEventListener("scroll", evaluate, { passive: true });
+    window.addEventListener("resize", measure);
+
+    // Re-measure whenever the page's own height changes — images and
+    // fonts finishing late move every section below them.
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    if (ro) for (const child of pane.children) ro.observe(child);
+
+    // Layout is already available in an effect, so measure now; the
+    // deferred pass catches anything that mounts in the same commit.
+    measure();
+    const t = setTimeout(measure, 0);
+
+    return () => {
+      clearTimeout(t);
+      pane.removeEventListener("scroll", evaluate);
+      window.removeEventListener("resize", measure);
+      ro?.disconnect();
+    };
+  }, [paneRef, evaluate, measure, routeKey]);
+
+  return state;
+}
+
 function Pill({ children, style = {}, padded = true }) {
-  const [scrolled] = usePaneScroll();
+  const { scrolled, merged, glass } = useNavSurface();
+  // Over a block that opts into merging (the Founder Summary's cover
+  // photograph), the pill drops its chrome entirely — no fill, no blur, no
+  // border, no shadow — so the nav reads as part of the image rather than
+  // four chips sitting on top of it. The glass condenses back the moment
+  // that block scrolls out from under the nav.
+  const bare = merged;
   return (
     <div style={{
       display: "flex", alignItems: "center",
       height: 52, borderRadius: 999,
-      background: scrolled ? GLASS.fillScrolled : GLASS.fill,
-      backdropFilter: GLASS.blur,
-      WebkitBackdropFilter: GLASS.blur,
-      border: `1px solid ${GLASS.border}`,
-      outline: `1px solid ${GLASS.outline}`,
-      boxShadow: GLASS.shadow,
+      background: bare ? "transparent" : scrolled ? glass.fillScrolled : glass.fill,
+      backdropFilter: bare ? "none" : glass.blur,
+      WebkitBackdropFilter: bare ? "none" : glass.blur,
+      border: `1px solid ${bare ? "transparent" : glass.border}`,
+      outline: `1px solid ${bare ? "transparent" : glass.outline}`,
+      boxShadow: bare ? "none" : glass.shadow,
       padding: padded ? "0 8px" : 0,
-      transition: "background 0.25s ease",
+      transition: "background 0.4s ease, border-color 0.4s ease, outline-color 0.4s ease, box-shadow 0.4s ease",
       flexShrink: 0,
       pointerEvents: "auto",
       ...style,
@@ -80,16 +266,9 @@ function Pill({ children, style = {}, padded = true }) {
   );
 }
 
-// Tiny shared context so every independent pill can react to page
-// scroll together (deepen slightly) without being wired through props.
-import { createContext, useContext } from "react";
-const ScrollCtx = createContext([false]);
-function usePaneScroll() { return useContext(ScrollCtx); }
-
-const TOPBAR_H = 84;
-
 function SectionTab({ section }) {
   const [hovered, setHovered] = useState(false);
+  const { glass } = useNavSurface();
   return (
     <NavLink
       to={section.path}
@@ -102,8 +281,8 @@ function SectionTab({ section }) {
         background: "transparent", border: "none",
         cursor: "pointer", fontFamily: "'Sora', sans-serif",
         fontSize: 13, fontWeight: isActive ? 600 : 500,
-        color: isActive ? "#FFFFFF" : F.inkSoft,
-        transition: "color 0.18s",
+        color: isActive ? glass.activeText : glass.textSoft,
+        transition: "color 0.35s ease",
         whiteSpace: "nowrap", textDecoration: "none",
         WebkitTapHighlightColor: "transparent",
       })}
@@ -114,14 +293,14 @@ function SectionTab({ section }) {
             <motion.span
               layoutId="nav-pill"
               transition={{ type: "spring", stiffness: 420, damping: 36, mass: 0.9 }}
-              style={{ position: "absolute", inset: 0, borderRadius: 999, background: F.navy, zIndex: 0 }}
+              style={{ position: "absolute", inset: 0, borderRadius: 999, background: glass.activeFill, zIndex: 0 }}
             />
           )}
           {!isActive && hovered && (
-            <span style={{ position: "absolute", inset: 0, borderRadius: 999, background: GLASS.hoverFill, zIndex: 0 }} />
+            <span style={{ position: "absolute", inset: 0, borderRadius: 999, background: glass.hoverFill, zIndex: 0 }} />
           )}
           <span style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: 7 }}>
-            <SecIcon name={section.lucide} size={15} color={isActive ? "#FFFFFF" : F.label} style={{ transition: "color 0.18s" }} />
+            <SecIcon name={section.lucide} size={15} color={isActive ? glass.activeText : glass.label} style={{ transition: "color 0.35s ease" }} />
             {section.shortLabel}
           </span>
         </>
@@ -134,6 +313,7 @@ function UserMenu({ user, onLogout }) {
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const location = useLocation();
+  const { glass } = useNavSurface();
   const roleLabel = getRole(user.role)?.label || user.role;
 
   // Close the menu whenever the route changes, so it can never be left
@@ -151,7 +331,7 @@ function UserMenu({ user, onLogout }) {
         style={{
           display: "flex", alignItems: "center", gap: 9,
           padding: "4px 12px 4px 4px", height: 44,
-          background: open || hovered ? GLASS.hoverFill : "transparent",
+          background: open || hovered ? glass.hoverFill : "transparent",
           border: "none",
           borderRadius: 999, cursor: "pointer",
           fontFamily: "'Sora', sans-serif", fontSize: 12,
@@ -160,24 +340,25 @@ function UserMenu({ user, onLogout }) {
       >
         <div style={{
           width: 30, height: 30, borderRadius: "50%",
-          background: F.navy, color: "#FFFFFF",
+          background: glass.chipOnFill, color: glass.chipOnText,
           display: "flex", alignItems: "center", justifyContent: "center",
           fontSize: 11, fontWeight: 600, flexShrink: 0,
+          transition: "background 0.35s ease, color 0.35s ease",
         }}>
           {user.avatar}
         </div>
         <div style={{ textAlign: "left" }}>
-          <div style={{ fontWeight: 600, fontSize: 12.5, color: F.ink, lineHeight: 1.25 }}>
+          <div style={{ fontWeight: 600, fontSize: 12.5, color: glass.text, lineHeight: 1.25, transition: "color 0.35s ease" }}>
             {user.name.split(" ")[0]}
           </div>
-          <div style={{ fontSize: 10.5, color: F.inkSoft, lineHeight: 1.25 }}>{roleLabel}</div>
+          <div style={{ fontSize: 10.5, color: glass.textSoft, lineHeight: 1.25, transition: "color 0.35s ease" }}>{roleLabel}</div>
         </div>
         <motion.span
           animate={{ rotate: open ? 180 : 0 }}
           transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
           style={{ display: "flex", marginLeft: 2 }}
         >
-          <ChevronDown size={14} color={F.label} strokeWidth={2} />
+          <ChevronDown size={14} color={glass.label} strokeWidth={2} />
         </motion.span>
       </button>
 
@@ -270,6 +451,7 @@ function BrandSelect({ brands, value, onChange }) {
   const [q, setQ] = useState("");
   const ref = useRef(null);
   const location = useLocation();
+  const { glass } = useNavSurface();
 
   useEffect(() => {
     if (!open) return;
@@ -327,21 +509,22 @@ function BrandSelect({ brands, value, onChange }) {
         style={{
           display: "flex", alignItems: "center", gap: 9,
           padding: "6px 14px 6px 6px", height: 40,
-          background: open || hovered ? GLASS.hoverFill : "transparent",
+          background: open || hovered ? glass.hoverFill : "transparent",
           border: "none",
           borderRadius: 999, cursor: "pointer",
           fontFamily: "'Sora', sans-serif", fontSize: 12.5,
           fontWeight: value ? 600 : 500,
-          color: F.ink,
-          transition: "background 0.15s",
+          color: glass.text,
+          transition: "background 0.15s, color 0.35s ease",
         }}
       >
         <span style={{
           width: 24, height: 24, borderRadius: "50%", flexShrink: 0,
-          background: value ? F.navy : F.hairline,
-          color: value ? "#FFFFFF" : F.inkSoft,
+          background: value ? glass.chipOnFill : glass.chipOffFill,
+          color: value ? glass.chipOnText : glass.chipOffText,
           display: "flex", alignItems: "center", justifyContent: "center",
           fontSize: 9, fontWeight: 700,
+          transition: "background 0.35s ease, color 0.35s ease",
         }}>{selected ? initials(selected.name) : "AB"}</span>
         <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 140 }}>
           {selected ? selected.name : "All brands"}
@@ -351,7 +534,7 @@ function BrandSelect({ brands, value, onChange }) {
           transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
           style={{ display: "flex", flexShrink: 0 }}
         >
-          <ChevronDown size={15} color={F.label} strokeWidth={2} />
+          <ChevronDown size={15} color={glass.label} strokeWidth={2} />
         </motion.span>
       </button>
 
@@ -407,6 +590,7 @@ function BrandSelect({ brands, value, onChange }) {
 
 function RailButton({ label, onClick, children }) {
   const [h, setH] = useState(false);
+  const { glass } = useNavSurface();
   return (
     <button
       onClick={onClick}
@@ -417,11 +601,11 @@ function RailButton({ label, onClick, children }) {
       style={{
         width: 36, height: 36, borderRadius: "50%",
         display: "flex", alignItems: "center", justifyContent: "center",
-        background: h ? GLASS.hoverFill : "transparent",
+        background: h ? glass.hoverFill : "transparent",
         border: "none",
-        color: h ? F.ink : F.inkSoft,
+        color: h ? glass.text : glass.textSoft,
         cursor: "pointer",
-        transition: "background 0.15s, color 0.15s",
+        transition: "background 0.15s, color 0.35s ease",
       }}
     >
       {children}
@@ -429,15 +613,21 @@ function RailButton({ label, onClick, children }) {
   );
 }
 
-function CommandPalette({ open, onClose, sections, brands, onBrand, brandFilter }) {
+function CommandPalette({ open, onClose, sections, brands, onBrand, brandFilter, showBrands = true }) {
   const [q, setQ] = useState("");
   const [i, setI] = useState(0);
   const navigate = useNavigate();
 
   const items = [
     ...sections.map(s => ({ key: `s:${s.id}`, icon: s.lucide, label: s.label, hint: "Section", run: () => navigate(s.path) })),
-    { key: "b:all", icon: "Building2", label: "All brands", hint: "Brand filter", run: () => onBrand(null) },
-    ...brands.map(b => ({ key: `b:${b.id}`, icon: "Building2", label: b.name, hint: "Brand filter", run: () => onBrand(b.id) })),
+    // Brand entries follow the brand pill: hidden wherever the filter
+    // itself is, so the palette can't set a filter the page ignores.
+    ...(showBrands
+      ? [
+          { key: "b:all", icon: "Building2", label: "All brands", hint: "Brand filter", run: () => onBrand(null) },
+          ...brands.map(b => ({ key: `b:${b.id}`, icon: "Building2", label: b.name, hint: "Brand filter", run: () => onBrand(b.id) })),
+        ]
+      : []),
   ].filter(it => !q || it.label.toLowerCase().includes(q.toLowerCase()));
 
   useEffect(() => { setI(0); }, [q]);
@@ -520,7 +710,6 @@ export default function AppShell() {
   const location = useLocation();
   const navigate  = useNavigate();
   const [searchOpen, setSearchOpen] = useState(false);
-  const [scrolled, setScrolled] = useState(false);
 
   const [brandFilter, setBrandFilter] = useState(() => {
     try { return sessionStorage.getItem("5av_brandFilter") || null; } catch { return null; }
@@ -566,17 +755,8 @@ export default function AppShell() {
     setSearchOpen(false);
   }, [location.pathname]);
 
-  // Cosmetic only: every independent pill deepens its glass slightly
-  // once the page pane has scrolled, via ScrollCtx below — the pills
-  // never overlap page content, so nothing is ever hidden beneath them.
   const paneRef = useRef(null);
-  useEffect(() => {
-    const el = paneRef.current;
-    if (!el) return;
-    const onScroll = () => setScrolled(el.scrollTop > 8);
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
+  const navRef = useRef(null);
 
   const handleLogout = () => {
     handleBrandChange(null);
@@ -587,6 +767,16 @@ export default function AppShell() {
   const visibleSections = SECTIONS.filter(s => canAccess(s, user.role));
   const activeSec = SECTIONS.find(s => location.pathname === s.path || location.pathname.startsWith(s.path + "/"));
   const hasAccess  = activeSec ? canAccess(activeSec, user.role) : true;
+  const isSummary  = activeSec?.id === "summary";
+
+  // `scrolled` deepens the glass slightly once the pane has moved.
+  // `onDark` picks which material the pills wear, from what is passing
+  // beneath them right now — light everywhere by default; only pages
+  // that scroll dark full-bleed blocks under the nav ever flip it.
+  // `merged` drops the chrome altogether while a block that asked to own
+  // the nav (a full-bleed cover image) is under it.
+  const { scrolled, onDark, merged } = useNavSurfaceState(paneRef, navRef, location.pathname);
+  const glass = onDark ? GLASS_DARK : GLASS_LIGHT;
 
   return (
     <div style={{
@@ -602,14 +792,30 @@ export default function AppShell() {
           keeps content clear of the pills on initial load; once the
           user scrolls, content genuinely passes behind the glass, which
           is what makes the blur/transparency actually visible instead
-          of just showing flat page background. */}
+          of just showing flat page background.
+
+          The Summary route is the one exception: its first section is a
+          full-bleed cover photograph that opts into `data-nav-merge` (see
+          Pill above) specifically so the nav can sit directly on the image
+          with no chrome. A top-padding gap here would leave a band of flat
+          page background between the pane's edge and where that photo
+          starts, undercutting the merge before the user ever scrolls — so
+          Summary alone renders flush and lets its own hero handle contrast
+          for the nav labels.
+
+          `app-scroll-pane` hides this pane's own scrollbar (see index.css)
+          — the app's single primary scroll region reads cleaner without a
+          visible track, and every other scrollable area (dropdowns,
+          modals, tables) is untouched since the rule is scoped to this
+          class, not global. */}
       <div
         ref={paneRef}
+        className="app-scroll-pane"
         style={{
           position: "absolute", inset: 0,
           overflowY: "auto", overflowX: "hidden",
           display: "flex", flexDirection: "column",
-          paddingTop: TOPBAR_H + 22,
+          paddingTop: isSummary ? 0 : TOPBAR_H + 22,
         }}
       >
         {hasAccess
@@ -618,7 +824,7 @@ export default function AppShell() {
         }
       </div>
 
-      <ScrollCtx.Provider value={[scrolled]}>
+      <NavCtx.Provider value={{ scrolled, merged, glass }}>
         {/* ── NAV ──
             Not a bar — four independent floating glass pills (logo ·
             brand filter · section tabs · search+user) with transparent
@@ -631,25 +837,36 @@ export default function AppShell() {
             AppShell — which wraps every routed page via <Outlet> above —
             so the brand pill, section tabs, search, and the user/logout
             menu are present and functional identically on every page. */}
-        <div style={{
+        <div ref={navRef} style={{
           position: "absolute", top: 0, left: 0, right: 0, zIndex: 30,
           pointerEvents: "none",
           display: "flex", alignItems: "center", gap: 14,
           padding: "14px 18px 0", flexWrap: "wrap",
+          // Merged into a photograph, the labels have no pane behind them —
+          // a soft shadow is what keeps them off the image's own highlights.
+          // drop-shadow covers the SVG icons, which text-shadow does not.
+          textShadow: merged ? "0 1px 14px rgba(0,0,0,0.55)" : "none",
+          filter: merged ? "drop-shadow(0 1px 10px rgba(0,0,0,0.45))" : "none",
+          transition: "filter 0.4s ease",
         }}>
           <Pill style={{ padding: "0 20px" }}>
             <span style={{
               fontFamily: "'Sora', sans-serif", fontSize: 13, fontWeight: 700,
-              textTransform: "uppercase", color: F.ink, letterSpacing: "0.24em",
-              whiteSpace: "nowrap",
+              textTransform: "uppercase", color: glass.text, letterSpacing: "0.24em",
+              whiteSpace: "nowrap", transition: "color 0.35s ease",
             }}>
               Fifth Avenue
             </span>
           </Pill>
 
-          <Pill>
-            <BrandSelect brands={brands} value={brandFilter} onChange={handleBrandChange} />
-          </Pill>
+          {/* The Founder Summary is an agency-wide report — every number on
+              it is the whole business, so a per-brand filter has nothing to
+              act on there and is hidden rather than left inert. */}
+          {!isSummary && (
+            <Pill>
+              <BrandSelect brands={brands} value={brandFilter} onChange={handleBrandChange} />
+            </Pill>
+          )}
 
           <Pill style={{ flex: "1 1 auto", minWidth: 0, justifyContent: "center", overflowX: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 3, minWidth: 0 }}>
@@ -664,7 +881,7 @@ export default function AppShell() {
             <UserMenu user={user} onLogout={handleLogout} />
           </Pill>
         </div>
-      </ScrollCtx.Provider>
+      </NavCtx.Provider>
 
       <CommandPalette
         open={searchOpen}
@@ -673,6 +890,7 @@ export default function AppShell() {
         brands={brands}
         brandFilter={brandFilter}
         onBrand={handleBrandChange}
+        showBrands={!isSummary}
       />
     </div>
   );

@@ -859,14 +859,15 @@ export default function AppShell() {
             </span>
           </Pill>
 
-          {/* The Founder Summary is an agency-wide report — every number on
-              it is the whole business, so a per-brand filter has nothing to
-              act on there and is hidden rather than left inert. */}
-          {!isSummary && (
-            <Pill>
-              <BrandSelect brands={brands} value={brandFilter} onChange={handleBrandChange} />
-            </Pill>
-          )}
+          {/* On every route, the Summary included. The filter used to be hidden
+              there on the grounds that the report is agency-wide, but a nav bar
+              that gains and loses a control as you move between sections reads
+              as a bug, and "the agency" is simply the unfiltered case of "this
+              brand". The Summary scopes its own brand-bearing collections to
+              match — see FounderSummary. */}
+          <Pill>
+            <BrandSelect brands={brands} value={brandFilter} onChange={handleBrandChange} />
+          </Pill>
 
           <Pill style={{ flex: "1 1 auto", minWidth: 0, justifyContent: "center", overflowX: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 3, minWidth: 0 }}>
@@ -890,7 +891,6 @@ export default function AppShell() {
         brands={brands}
         brandFilter={brandFilter}
         onBrand={handleBrandChange}
-        showBrands={!isSummary}
       />
     </div>
   );

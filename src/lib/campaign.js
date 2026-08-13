@@ -319,7 +319,16 @@ export function rosterGap(camp, creators = camp?.creators) {
 // to its amId/cmId/eaId), so until every seat is filled the campaign is
 // invisible to someone who needs it.
 export const teamComplete = c => !!(c?.amId && c?.cmId && c?.eaId);
-export const briefLocked  = c => c?.briefStatus === "signed_off";
+
+// The stored stage is a second witness, and it has to be read too. `briefStatus`
+// only started being set to "signed_off" once the lock became a step of its
+// own; every campaign from before that carries whatever the old shortlisting
+// flow left there. Trusting the flag alone put those campaigns' execution track
+// back at Draft — no team, no creators, nothing live — while their finance track
+// sat at Advance Received, a stage only reachable by a campaign whose brief was
+// locked and whose PO was raised. A stage past `draft` is proof the lock
+// happened, whatever the flag says.
+export const briefLocked  = c => c?.briefStatus === "signed_off" || stageIdx(c?.stage) > 0;
 
 // An asset counts as "in" the moment anything arrives — `rework` and
 // `pending_brand` mean it was submitted and is being worked, not that it's
@@ -369,9 +378,15 @@ export const execDone = c => { const s = execStats(c); return s.locked > 0 && s.
 // Signing off an empty brief would quote the client against nothing, so the
 // lock needs the brief to actually say something first. Returns what's still
 // missing, so the UI can name it instead of just greying a button out.
+//
+// Audience and Key Messages are NOT gates. They are useful context, not things
+// the campaign can be priced or staffed without, and holding the lock for them
+// stalled campaigns whose brief was otherwise complete — the client had already
+// said what they wanted, in the Objective, and nobody could move until someone
+// invented a sentence for a field. They stay on the brief, and stay editable
+// until the PO is recorded; they just no longer block anyone.
 export const briefGaps = c => [
-  ...[["objective","Objective"],["audience","Audience"],["messages","Key Messages"]]
-    .filter(([k]) => !String(c?.brief?.[k] || "").trim()).map(([, l]) => l),
+  ...(String(c?.brief?.objective || "").trim() ? [] : ["Objective"]),
   ...((c?.brief?.deliverables || []).length ? [] : ["Deliverables"]),
   ...(creatorBudgetOf(c) > 0 ? [] : ["Creator budget"]),
 ];

@@ -390,11 +390,10 @@ const fmtNum  = fmtCompact; // shared compact formatters — lib/format.js (fmtI
 const timelineLabel = (start,end) => [prettyDate(start),prettyDate(end)].filter(Boolean).join(" – ");
 const getM    = id => TEAM_DIR.find(t=>t.id===id)||TEAM.find(t=>t.id===id)||null;
 const getR    = id => ROLES.find(r=>r.id===id)||ROLES[0];
-const plIdx   = stageIdx;   // finance-track position, legacy ids normalised
 // Team assignments and the commercial numbers stay editable right up to the
 // PO — that is where they get committed to the client, and changing either
 // after would silently desync it. One boundary, used by both.
-const beforePO = c => plIdx(c?.stage) < plIdx("po_raised");
+const beforePO = c => stageIdx(c?.stage) < stageIdx("po_raised");
 // creatorBudgetOf / numReqOf / perCreatorOf / costOf now live in lib/campaign.js
 // — Billing derives the same numbers, and one copy is what keeps the two pages
 // from disagreeing again.
@@ -537,6 +536,10 @@ const endStatus = (iso, stage) => {
   if (days <= 7)  return { tone: T.amber, text: `Ending in ${days}d`, key: "ending" };
   return null;
 };
+// "Past its end date and not settled" — the question the grid asks twice (a
+// campaign is Ended, and therefore is not Active). Named once so the two can
+// never answer it differently.
+const hasEnded = c => endStatus(c?.end, c?.stage)?.key === "ended";
 // ISO date arithmetic for the end-date extension presets. Parses at local
 // midnight (same as prettyDate/DateInput) so a shift never lands a day off
 // across a DST boundary.
@@ -597,7 +600,7 @@ function syncCreatorExpenses(camp,prevCreators,nextCreators,onError){
 // "execution" stage; the delivery half now has its own rail with its own
 // percentage (execStats().pct), so this is a flat step lookup again.
 function progressOf(c){
-  return (PIPELINE[plIdx(c?.stage)]||PIPELINE[0]).p;
+  return (PIPELINE[stageIdx(c?.stage)]||PIPELINE[0]).p;
 }
 // extUrl / profileUrl now live in lib/campaign.js — the creators directory and
 // the creator-applications inbox render handles too, and all three screens have
@@ -727,18 +730,35 @@ function useCountUp(value){
 //
 // The card is portalled to <body> because the header card is `overflow:hidden`
 // — anything anchored inside it was clipped at the card's edge.
+//
+// The app scales its entire UI with `zoom` on <html>, which put the two halves
+// of this calculation in different units: getBoundingClientRect() reports
+// VISUAL pixels (the zoom already applied), while the `left`/`top` written on
+// the portalled card are layout pixels that the zoom multiplies AGAIN on paint.
+// So the card landed at zoom × the intended x — drifting further right the
+// further right the node sat, which is why the caret missed the node it was
+// describing rather than being uniformly off. Dividing the measurement back out
+// puts both halves in the card's own units.
+const zoomOf = el => {
+  let z = 1;
+  for (let n = el; n; n = n.parentElement) z *= parseFloat(getComputedStyle(n).zoom) || 1;
+  return z;
+};
+
 function useAnchor(target, width){
   const [pos,setPos] = useState(null);
   useLayoutEffect(()=>{
     if(!target){ setPos(null); return; }
     const place = () => {
+      const z = zoomOf(document.body);
       const r = target.getBoundingClientRect();
-      const centre = r.left + r.width/2;
+      const centre = (r.left + r.width/2) / z;
       // Clamped to the viewport, and the caret is then placed relative to the
       // card rather than to the node — so a preview near either edge slides
-      // sideways while its pointer stays on the node.
-      const left = Math.min(Math.max(centre - width/2, 12), window.innerWidth - width - 12);
-      setPos({ left, top:r.bottom + 11, caret:centre - left });
+      // sideways while its pointer stays on the node. The caret is kept off
+      // the card's rounded corners, where it would read as a stray diamond.
+      const left = Math.min(Math.max(centre - width/2, 12), window.innerWidth/z - width - 12);
+      setPos({ left, top:r.bottom/z + 11, caret:Math.min(Math.max(centre - left, 18), width - 18) });
     };
     place();
     window.addEventListener("scroll", place, true);
@@ -904,20 +924,53 @@ function TrackNode({node,x,y,state,col,labelAbove,badge,interactive,onEnter,onLe
   );
 }
 
-// A rail: the grey base, the coloured fill drawn to `frac`, and the sweep.
-function Rail({d,frac,col,flowing,reduce}){
+// A rail is painted with a GRADIENT rather than one flat colour: it blends from
+// the colour of the node it leaves to the colour of the node the campaign is
+// standing on. A flat rail repainted itself wholesale on every advance — a teal
+// line became an amber line in one step, which read as a state change rather
+// than as progress — and it left the fork as two hard colour joins.
+//
+// Two stops, deliberately, not one per node. The palette is chosen to be
+// legible as chips (navy PO, teal advance, amber invoice, green paid), and
+// interpolating end to end through all of them ran the line through olive and
+// brown on the way. Blending only start → current is smooth whatever the two
+// colours are, and it still moves: the head of the rail always wears the
+// current stage's colour, the same thing the marker and the track tag say.
+//
+// gradientUnits="userSpaceOnUse" so the stops sit at real column positions
+// rather than at fractions of a path whose length differs per branch.
+const RailGradient = ({id,x0,x1,from,to}) => (
+  <linearGradient id={id} gradientUnits="userSpaceOnUse" x1={x0} y1="0" x2={x1} y2="0">
+    <stop offset="0" stopColor={from}/>
+    <stop offset="1" stopColor={to}/>
+  </linearGradient>
+);
+
+// A rail: the grey base, the gradient fill drawn to `frac`, and the sweep.
+function Rail({d,frac,stroke,flowing,reduce}){
   return(<>
     <path d={d} fill="none" stroke="rgba(0,0,0,0.07)" strokeWidth={3} strokeLinecap="round"/>
-    <motion.path d={d} fill="none" stroke={col} strokeWidth={3} strokeLinecap="round"
+    <motion.path d={d} fill="none" stroke={stroke} strokeWidth={3} strokeLinecap="round"
       initial={reduce?false:{pathLength:0}} animate={{pathLength:frac}}
       transition={reduce?{duration:0}:PIPE_SPRING}/>
     {flowing&&frac>0.02&&(
-      // Clipped to the drawn length by the same pathLength, so the highlight
-      // never runs past progress that hasn't happened.
-      <motion.path d={d} fill="none" stroke="rgba(255,255,255,0.85)" strokeWidth={3} strokeLinecap="round"
-        style={{pathLength:0.12}}
-        animate={{pathOffset:[-0.12,frac]}}
-        transition={{duration:2.6,repeat:Infinity,ease:"easeInOut",repeatDelay:0.9}}/>
+      // A short highlight travelling the drawn length, clipped by pathOffset so
+      // it never runs past progress that hasn't happened.
+      //
+      // pathLength MUST be declared in initial/animate, not in `style`. Framer
+      // only converts the path props into stroke-dasharray when it sees them on
+      // the animation target; passing it as a style left the highlight with no
+      // dash at all, so it painted the ENTIRE rail solid white — which is what
+      // made the rails look washed-out and completely still. It was covering
+      // the colour it was supposed to be travelling along.
+      // Long, faint and slow. A short bright glint read as a loading bar — the
+      // rail is meant to look alive, not to look busy. Stretching the highlight
+      // and dropping its opacity turns the same animation into a breath passing
+      // under the colour rather than a marker running along the top of it.
+      <motion.path d={d} fill="none" stroke="rgba(255,255,255,0.42)" strokeWidth={3} strokeLinecap="round"
+        initial={{pathLength:0.34,pathOffset:-0.34}}
+        animate={{pathLength:0.34,pathOffset:[-0.34,frac]}}
+        transition={{duration:5.5,repeat:Infinity,ease:"easeInOut"}}/>
     )}
   </>);
 }
@@ -932,7 +985,7 @@ function TrackPipeline({camp,role,expenseById,onOpen,onFinNode,onGoTeam}){
   const [preview,setPreview] = useState(null);   // {id, el}
   const eaOnly = role==="ea";                    // no commercial rail for an EA
 
-  const si   = plIdx(camp.stage);                       // stored-track index
+  const si   = stageIdx(camp.stage);                       // stored-track index
   const es   = execStats(camp);
   const pay  = creatorPayStats(camp, expenseById);
   const exId = executionStageOf(camp);
@@ -967,9 +1020,17 @@ function TrackPipeline({camp,role,expenseById,onOpen,onFinNode,onGoTeam}){
     <div style={{overflowX:"auto",overflowY:"hidden",padding:"6px 0 2px"}}>
       <div style={{position:"relative",width:PIPE_W,minWidth:PIPE_W,height:PIPE_H}}>
         <svg width={PIPE_W} height={PIPE_H} style={{position:"absolute",inset:0,pointerEvents:"none"}} aria-hidden>
-          <Rail d={RAIL.common} frac={commonFrac} col={PIPE_GREEN} flowing={flowing} reduce={reduce}/>
-          <Rail d={RAIL.exec}   frac={execFrac}   col={execCol}    flowing={flowing} reduce={reduce}/>
-          {!eaOnly&&<Rail d={RAIL.fin} frac={finFrac} col={finCol} flowing={flowing} reduce={reduce}/>}
+          <defs>
+            {/* Each branch starts on the colour the common head ends on, so the
+                fork curves read as that line continuing rather than as two new
+                ones starting. */}
+            <RailGradient id="railCommon" x0={cx(0)} x1={cx(FORK-1)} from={PIPE_GREEN} to={T.sc.brief_locked}/>
+            <RailGradient id="railExec" x0={cx(FORK-1)} x1={cx(FORK+EXEC_STAGES.length-1)} from={T.sc.brief_locked} to={execCol}/>
+            <RailGradient id="railFin"  x0={cx(FORK-1)} x1={cx(FORK+FIN_STAGES.length-1)}  from={T.sc.brief_locked} to={finCol}/>
+          </defs>
+          <Rail d={RAIL.common} frac={commonFrac} stroke="url(#railCommon)" flowing={flowing} reduce={reduce}/>
+          <Rail d={RAIL.exec}   frac={execFrac}   stroke="url(#railExec)"   flowing={flowing} reduce={reduce}/>
+          {!eaOnly&&<Rail d={RAIL.fin} frac={finFrac} stroke="url(#railFin)" flowing={flowing} reduce={reduce}/>}
         </svg>
 
         {/* Track tags, in the gutter the fork leaves empty. They say which rail
@@ -1359,37 +1420,46 @@ function CampaignGrid({campaigns,role,onSelect,brandName}){
   );
 }
 
-// ── FILTER TABS (sliding pill indicator) ──────────────────────────────────────
-// Grid filter groups — the phases the team actually talks in. Predicates
-// rather than an id list, because "Exec" now spans a track that isn't stored:
-// a campaign is in execution when its creators are working, whatever its
-// finance stage says. Declared next to STAGE_FILTERS so the two can't drift.
-const STAGE_MATCH={
-  setup:      c=>["draft","brief_locked","team_assigned"].includes(normStage(c.stage)),
-  commercial: c=>["po_raised","advance_received","invoice_raised"].includes(normStage(c.stage)),
-  execution:  c=>executionStageOf(c)==="execution",
-  done:       c=>normStage(c.stage)==="payment_done",
-};
-const STAGE_FILTERS=[["all","All"],["setup","Setup"],["commercial","Money"],["execution","Exec"],["done","Done"],["ended","Ended"]];
-function FilterTabs({value,onChange,endedCount=0}){
+// ── VIEWS — the counts ARE the filter ────────────────────────────────────────
+// One control, not two. The grid used to carry a stat strip (All / Active /
+// In Exec / Attention) that counted but could not be clicked, above a pill row
+// (All / Setup / Money / Exec / Done / Ended) that filtered but showed no
+// numbers. The two named different groups, so a number like "3 Active" led
+// nowhere — there was no pill for it — and the strip counted the ALREADY
+// FILTERED list, which collapsed every number to 0 or 1 the moment a pill was
+// picked. Reading a count and acting on it are the same gesture now.
+//
+// Predicates rather than stage-id lists, because two of these span the derived
+// execution track: a campaign is in execution when its creators are working and
+// ended when its date has passed, whatever its stored finance stage says.
+const VIEWS=[
+  { id:"all",       label:"All",               match:()=>true },
+  // Everything still moving: not a draft, not settled, not past its end date.
+  { id:"active",    label:"Active",            match:c=>!["draft","payment_done"].includes(normStage(c.stage))&&!hasEnded(c) },
+  { id:"execution", label:"In Execution",      match:c=>executionStageOf(c)==="execution" },
+  // Blocked on a person rather than on work in progress — Draft waits on the
+  // brief, Brief Locked on staffing, Team Assigned on Accounts raising the PO.
+  { id:"attention", label:"Require Attention", match:c=>["draft","brief_locked","team_assigned"].includes(normStage(c.stage)), tone:T.amber },
+  { id:"done",      label:"Completed",         match:c=>normStage(c.stage)==="payment_done" },
+  { id:"ended",     label:"Ended",             match:hasEnded, tone:T.red },
+];
+
+function ViewBar({counts,value,onChange}){
   return(
-    <div style={{display:"flex",background:"rgba(0,0,0,0.04)",borderRadius:8,padding:2,gap:1}}>
-      {STAGE_FILTERS.map(([id,lbl])=>{
-        const on=value===id;
-        // Ended carries a live count so finished campaigns are noticed without
-        // having to open the tab to find them.
-        const badge=id==="ended"&&endedCount>0;
+    <div style={{display:"flex",background:"rgba(0,0,0,0.03)",borderRadius:12,padding:3,border:"1px solid rgba(0,0,0,0.06)",gap:2}}>
+      {VIEWS.map(v=>{
+        const on=value===v.id, n=counts[v.id]||0;
+        // A tone only fires when there is something to look at — a red 0 under
+        // "Ended" is an alarm about nothing.
+        const numCol=v.tone&&n>0?v.tone:"#1D1D1F";
         return(
-          <button key={id} onClick={()=>onChange(id)} style={{position:"relative",padding:"5px 10px",borderRadius:6,fontSize:10.5,fontWeight:on?600:400,background:"transparent",cursor:"pointer",fontFamily:SF,border:"none",color:on?"#1D1D1F":"#6E6E73",transition:"color 0.15s"}}>
-            {on&&<motion.div layoutId="filterPill" style={{position:"absolute",inset:0,background:"#FFFFFF",borderRadius:6,boxShadow:"0 1px 3px rgba(0,0,0,0.1)",zIndex:0}} transition={{type:"spring",stiffness:500,damping:38}}/>}
-            <span style={{position:"relative",zIndex:1,display:"inline-flex",alignItems:"center",gap:5}}>
-              {lbl}
-              {badge&&(
-                <motion.span initial={{scale:0.6,opacity:0}} animate={{scale:1,opacity:1}} transition={{type:"spring",stiffness:520,damping:26}}
-                  style={{minWidth:14,height:14,padding:"0 4px",borderRadius:20,background:`${T.amber}1A`,border:`1px solid ${T.amber}3D`,color:T.amber,fontSize:9,fontWeight:700,display:"inline-flex",alignItems:"center",justifyContent:"center",fontFamily:SF,lineHeight:1}}>
-                  {endedCount}
-                </motion.span>
-              )}
+          <button key={v.id} onClick={()=>onChange(v.id)} aria-pressed={on} title={`Show ${v.label.toLowerCase()}`}
+            style={{position:"relative",flex:1,minWidth:0,padding:"9px 6px",borderRadius:9,border:"none",background:"transparent",cursor:"pointer",fontFamily:SF}}>
+            {on&&<motion.div layoutId="viewPill" transition={{type:"spring",stiffness:500,damping:38}}
+              style={{position:"absolute",inset:0,background:"#FFFFFF",borderRadius:9,boxShadow:"0 1px 3px rgba(0,0,0,0.10)",zIndex:0}}/>}
+            <span style={{position:"relative",zIndex:1,display:"block",textAlign:"center"}}>
+              <span style={{display:"block",fontSize:18,fontWeight:700,letterSpacing:"-0.03em",lineHeight:1,color:numCol}}>{n}</span>
+              <span style={{display:"block",fontSize:9.5,marginTop:3,whiteSpace:"nowrap",color:on?"#1D1D1F":"#86868B",fontWeight:on?600:400}}>{v.label}</span>
             </span>
           </button>
         );
@@ -1422,48 +1492,132 @@ function EndedNotice({count,onDismiss}){
   );
 }
 
+// ── DIALOG ───────────────────────────────────────────────────────────────────
+// One shell for every confirm-or-collect dialog on this page. Six of them had
+// hand-copied the same backdrop, spring, card chrome, serif title and footer,
+// so the look could only be changed in six places — and they had already
+// drifted: Remove Creator had no enter animation at all and no spacer before
+// its destructive button, so its Cancel and Remove sat side by side while every
+// other dialog put them at opposite ends.
+//
+// `confirm` is one object rather than four props because the label, the colour
+// and the guard are one decision: a danger button saying "Delete campaign" that
+// is disabled until a reason is picked is a single description of the action.
+function Dialog({title,sub,width=400,onCancel,confirm,children}){
+  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}}
+      onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}}
+      transition={{duration:0.18,ease:"easeOut"}}
+      style={{position:"relative",width:`min(${width}px,92vw)`,background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
+      <div style={{marginBottom:14}}>
+        <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic"}}>{title}</div>
+        {sub&&<div style={{fontSize:11,color:T.sub,lineHeight:1.6,marginTop:4}}>{sub}</div>}
+      </div>
+      {children}
+      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+        <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
+        <div style={{flex:1}}/>
+        <Btn variant={confirm.variant||"primary"} disabled={confirm.disabled} onClick={confirm.onClick}>{confirm.label}</Btn>
+      </div>
+    </motion.div>
+  </div>);
+}
+
+// ── PANEL ────────────────────────────────────────────────────────────────────
+// The other modal shape: a long form that has to scroll, so the title and the
+// buttons are pinned and only the middle moves. Dialog can't do this — its body
+// grows the card — and the two forms that need it had copied it between
+// themselves. `sub` sits under the title in the pinned header rather than in
+// the scrolling body, so the thing being edited stays named while you scroll.
+function Panel({title,sub,width=480,maxHeight="90vh",onClose,footer,children}){
+  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
+    <div onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(5px)"}}/>
+    <div style={{position:"relative",width:`min(${width}px,94vw)`,maxHeight,background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
+      <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
+        <div style={{minWidth:0}}>
+          <div style={{fontFamily:"'Newsreader',serif",fontSize:17,color:T.text,fontStyle:"italic"}}>{title}</div>
+          {sub&&<div style={{fontSize:9.5,color:T.sub,marginTop:2}}>{sub}</div>}
+        </div>
+        <button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer",flexShrink:0}}>✕</button>
+      </div>
+      <div style={{padding:"18px 20px",overflowY:"auto",flex:1}}>{children}</div>
+      <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8,alignItems:"center"}}>
+        <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+        <div style={{flex:1}}/>
+        {footer}
+      </div>
+    </div>
+  </div>);
+}
+
 // ── REMOVE MODAL ─────────────────────────────────────────────────────────────
-function RemoveModal({creator,onConfirm,onCancel}){const [reason,setReason]=useState("");const [note,setNote]=useState("");return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}><div onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/><div style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}><div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Remove Creator</div><div style={{fontSize:11,color:T.sub,marginBottom:16}}>{creator?.name} <CreatorHandle creator={creator} style={{fontSize:11}} fallback=""/> — select a reason</div><div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>{REMOVE_REASONS.map(r=><label key={r.id} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 12px",borderRadius:6,cursor:"pointer",background:reason===r.id?`${T.accent}10`:T.raised,border:`1px solid ${reason===r.id?`${T.accent}30`:T.border}`,transition:"all 0.1s"}}><input type="radio" value={r.id} checked={reason===r.id} onChange={()=>setReason(r.id)} style={{marginTop:2,accentColor:T.accent}}/><div><div style={{fontSize:11.5,color:T.text,fontWeight:500,marginBottom:2}}>{r.label}</div><div style={{fontSize:10,color:T.sub}}>{r.desc}</div></div></label>)}</div><textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} placeholder="Additional note (optional)…" style={{...INP,fontSize:11,marginBottom:12}}/><div style={{display:"flex",gap:8}}><Btn variant="ghost" onClick={onCancel}>Cancel</Btn><Btn variant="danger" onClick={()=>reason&&onConfirm(reason,note)} disabled={!reason}>Remove creator</Btn></div></div></div>);}
+function RemoveModal({creator,onConfirm,onCancel}){
+  const [reason,setReason]=useState("");
+  const [note,setNote]=useState("");
+  return(
+    <Dialog title="Remove Creator" onCancel={onCancel}
+      sub={<>{creator?.name} <CreatorHandle creator={creator} style={{fontSize:11}} fallback=""/> — select a reason</>}
+      confirm={{label:"Remove creator",variant:"danger",disabled:!reason,onClick:()=>onConfirm(reason,note)}}>
+      <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>
+        {REMOVE_REASONS.map(r=>(
+          <label key={r.id} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 12px",borderRadius:6,cursor:"pointer",background:reason===r.id?`${T.accent}10`:T.raised,border:`1px solid ${reason===r.id?`${T.accent}30`:T.border}`,transition:"all 0.1s"}}>
+            <input type="radio" value={r.id} checked={reason===r.id} onChange={()=>setReason(r.id)} style={{marginTop:2,accentColor:T.accent}}/>
+            <div>
+              <div style={{fontSize:11.5,color:T.text,fontWeight:500,marginBottom:2}}>{r.label}</div>
+              <div style={{fontSize:10,color:T.sub}}>{r.desc}</div>
+            </div>
+          </label>
+        ))}
+      </div>
+      <textarea value={note} onChange={e=>setNote(e.target.value)} rows={2} placeholder="Additional note (optional)…" style={{...INP,fontSize:11,marginBottom:14}}/>
+    </Dialog>
+  );
+}
+
+// ── LOCK CREATOR MODAL ───────────────────────────────────────────────────────
+// Locking is the only creator action that spends money and cannot be undone:
+// it posts the fee to Billing as a committed expense, freezes the fee, and —
+// once it fills the last required slot — sends the roster to the client. It was
+// one item in a dropdown, indistinguishable from "Negotiating", so it could be
+// (and was) taken by mis-click. This states the three consequences and names
+// the only way back, which is removing the creator entirely.
+function LockCreatorModal({creator,onConfirm,onCancel}){
+  return(
+    <Dialog title="Lock Creator" width={420} onCancel={onCancel}
+      sub={<>Lock <strong style={{color:T.text}}>{creator?.name}</strong> <CreatorHandle creator={creator} style={{fontSize:11}} fallback=""/> at <strong style={{color:T.text}}>{fmtINR(costOf(creator))}</strong>?</>}
+      confirm={{label:"Lock creator",variant:"success",onClick:onConfirm}}>
+      <div style={{display:"flex",flexDirection:"column",gap:8,padding:"12px 14px",background:T.raised,border:`1px solid ${T.border}`,borderRadius:8,marginBottom:14}}>
+        {[["Their fee is committed",`${fmtINR(costOf(creator))} is posted to Billing as an expense awaiting approval.`],
+          ["The fee is frozen","It can no longer be edited from this table."],
+          ["This can't be reversed","Locked is final. If the deal falls through, remove them from the roster instead."]].map(([h,d])=>(
+          <div key={h} style={{display:"flex",gap:8,alignItems:"flex-start"}}>
+            <Dot color={T.amber} size={5}/>
+            <div><div style={{fontSize:11,color:T.text,fontWeight:500}}>{h}</div><div style={{fontSize:10,color:T.sub,marginTop:1}}>{d}</div></div>
+          </div>
+        ))}
+      </div>
+    </Dialog>
+  );
+}
 
 // ── DELETE CAMPAIGN MODAL ────────────────────────────────────────────────────
 // Founder-only confirm step. The backend soft-deletes (deleted:true), so the
 // campaign disappears from every list but stays recoverable in the DB.
-function DeleteCampaignModal({camp,onConfirm,onCancel}){
-  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
-    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
-      <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Delete Campaign</div>
-      <div style={{fontSize:11,color:T.sub,marginBottom:16}}>
-        Delete <strong style={{color:T.text}}>{camp?.name}</strong> ({camp?.client})? It will be removed from all views. Recovery requires a database restore.
-      </div>
-      <div style={{display:"flex",gap:8}}>
-        <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
-        <div style={{flex:1}}/>
-        <Btn variant="danger" onClick={onConfirm}>Delete campaign</Btn>
-      </div>
-    </motion.div>
-  </div>);
-}
+const DeleteCampaignModal=({camp,onConfirm,onCancel})=>(
+  <Dialog title="Delete Campaign" onCancel={onCancel}
+    sub={<>Delete <strong style={{color:T.text}}>{camp?.name}</strong> ({camp?.client})? It will be removed from all views. Recovery requires a database restore.</>}
+    confirm={{label:"Delete campaign",variant:"danger",onClick:onConfirm}}/>
+);
 
 // ── CONFIRM STAGE-CHANGE MODAL ───────────────────────────────────────────────
 // Double-check gate for every workflow action that moves a campaign to another
 // pipeline stage — changes are only applied (and synced) after confirmation.
-function ConfirmActionModal({camp,label,onConfirm,onCancel}){
-  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
-    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(400px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
-      <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Confirm stage change</div>
-      <div style={{fontSize:11,color:T.sub,lineHeight:1.6,marginBottom:16}}>
-        <strong style={{color:T.text}}>{label}</strong> — this moves <strong style={{color:T.text}}>{camp?.name}</strong> to a different pipeline stage and is logged on the campaign timeline. Continue?
-      </div>
-      <div style={{display:"flex",gap:8}}>
-        <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
-        <div style={{flex:1}}/>
-        <Btn variant="primary" onClick={onConfirm}>Yes, confirm</Btn>
-      </div>
-    </motion.div>
-  </div>);
-}
+const ConfirmActionModal=({camp,label,onConfirm,onCancel})=>(
+  <Dialog title="Confirm stage change" onCancel={onCancel}
+    sub={<><strong style={{color:T.text}}>{label}</strong> — this moves <strong style={{color:T.text}}>{camp?.name}</strong> to a different pipeline stage and is logged on the campaign timeline. Continue?</>}
+    confirm={{label:"Yes, confirm",onClick:onConfirm}}/>
+);
 
 // ── EXTEND END DATE MODAL ────────────────────────────────────────────────────
 // A campaign that has run past its end date (or is about to) still has work
@@ -1487,15 +1641,10 @@ function ExtendEndModal({camp,onConfirm,onCancel}){
   const delta=ISO_DATE.test(cur||"")&&end?daysBetween(cur,end):null;
   const ok=!!end&&end>=floor&&!!reason.trim();
 
-  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
-    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(420px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
-      <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Extend end date</div>
-      <div style={{fontSize:11,color:T.sub,lineHeight:1.6,marginBottom:14}}>
-        <strong style={{color:T.text}}>{camp.name}</strong> currently ends <strong style={{color:T.text}}>{prettyDate(cur)||"—"}</strong>.
-        The new date is logged on the campaign timeline.
-      </div>
-
+  return(
+    <Dialog title="Extend end date" width={420} onCancel={onCancel}
+      sub={<><strong style={{color:T.text}}>{camp.name}</strong> currently ends <strong style={{color:T.text}}>{prettyDate(cur)||"—"}</strong>. The new date is logged on the campaign timeline.</>}
+      confirm={{label:"Extend",disabled:!ok,onClick:()=>ok&&onConfirm(end,reason.trim())}}>
       <Lbl style={{display:"block",marginBottom:5}}>New end date</Lbl>
       <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
         {presets.map(([label,n])=>{
@@ -1510,14 +1659,8 @@ function ExtendEndModal({camp,onConfirm,onCancel}){
       <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={2}
         placeholder="e.g. two creators re-shooting after client revision"
         style={{...INP,fontSize:11,marginBottom:14}}/>
-
-      <div style={{display:"flex",gap:8}}>
-        <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
-        <div style={{flex:1}}/>
-        <Btn variant="primary" disabled={!ok} onClick={()=>ok&&onConfirm(end,reason.trim())}>Extend</Btn>
-      </div>
-    </motion.div>
-  </div>);
+    </Dialog>
+  );
 }
 
 // ── CLIENT PO MODAL ──────────────────────────────────────────────────────────
@@ -1540,15 +1683,10 @@ function ClientPOModal({camp,invoiceAmount,onConfirm,onCancel}){
   // be raised for less while the rest follows. It just shouldn't pass silently.
   const mismatch=invoiceAmount>0&&amt!==invoiceAmount;
 
-  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
-    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(420px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
-      <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Record client Purchase Order</div>
-      <div style={{fontSize:11,color:T.sub,lineHeight:1.6,marginBottom:14}}>
-        The PO <strong style={{color:T.text}}>{camp.client}</strong> raised against <strong style={{color:T.text}}>{camp.name}</strong>.
-        Saving it starts the finance track at PO Raised and links the PO to its invoice in Billing.
-      </div>
-
+  return(
+    <Dialog title="Record client Purchase Order" width={420} onCancel={onCancel}
+      sub={<>The PO <strong style={{color:T.text}}>{camp.client}</strong> raised against <strong style={{color:T.text}}>{camp.name}</strong>. Saving it starts the finance track at PO Raised and links the PO to its invoice in Billing.</>}
+      confirm={{label:"Save PO",disabled:!ok,onClick:()=>ok&&onConfirm({poNumber:poNumber.trim(),amount:amt,receivedDate:date})}}>
       <Lbl style={{display:"block",marginBottom:5}}>Client PO number</Lbl>
       <input value={poNumber} onChange={e=>setPo(e.target.value)} placeholder="as it appears on the client's PO"
         style={{...INP,marginBottom:12}}/>
@@ -1561,14 +1699,8 @@ function ClientPOModal({camp,invoiceAmount,onConfirm,onCancel}){
 
       <Lbl style={{display:"block",marginBottom:5}}>PO date</Lbl>
       <DateInput value={date} onChange={setDate} style={{...INP,marginBottom:16}}/>
-
-      <div style={{display:"flex",gap:8}}>
-        <Btn variant="ghost" onClick={onCancel}>Cancel</Btn>
-        <div style={{flex:1}}/>
-        <Btn variant="primary" disabled={!ok} onClick={()=>ok&&onConfirm({poNumber:poNumber.trim(),amount:amt,receivedDate:date})}>Save PO</Btn>
-      </div>
-    </motion.div>
-  </div>);
+    </Dialog>
+  );
 }
 
 // ── ADD CREATOR MODAL ─────────────────────────────────────────────────────────
@@ -1674,14 +1806,9 @@ export function AddCreatorModal({onAdd,onClose,editing=null}){
     onClose();
   };
 
-  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <div onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(5px)"}}/>
-    <div style={{position:"relative",width:"min(480px,94vw)",maxHeight:"90vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
-      <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div style={{fontFamily:"'Newsreader',serif",fontSize:17,color:T.text,fontStyle:"italic"}}>{editing?`Edit Creator — ${editing.name}`:"Add Creator"}</div>
-        <button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button>
-      </div>
-      <div style={{padding:"18px 20px",overflowY:"auto",flex:1}}>
+  return(
+    <Panel title={editing?`Edit Creator — ${editing.name}`:"Add Creator"} onClose={onClose}
+      footer={<Btn variant="primary" onClick={handleAdd} disabled={!valid}>{editing?"Save changes":"Add to list"}</Btn>}>
         <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:4}}>Platform <span style={{color:T.red}}>*</span></Lbl><select value={f.platform} onChange={e=>u("platform",e.target.value)} style={{...INP,resize:"none"}}>{PLATFORMS.map(p=><option key={p}>{p}</option>)}</select></div>
         <Lbl style={{display:"block",marginBottom:6}}>{lookup?.label||`${f.platform} profile link`}</Lbl>
         <div style={{display:"flex",gap:8,marginBottom:6}}>
@@ -1803,10 +1930,8 @@ export function AddCreatorModal({onAdd,onClose,editing=null}){
           <textarea value={f.address} onChange={e=>u("address",e.target.value)} rows={2}
             placeholder="Full address" style={{...INP}}/>
         </div>
-      </div>
-      <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}><Btn variant="ghost" onClick={onClose}>Cancel</Btn><div style={{flex:1}}/><Btn variant="primary" onClick={handleAdd} disabled={!valid}>{editing?"Save changes":"Add to list"}</Btn></div>
-    </div>
-  </div>);
+    </Panel>
+  );
 }
 
 // ── INVOICE DETAILS MODAL ─────────────────────────────────────────────────────
@@ -1911,17 +2036,9 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
   };
 
   return (
-    <div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(5px)"}}/>
-      <div style={{position:"relative",width:"min(460px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
-        <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div>
-            <div style={{fontFamily:"'Newsreader',serif",fontSize:17,color:T.text,fontStyle:"italic"}}>Invoice Details — {creator.name}</div>
-            <div style={{fontSize:9.5,color:T.sub,marginTop:2}}>{PAYMENT_TYPES.find(p=>p.id===creator.payType)?.label||"—"} · <CreatorHandle creator={creator} style={{fontSize:9.5}}/> · {fmtINR(costOf(creator))}</div>
-          </div>
-          <button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button>
-        </div>
-        <div style={{padding:"16px 20px",overflowY:"auto",flex:1}}>
+    <Panel title={`Invoice Details — ${creator.name}`} width={460} maxHeight="88vh" onClose={onClose}
+      sub={<>{PAYMENT_TYPES.find(p=>p.id===creator.payType)?.label||"—"} · <CreatorHandle creator={creator} style={{fontSize:9.5}}/> · {fmtINR(costOf(creator))}</>}
+      footer={<Btn variant="primary" onClick={generate} disabled={busy}>{busy ? "Generating…" : "Save & Generate"}</Btn>}>
           <div style={{fontSize:10.5,color:T.sub,marginBottom:14}}>Fill in the billing details for this creator. Saved to the campaign before the invoice is generated.</div>
           <div style={{marginBottom:12}}>
             <Lbl style={{display:"block",marginBottom:4}}>Address (for invoice)</Lbl>
@@ -1942,14 +2059,7 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
               </div>
             ))}
           </div>
-        </div>
-        <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>
-          <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
-          <div style={{flex:1}}/>
-          <Btn variant="primary" onClick={generate} disabled={busy}>{busy ? "Generating…" : "Save & Generate"}</Btn>
-        </div>
-      </div>
-    </div>
+    </Panel>
   );
 }
 
@@ -1960,6 +2070,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const [generating,setGenerating]=useState(false);
   const [genRounds,setGenRounds]=useState(camp.genRounds||0);
   const [removeTarget,setRemoveTarget]=useState(null);
+  const [lockTarget,setLockTarget]=useState(null);       // creator awaiting lock confirmation
   const [showAdd,setShowAdd]=useState(false);
   const [editTarget,setEditTarget]=useState(null);       // creator being edited (see PERMS.editCreatorDetails)
   const [invoiceTarget,setInvoiceTarget]=useState(null); // creator to invoice
@@ -1982,6 +2093,14 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
     const base=inNiche.length?inNiche:CREATOR_DB.filter(c=>!taken.has(c.id));
     const pool=base.slice(0,required*2).map(c=>mkCreator(c));setSuggested(pool);setGenRounds(r=>r+1);setGenerating(false);},900);};
   const confirmRemove=(reason,note)=>{API.removeCreator(camp.id,removeTarget._id,reason,note);sync(creators.filter(c=>c._id!==removeTarget._id));setRemoveTarget(null);};
+  // Locking commits money and cannot be taken back, so it is confirmed and
+  // logged. The timeline entry matters more here than on a reversible change:
+  // it is the only record of who made the commitment and at what fee.
+  const confirmLock=()=>{
+    patch(lockTarget._id,{status:"locked"});
+    onLogTimeline?.(`${lockTarget.name} locked at ${fmtINR(costOf(lockTarget))}`);
+    setLockTarget(null);
+  };
   const addFromSugg=cr=>{if(creators.length>=required)return;sync([...creators,cr]);setSuggested(p=>p.filter(c=>c._id!==cr._id));};
   const thS={fontSize:9,fontWeight:600,color:T.label,textTransform:"uppercase",letterSpacing:"0.07em",padding:"8px 10px",whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`,textAlign:"left",background:T.raised};
   const tdS={padding:"8px 10px",borderBottom:`1px solid ${T.border}`,fontSize:11,color:T.sub,verticalAlign:"middle",whiteSpace:"nowrap"};
@@ -2031,10 +2150,14 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
               {/* Reads as an interactive control, not a label. With no border,
                   no background and appearance:none it was indistinguishable
                   from the plain text in every other cell, so nobody could tell
-                  the journey stage was changeable from here. */}
-              <td style={tdS}>{canEdit
+                  the journey stage was changeable from here.
+                  Locked is a one-way door — see LockCreatorModal. Once it is
+                  taken the dropdown becomes a plain pill, because there is no
+                  longer a choice to offer. */}
+              <td style={tdS}>{canEdit&&!isLocked(cr)
                 ? <span style={{position:"relative",display:"inline-block"}}>
-                    <select value={cr.status} onChange={e=>patch(cr._id,{status:e.target.value})}
+                    <select value={cr.status}
+                      onChange={e=>e.target.value==="locked"?setLockTarget(cr):patch(cr._id,{status:e.target.value})}
                       title="Change shortlist status"
                       style={{appearance:"none",WebkitAppearance:"none",cursor:"pointer",outline:"none",
                         fontSize:10.5,fontWeight:600,fontFamily:"'Sora'",color:stCol,
@@ -2044,17 +2167,21 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
                     </select>
                     <span style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",pointerEvents:"none",fontSize:7,color:stCol}}>▼</span>
                   </span>
-                : <span style={{fontSize:10.5,color:stCol}}>{CR_JOURNEY.find(s=>s.id===cr.status)?.label}</span>}</td>
+                : <span title={canEdit&&isLocked(cr)?"Locked is final — this creator's fee is committed in Billing. Remove them from the roster if the deal falls through.":undefined}
+                    style={{display:"inline-flex",alignItems:"center",gap:4,fontSize:10.5,fontWeight:600,fontFamily:"'Sora'",color:stCol,
+                      ...(canEdit&&isLocked(cr)?{background:`${stCol}12`,border:`1px solid ${stCol}40`,borderRadius:20,padding:"3px 10px",cursor:"default"}:{})}}>
+                    {CR_JOURNEY.find(s=>s.id===cr.status)?.label}{canEdit&&isLocked(cr)&&<span style={{fontSize:8}}>🔒</span>}
+                  </span>}</td>
               {/* Locking a creator is what posts their cost to Billing as a
                   committed expense. Editing it afterwards silently re-prices a
                   commitment the books have already recorded — and, once an
                   invoice has been generated against it, disagrees with a PDF
-                  that has left the building. Unlock (set the status back to
-                  Negotiating) to change it; that cancels the expense, which is
-                  the honest audit trail for a re-negotiation. */}
+                  that has left the building. Since Locked is now one-way, the
+                  only route back is Remove, which cancels the expense outright
+                  — the honest audit trail for a deal that fell through. */}
               {canCrFin(role)&&<td style={tdS}>{canEdit&&!isLocked(cr)
                 ? <CostCell value={costOf(cr)} onCommit={n=>patch(cr._id,{cost:n})} style={{width:76,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}/>
-                : <span title={canEdit&&isLocked(cr)?"Cost is locked — this creator's fee is committed in Billing. Set the status back to Negotiating to change it.":undefined}
+                : <span title={canEdit&&isLocked(cr)?"Cost is locked — this creator's fee is committed in Billing and locking is final. Remove them from the roster if the deal falls through.":undefined}
                     style={{color:T.text,...(canEdit&&isLocked(cr)?{cursor:"not-allowed"}:{})}}>
                     {fmtINR(costOf(cr))}{canEdit&&isLocked(cr)&&<span style={{fontSize:9,color:T.label,marginLeft:5}}>🔒</span>}
                   </span>}</td>}
@@ -2084,6 +2211,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
       <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:500}}><thead><tr>{["Creator","Platform","Followers","Avg ER%","Niche",...(canCrFin(role)?["Est. Cost"]:[]),""].map(h=><th key={h} style={{...thS}}>{h}</th>)}</tr></thead><tbody>{suggested.map((cr,i)=><tr key={cr._id} style={{opacity:creators.length>=required?0.35:1}}><td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={20}/><div><div style={{fontSize:11,fontWeight:500}}>{cr.name}</div><CreatorHandle creator={cr} style={{fontSize:9,color:T.label,display:"block"}}/></div></div></td><td style={tdS}>{cr.platform}</td><td style={tdS}>{fmtNum(cr.followers)}</td><td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td><td style={tdS}>{cr.niche||"—"}</td>{canCrFin(role)&&<td style={tdS}>{fmtINR(costOf(cr))}</td>}<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}><Btn variant="ghost" onClick={()=>addFromSugg(cr)} disabled={creators.length>=required} style={{fontSize:9,padding:"3px 9px"}}>Add</Btn><Btn variant="subtle" onClick={()=>setSuggested(p=>p.filter(c=>c._id!==cr._id))} style={{fontSize:9,padding:"3px 9px"}}>Skip</Btn></div></td></tr>)}</tbody></table></div>
     </div>}
     {removeTarget&&<RemoveModal creator={removeTarget} onConfirm={confirmRemove} onCancel={()=>setRemoveTarget(null)}/>}
+    {lockTarget&&<LockCreatorModal creator={lockTarget} onConfirm={confirmLock} onCancel={()=>setLockTarget(null)}/>}
     {showAdd&&<AddCreatorModal onAdd={cr=>sync([...creators,cr])} onClose={()=>setShowAdd(false)}/>}
     {editTarget&&<AddCreatorModal editing={editTarget} onAdd={cr=>sync(creators.map(c=>c._id===cr._id?cr:c))} onClose={()=>setEditTarget(null)}/>}
     {invoiceTarget && (
@@ -2881,7 +3009,7 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
   // campaign, so it opens the Financials tab where the button lives; the rest
   // happen in Billing, so they open the tab in Billing that owns the document.
   const goFinNode=id=>{
-    if(id==="po_raised"&&plIdx(camp.stage)<plIdx("po_raised")) return setTab("financials");
+    if(id==="po_raised"&&stageIdx(camp.stage)<stageIdx("po_raised")) return setTab("financials");
     if(id==="po_raised") return navigate("/billing?tab=purchase_orders");
     return navigate("/billing?tab=income");
   };
@@ -3039,7 +3167,12 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
       setSubmitting(false);
     }
   };
-  // Backdrop is intentionally not clickable — the modal only closes via ✕
+  // Backdrop is intentionally not clickable — the modal only closes via ✕.
+  // This keeps its own shell rather than using <Panel>: it differs in four ways
+  // at once (undismissable backdrop, a step progress bar between header and
+  // body, a Back/Next footer rather than Cancel/confirm, and its own z-index
+  // so it can sit under the confirm dialogs). Teaching Panel all four to serve
+  // one caller would cost more than the copy does.
   return(<div style={{position:"fixed",inset:0,zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}><motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(6px)"}}/>
     <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(500px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
       <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}><div><div style={{fontFamily:"'Newsreader',serif",fontSize:18,color:T.text,fontStyle:"italic",marginBottom:2}}>New Campaign</div><Lbl>{STEPS[step]} — {step+1} of {STEPS.length}</Lbl></div><button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button></div>
@@ -3466,7 +3599,21 @@ export default function InternalCampaigns(){
     // and raise_po side effects in onAction.
     setCampaigns(p=>[c,...p]);setSelId(c.id);setCreate(false);showToast("Campaign created");
   },[showToast,role,currentUser,brandName]);
-  const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(brandFilter&&c.brandId!==brandFilter)return false;if(stageFilter==="ended"){if(endStatus(c.end,c.stage)?.key!=="ended")return false;}else if(stageFilter!=="all"){if(!STAGE_MATCH[stageFilter]?.(c))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search,brandFilter]);
+  // Two steps, deliberately. `inScope` is everything this person is allowed to
+  // see under the current brand and search — that is what the view counts are
+  // measured against, so picking a view never rewrites the other five numbers.
+  // `visible` is that list narrowed to the chosen view, and is what renders.
+  const inScope=useMemo(()=>campaigns.filter(c=>{
+    if(!canSee(c,role,currentUser.teamId))return false;
+    if(brandFilter&&c.brandId!==brandFilter)return false;
+    if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}
+    return true;
+  }),[campaigns,role,currentUser.teamId,search,brandFilter]);
+  const viewCounts=useMemo(()=>Object.fromEntries(VIEWS.map(v=>[v.id,inScope.filter(v.match).length])),[inScope]);
+  const visible=useMemo(()=>{
+    const view=VIEWS.find(v=>v.id===stageFilter)||VIEWS[0];
+    return inScope.filter(view.match);
+  },[inScope,stageFilter]);
   // Selection must respect the active filters — resolve against `visible`, not
   // `campaigns`, or the detail panel (and its Creators tab) keeps showing a
   // campaign from another brand after the brand filter changes.
@@ -3483,16 +3630,9 @@ export default function InternalCampaigns(){
   const hasPrev=selIndex>0, hasNext=selIndex>=0&&selIndex<visible.length-1;
   const goPrev=useCallback(()=>{if(selIndex>0)setSelId(visible[selIndex-1].id);},[selIndex,visible]);
   const goNext=useCallback(()=>{if(selIndex>=0&&selIndex<visible.length-1)setSelId(visible[selIndex+1].id);},[selIndex,visible]);
-  // Stages that are blocked on a person rather than on work in progress —
-  // Draft is waiting on staffing, Brief Log on sign-off, PO on Accounts.
-  const needsAttn=visible.filter(c=>["draft","brief_locked","team_assigned"].includes(normStage(c.stage))).length;
-  // Ended count deliberately ignores `stageFilter` (but respects role/brand
-  // visibility) so the Ended tab badge reads the same from every other tab.
-  const endedCount=useMemo(()=>campaigns.filter(c=>
-    canSee(c,role,currentUser.teamId)&&
-    (!brandFilter||c.brandId===brandFilter)&&
-    endStatus(c.end,c.stage)?.key==="ended"
-  ).length,[campaigns,role,currentUser.teamId,brandFilter]);
+  // Both counts come off the same table as every other view, so the notice and
+  // the bar can never disagree about how many campaigns have ended.
+  const endedCount=viewCounts.ended||0;
   // Remembers the count it was dismissed at, so the notice returns when another
   // campaign ends rather than staying hidden forever after one dismissal.
   const [noticeAck,setNoticeAck]=useState(-1);
@@ -3520,24 +3660,16 @@ export default function InternalCampaigns(){
               <div style={{flex:1}}/>
               {canCreate(role)&&<Btn variant="primary" onClick={()=>setCreate(true)} style={{padding:"8px 16px",fontSize:12}}>+ New</Btn>}
             </div>
-            {/* Stats row */}
-            <div style={{display:"flex",gap:0,marginBottom:14,background:"rgba(0,0,0,0.03)",borderRadius:10,padding:"2px",border:"1px solid rgba(0,0,0,0.06)"}}>
-              {[{l:"All",v:visible.length},{l:"Active",v:visible.filter(c=>!["payment_done","draft"].includes(normStage(c.stage))).length},{l:"In Exec",v:visible.filter(c=>executionStageOf(c)==="execution").length},{l:"Attention",v:needsAttn}].map((s,i)=>(
-                <div key={s.l} style={{flex:1,padding:"8px 12px",textAlign:"center",borderRight:i<3?"1px solid rgba(0,0,0,0.06)":"none"}}>
-                  <div style={{fontSize:18,fontWeight:700,color:s.l==="Attention"&&needsAttn>0?T.amber:"#1D1D1F",letterSpacing:"-0.03em",lineHeight:1,fontFamily:SF}}>{s.v}</div>
-                  <div style={{fontSize:9.5,color:"#86868B",marginTop:2,fontFamily:SF}}>{s.l}</div>
-                </div>
-              ))}
-            </div>
-            {/* Search + filters */}
-            <div style={{display:"flex",gap:10,alignItems:"center"}}>
+            {/* Search sits ABOVE the views, because it narrows what they count:
+                every number in the bar is a count of the searched set. */}
+            <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:12}}>
               <div style={{position:"relative",flex:"1 1 320px",maxWidth:380}}>
                 <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search campaigns or clients…" style={{width:"100%",padding:"8px 12px 8px 30px",borderRadius:9,background:"rgba(0,0,0,0.04)",border:"1px solid rgba(0,0,0,0.08)",color:"#1D1D1F",fontSize:12,fontFamily:SF,outline:"none",boxSizing:"border-box"}}/>
                 <span style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",fontSize:13,color:"#86868B",pointerEvents:"none"}}>⌕</span>
               </div>
               <div style={{flex:1}}/>
-              <FilterTabs value={stageFilter} onChange={setStageF} endedCount={endedCount}/>
             </div>
+            <ViewBar counts={viewCounts} value={stageFilter} onChange={setStageF}/>
           </div>
           {/* Ended-tab notice */}
           <AnimatePresence initial={false}>

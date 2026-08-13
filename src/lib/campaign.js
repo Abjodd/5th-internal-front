@@ -1,33 +1,60 @@
-// ── PIPELINE ─────────────────────────────────────────────────────────────────
-// The 7-stage lifecycle, and the map from the 16-stage pipeline it replaced.
+// ── LIFECYCLE ────────────────────────────────────────────────────────────────
+// A campaign runs on TWO tracks that fork once the brief is locked:
 //
-// Shared rather than page-local because Billing reads a campaign's stage too.
-// It previously kept its own partial copy (a STAGE_LABEL map covering only the
-// seven new ids) and did no normalisation at all, so the Billing dashboard
-// printed raw `concept_approved` / `advance_received` next to campaigns the
-// Campaigns page called "Execution" and "Advance" — the same drift the derived
-// numbers were meant to end, just in a different column.
+//   Draft → Brief Locked ─┬─ Team Assigned → Execution → Creator Payment
+//                         └─ PO Raised → Advance Received → Invoice Raised → Payment Done
 //
-// `p` is the progress % a campaign reads on ENTERING a stage. Execution
-// interpolates between its own `p` and Reporting's, driven by how much creator
-// work is actually done — that band is the widest because it is the only stage
-// where the campaign is genuinely being delivered.
-export const PIPELINE = [
-  { id:"draft",     label:"Draft",     p:0   },
-  { id:"brief_log", label:"Brief Log", p:10  },
-  { id:"po",        label:"PO",        p:25  },
-  { id:"advance",   label:"Advance",   p:35  },
-  { id:"execution", label:"Execution", p:40  },
-  { id:"reporting", label:"Reporting", p:90  },
-  { id:"completed", label:"Completed", p:100 },
+// Only the first two nodes are COMMON. Nothing at all can happen until the
+// brief is written and signed off, so both tracks share those — and only
+// those. Team assignment sits on the EXECUTION branch, not in the common head:
+// staffing the campaign is what unblocks the work, and it has no bearing on
+// whether the client's PO can be recorded.
+//
+// Only the FINANCE track is stored (`campaign.stage`). It moves on documents
+// that exist outside this app — the client's PO, their bank transfer — so
+// nothing here can derive it; somebody has to say it happened. `team_assigned`
+// is on that stored track too (it is the stage between the lock and the PO),
+// but it is DRAWN on the execution rail, because that is the branch it gates.
+//
+// The EXECUTION track is otherwise DERIVED on every read (executionStageOf)
+// from the roster and the deliverables, and is never stored. The two were one
+// linear stage before, which is what made a campaign waiting on a client's
+// advance indistinguishable from one whose creators hadn't started: a single
+// rail cannot say "the money is late but the work is fine".
+//
+// `p` is the progress % a campaign reads on entering a stored stage.
+export const COMMON_STAGES = [
+  { id:"draft",        label:"Draft",        p:0 },
+  { id:"brief_locked", label:"Brief Locked", p:8 },
 ];
+// Stored, but drawn on the execution rail — see above.
+export const TEAM_STAGE = { id:"team_assigned", label:"Team Assigned", p:16 };
+export const FIN_STAGES = [
+  { id:"po_raised",        label:"PO Raised",        p:35  },
+  { id:"advance_received", label:"Advance Received", p:55  },
+  { id:"invoice_raised",   label:"Invoice Raised",   p:80  },
+  { id:"payment_done",     label:"Payment Done",     p:100 },
+];
+// The stored track, head to tail. Shared rather than page-local because
+// Billing reads a campaign's stage too, and the two must not drift.
+export const PIPELINE = [...COMMON_STAGES, TEAM_STAGE, ...FIN_STAGES];
 export const PL_IDS = PIPELINE.map(p => p.id);
 
-// The nine execution-phase stages all collapse into `execution`: what used to
-// be a campaign-wide stage (concept submitted, video submitted, live…) is now
-// tracked per creator on the Deliverables tab, where it always belonged — one
-// creator being late no longer holds the whole campaign at a stage.
-export const LEGACY_STAGE = {
+// The execution branch. Only `team_assigned` has a `p` — the other two aren't
+// stored, and their progress is the creator milestones themselves (execStats),
+// which is the whole reason they aren't stages.
+export const EXEC_STAGES = [
+  TEAM_STAGE,
+  { id:"execution",       label:"Execution"       },
+  { id:"creator_payment", label:"Creator Payment" },
+];
+export const EXEC_NODES = [...COMMON_STAGES, ...EXEC_STAGES];
+
+// Legacy ids, in two hops rather than one flat table. The 16-stage pipeline
+// was already collapsed into 7 once; re-enumerating all sixteen against the
+// forked ids would be a second table to keep in step with the first, and the
+// two would drift the first time a mapping changed.
+const OLD_16_TO_7 = {
   creator_shortlist: "brief_log",
   po_raised:         "po",
   advance_received:  "advance",
@@ -37,10 +64,35 @@ export const LEGACY_STAGE = {
   client_approved:   "execution", live:              "execution",
   creator_paid:      "execution",
 };
+// `brief_log` meant "team staffed, brief still being written". The brief now
+// locks BEFORE the team is assigned, so those campaigns land back on `draft`:
+// the lock is genuinely still owed, and the team they already have carries
+// them straight through the next node the moment it lands.
+//
+// `execution` and `reporting` both meant "the client's advance is in and we're
+// delivering" — on the finance track that is exactly `advance_received`, and
+// how far the delivery itself got is re-derived from the creators either way.
+const OLD_7_TO_FORK = {
+  draft:     "draft",
+  brief_log: "draft",
+  po:        "team_assigned",
+  advance:   "po_raised",
+  execution: "advance_received",
+  reporting: "advance_received",
+  completed: "payment_done",
+};
+export const LEGACY_STAGE = {
+  ...Object.fromEntries(Object.entries(OLD_16_TO_7).map(([k, v]) => [k, OLD_7_TO_FORK[v] || v])),
+  ...OLD_7_TO_FORK,
+};
 
+// Current ids are checked FIRST, not last. Two of the retired ids (`po_raised`,
+// `advance_received`) are also live ids on the forked track, so a table-first
+// lookup would silently rewind every campaign that legitimately reached them.
 // Anything unrecognised becomes `draft` rather than rendering a raw db string.
-export const normStage = s => LEGACY_STAGE[s] || (PL_IDS.includes(s) ? s : "draft");
+export const normStage = s => PL_IDS.includes(s) ? s : (LEGACY_STAGE[s] || "draft");
 export const stageLabel = s => (PIPELINE.find(p => p.id === normStage(s)) || PIPELINE[0]).label;
+export const stageIdx   = s => PL_IDS.indexOf(normStage(s));
 
 // Campaign money + creator-shape helpers shared by the pages that read a
 // campaign: Campaigns (owns the record) and Billing (derives the P&L and the
@@ -113,9 +165,27 @@ export const withLiveLinks = (live, urls) => {
   return { ...(live || {}), postUrls: clean, postUrl: clean[0] || null };
 };
 
-// Posts actually up, capped at what was asked for: a creator who posted three
-// links against a target of two is 100% done, not 150%.
-export const delivDoneOf = (camp, cr) => Math.min(liveLinksOf(cr).length, delivTargetOf(camp, cr));
+// How many of a creator's links have actually returned metrics. Written as
+// `postsCounted` by both refresh paths — the Deliverables tab's Refresh button
+// and the nightly job (refreshPostMetrics.js) — and it is the count of links
+// that FETCHED, not the count that were pasted.
+export const trackedPostsOf = cr => Number(cr?.tracking?.postsCounted) || 0;
+
+// Posts actually up. A link is a CLAIM; tracking data is the proof, so a
+// deliverable only counts once metrics have come back for it. Pasting a URL
+// used to be enough, which meant a typo ("hi.com") read as a delivered post —
+// and, because this number feeds execStats, it marked the creator live, the
+// campaign's Execution donut complete, and the whole delivery track finished
+// against a link that resolves to nothing.
+//
+// Three-way min, and each bound is load-bearing:
+//   tracked — the proof, and the new gate
+//   links   — `postsCounted` isn't decremented when a link is deleted, so a
+//             creator who posted twice and removed one would still read 2
+//   target  — a creator who posted three against a target of two is 100%
+//             done, not 150%
+export const delivDoneOf = (camp, cr) =>
+  Math.min(trackedPostsOf(cr), liveLinksOf(cr).length, delivTargetOf(camp, cr));
 
 // Even per-head slice of the creator budget — an "approx" planning number, not
 // a commitment: the real per-creator fee is negotiated on the Creators tab.
@@ -236,6 +306,109 @@ export function rosterGap(camp, creators = camp?.creators) {
   const locked = lockedCountOf(camp, creators), req = numReqOf(camp);
   if (locked >= req) return null;
   return `${locked} of ${req} creators locked`;
+}
+
+// ── THE DERIVED (EXECUTION) TRACK ────────────────────────────────────────────
+// Everything below answers "where is the WORK", never "where is the money".
+// It lives here rather than in the Campaigns page because the campaign header,
+// the card grid, the Exec filter and the nightly metrics refresh all have to
+// agree on it — and because none of it is stored, so the only thing keeping
+// four readers in step is that there is one definition to read.
+
+// All three slots staffed. Also the access key (canSee only shows a campaign
+// to its amId/cmId/eaId), so until every seat is filled the campaign is
+// invisible to someone who needs it.
+export const teamComplete = c => !!(c?.amId && c?.cmId && c?.eaId);
+export const briefLocked  = c => c?.briefStatus === "signed_off";
+
+// An asset counts as "in" the moment anything arrives — `rework` and
+// `pending_brand` mean it was submitted and is being worked, not that it's
+// missing. Only `yet_to_receive` (and an empty status) is nothing.
+export const assetIn = a => !!a?.status && a.status !== "yet_to_receive";
+
+// Every locked creator walks four milestones — locked → scripting (concept in)
+// → shooting (video in) → live — and execution progress is milestones reached
+// over milestones planned. The denominator is the TARGET creator count, not the
+// locked count: locking one of five creators and finishing their work has to
+// read 20%, not 100%. max() keeps it honest if more get locked than planned.
+//
+// The `live` milestone is the one that isn't binary. A creator on a 3-post
+// brief who has posted 2 is two-thirds done, and counting them as 0 or 1 are
+// both wrong — the first stalls a campaign that is visibly progressing, the
+// second calls it complete while a post is still owed. So live contributes
+// delivered/expected per creator, summed, and the real counts are returned
+// alongside so the UI can state them rather than only a percentage.
+export function execStats(c){
+  const lockd = (c?.creators || []).filter(isLockedCreator);
+  const target= Math.max(numReqOf(c), lockd.length);
+  const delivered = lockd.reduce((s, x) => s + delivDoneOf(c, x), 0);
+  const expected  = lockd.reduce((s, x) => s + delivTargetOf(c, x), 0);
+  const done = {
+    locked:  lockd.length,
+    concept: lockd.filter(x => assetIn(x.concept)).length,
+    video:   lockd.filter(x => assetIn(x.demo)).length,
+    // Creators with every post up — what "live" means as a headcount.
+    live:    lockd.filter(x => delivDoneOf(c, x) >= delivTargetOf(c, x)).length,
+  };
+  // Fractional credit for partially-posted creators, in creator-equivalents so
+  // it stays commensurate with the other three milestones.
+  const liveFrac = expected > 0 ? (delivered / expected) * lockd.length : 0;
+  const total = target * 4;
+  const pct = total > 0
+    ? Math.min(100, Math.round(((done.locked + done.concept + done.video + liveFrac) / total) * 100))
+    : 0;
+  return { ...done, target, pct, delivered, expected };
+}
+
+// Delivery is finished once everything actually committed to is live —
+// measured against the LOCKED creators, not the target. A campaign that only
+// ever locked 3 of 5 planned creators can never reach 100% of plan, so gating
+// on the target would trap it in Execution with no way to close it out.
+export const execDone = c => { const s = execStats(c); return s.locked > 0 && s.live === s.locked; };
+
+// Signing off an empty brief would quote the client against nothing, so the
+// lock needs the brief to actually say something first. Returns what's still
+// missing, so the UI can name it instead of just greying a button out.
+export const briefGaps = c => [
+  ...[["objective","Objective"],["audience","Audience"],["messages","Key Messages"]]
+    .filter(([k]) => !String(c?.brief?.[k] || "").trim()).map(([, l]) => l),
+  ...((c?.brief?.deliverables || []).length ? [] : ["Deliverables"]),
+  ...(creatorBudgetOf(c) > 0 ? [] : ["Creator budget"]),
+];
+
+// Which EXEC_NODES node the campaign is standing on. Every branch reads state
+// that already exists, which is what makes this safe to recompute anywhere:
+// there is no execution stage to get out of step with the roster, because the
+// roster IS the execution stage.
+export function executionStageOf(camp){
+  if (!briefLocked(camp))  return "draft";
+  if (!teamComplete(camp)) return "brief_locked";     // the Assign Team blocker
+  const s = execStats(camp);
+  if (s.locked === 0)      return "team_assigned";    // staffed, nothing locked yet
+  if (s.live < s.locked)   return "execution";
+  return "creator_payment";
+}
+
+// ── CREATOR PAYMENT ──────────────────────────────────────────────────────────
+// Where one locked creator's money is, derived from two records that already
+// exist: `cr.invoiceNo`, written when their invoice is generated on the
+// Creators tab, and the expense the lock created, which Accounts settles in
+// Billing. Nothing new is stored — a third copy of "paid" is a third thing
+// that can disagree with the books.
+export const CREATOR_PAY_STATUSES = [
+  { id:"pending",        label:"Pending"              },
+  { id:"invoice_raised", label:"Invoice Raised (GST)" },
+  { id:"paid",           label:"Payment Done"         },
+];
+export function creatorPayStatusOf(campId, cr, expenseById){
+  if (expenseById?.[expenseIdFor(campId, cr?._id)]?.status === "paid") return "paid";
+  return cr?.invoiceNo ? "invoice_raised" : "pending";
+}
+export function creatorPayStats(camp, expenseById){
+  const locked = (camp?.creators || []).filter(isLockedCreator);
+  const out = { pending:0, invoice_raised:0, paid:0, total:locked.length };
+  for (const cr of locked) out[creatorPayStatusOf(camp?.id, cr, expenseById)]++;
+  return out;
 }
 
 // Locking a creator commits money, so Billing has to hear about it. This is the

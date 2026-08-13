@@ -40,14 +40,17 @@ import { invoiceTotals, isRevenueInvoice, receivedOf } from "./invoiceMoney";
 
 // One-line description under each pipeline stage. Static editorial copy that
 // labels the stage — the COUNT beside it is the derived number.
+// The Summary charts the FINANCE track — the one that's stored — because that
+// is what `campaign.stage` holds. Delivery has its own derived track, and it
+// lives on the campaign itself rather than in a company-wide stage count.
 const STAGE_NOTE = {
-  draft:     "Concepts not yet briefed",
-  brief_log: "Awaiting client sign-off",
-  po:        "Purchase orders in motion",
-  advance:   "Creator advances processing",
-  execution: "Campaigns currently live",
-  reporting: "Wrapping and reporting out",
-  completed: "Delivered",
+  draft:            "Briefs still being written",
+  brief_locked:     "Locked, awaiting a team",
+  team_assigned:    "Staffed — execution under way",
+  po_raised:        "Purchase orders in motion",
+  advance_received: "Advance in, delivery running",
+  invoice_raised:   "Invoiced, awaiting payment",
+  payment_done:     "Settled in full",
 };
 
 const monthOf = (iso) => (ISO_DATE.test(iso || "") ? iso.slice(0, 7) : null);
@@ -56,7 +59,7 @@ const pctOrNull = (part, whole) =>
   whole > 0 ? Math.round((part / whole) * 100) : null;
 
 /** Campaigns not yet finished — what the agency is actively carrying. */
-const isActive = (c) => normStage(c.stage) !== "completed";
+const isActive = (c) => normStage(c.stage) !== "payment_done";
 
 /* ── Revenue ────────────────────────────────────────────────────────────────
    Every figure here is the same one Billing reports, because both call

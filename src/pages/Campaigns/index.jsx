@@ -12,36 +12,50 @@
  *  7. Deliverables tab → aggregate stat cards (Views, Likes, CPV, ER, Avg Forwards).
  *  8. Fee input step = 100.
  */
- import { useState, useMemo, useCallback, useEffect, forwardRef } from "react";
-import { useOutletContext } from "react-router-dom";
+ import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect, forwardRef } from "react";
+import { createPortal } from "react-dom";
+import { useNavigate, useOutletContext } from "react-router-dom";
 import { motion, AnimatePresence, useSpring, useMotionValueEvent, useReducedMotion } from "motion/react";
 import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
 import { fmtCompact, fmtINR, prettyDate, initials, ISO_DATE, todayISO } from "../../lib/format";
 import { creatorBudgetOf, numReqOf, perCreatorOf, costOf, normCreator, creatorExpensePlan, isLockedCreator,
-         PIPELINE, PL_IDS, normStage, extUrl, rosterReady, rosterGap, lockedCountOf,
-         perCreatorDelivOf, delivTargetOf, totalDelivOf, liveLinksOf, withLiveLinks, delivDoneOf } from "../../lib/campaign";
+         PIPELINE, PL_IDS, COMMON_STAGES, FIN_STAGES, EXEC_STAGES, EXEC_NODES,
+         normStage, stageIdx, extUrl, rosterReady, rosterGap, lockedCountOf,
+         perCreatorDelivOf, delivTargetOf, totalDelivOf, liveLinksOf, withLiveLinks, delivDoneOf,
+         teamComplete, briefLocked, assetIn, execStats, execDone, briefGaps, executionStageOf,
+         expenseIdFor, CREATOR_PAY_STATUSES, creatorPayStatusOf, creatorPayStats } from "../../lib/campaign";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
+import PhoneInput from "../../components/PhoneInput";
 import CreatorHandle from "../../components/CreatorHandle";
+import Donut from "../../components/Donut";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
 import { T as BASE_T } from "../../theme/tokens";
 
-// Pipeline-stage → color map, layered on top of the shared theme.
+// Stage → colour, layered on top of the shared theme. Both tracks are keyed
+// into one map: the fork means a campaign has two live nodes at once, and
+// giving each track its own palette would be two legends to learn.
+//
+// Execution and Creator Payment stay amber/teal for their entire duration —
+// they are the nodes with work actually in flight, so they never read
+// "settled" until the campaign hands off.
 const T = {
   ...BASE_T,
   sc: {
-    draft:     BASE_T.label,
-    brief_log: BASE_T.accent,
-    po:        BASE_T.purple,
-    advance:   BASE_T.teal,
-    // Execution stays amber for its entire duration — it is the only stage with
-    // work actually in flight, so it never reads "settled" until it hands off.
-    execution: BASE_T.amber,
-    reporting: BASE_T.accent,
-    completed: BASE_T.green,
+    draft:            BASE_T.label,
+    brief_locked:     BASE_T.accent,
+    team_assigned:    BASE_T.purple,
+    // Finance track
+    po_raised:        BASE_T.teal,
+    advance_received: BASE_T.accent,
+    invoice_raised:   BASE_T.amber,
+    payment_done:     BASE_T.green,
+    // Execution track
+    execution:        BASE_T.amber,
+    creator_payment:  BASE_T.teal,
   },
 };
 
@@ -67,14 +81,22 @@ const ROLES = [
 
 // PIPELINE / LEGACY_STAGE / normStage now live in lib/campaign.js — Billing
 // reads a campaign's stage too, and the two must not drift.
+//
+// One hint per node across BOTH tracks, since the header renders them side by
+// side. Each says what is being waited on and who does it — a node the reader
+// can't act on should still tell them whose move it is.
 const STAGE_HINT = {
-  draft:     "Assign the Account Manager, Category Manager and Exec Associate to begin",
-  brief_log: "Brief being written — Founder or PCM signs it off to move to PO",
-  po:        "Brief signed off — awaiting Purchase Order",
-  advance:   "Purchase Order raised — awaiting advance payment",
-  execution: "In execution — creators locked, content in flight",
-  reporting: "Campaign report being prepared",
-  completed: "Campaign fully completed",
+  draft:            "Fill the brief in and lock it — Founder or PCM signs it off",
+  brief_locked:     "Brief locked — assign the Account Manager, Category Manager and Exec Associate",
+  team_assigned:    "Team on the campaign — execution can start and the client PO can be recorded",
+  // Finance
+  po_raised:        "Client PO recorded — awaiting the advance payment",
+  advance_received: "Advance received — raise the final invoice when delivery is done",
+  invoice_raised:   "Invoice issued to the client — awaiting payment",
+  payment_done:     "Client has paid in full — the campaign is settled",
+  // Execution
+  execution:        "Creators locked, scripting, shooting and going live",
+  creator_payment:  "Every creator is live — invoice them and settle their fees",
 };
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -344,18 +366,20 @@ const mkCreator = (src={}, cost) => ({
 
 // ── WORKFLOW ACTION LABELS ───────────────────────────────────────────────────
 // Shared by the confirmation modal and the post-action toast.
-const ACTION_MSGS={assign_am:"Assign Account Manager",assign_cm:"Assign Category Manager",assign_ea:"Assign Executive Associate",brief_start:"Start the brief",brief_complete:"Sign off the brief",raise_po:"Record the client Purchase Order",advance_received:"Confirm advance received",start_reporting:"Start reporting",mark_completed:"Mark campaign completed",extend_end_date:"Campaign end date extended"};
-// Actions that don't get the "Confirm stage change" dialog.
+const ACTION_MSGS={assign_am:"Assign Account Manager",assign_cm:"Assign Category Manager",assign_ea:"Assign Executive Associate",lock_brief:"Lock the brief",raise_po:"Record the client Purchase Order",advance_received:"Confirm advance received",raise_invoice:"Raise the client invoice",payment_done:"Confirm payment received",extend_end_date:"Campaign end date extended"};
+// Actions that don't get the generic "Confirm stage change" dialog.
 // extend_end_date is here because ExtendEndModal is already its own confirm
 // step (it has to be — it collects the new date), so the generic modal would
 // just be a second dialog saying less.
 // The three assign_* actions are here even though completing the team DOES
-// advance Draft → Brief Log: that transition is meant to be automatic, and a
-// dialog after a dropdown pick would make it read as a manual stage change.
-// The Team tab warns before the fact instead (see TabTeam).
+// advance Brief Locked → Team Assigned: that transition is meant to be
+// automatic, and a dialog after a dropdown pick would make it read as a manual
+// stage change. The Team tab warns before the fact instead (see TabTeam).
 // raise_po joins them for the same reason as extend_end_date: ClientPOModal
 // collects the PO number and value, so it is already the confirmation step.
-const NO_CONFIRM_ACTIONS=new Set(["assign_am","assign_cm","assign_ea","extend_end_date","raise_po"]);
+// lock_brief has LockBriefModal, which names what is about to freeze — the
+// generic dialog could only repeat the action's label back.
+const NO_CONFIRM_ACTIONS=new Set(["assign_am","assign_cm","assign_ea","extend_end_date","raise_po","lock_brief"]);
 const needsConfirm=action=>!NO_CONFIRM_ACTIONS.has(action);
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -366,15 +390,11 @@ const fmtNum  = fmtCompact; // shared compact formatters — lib/format.js (fmtI
 const timelineLabel = (start,end) => [prettyDate(start),prettyDate(end)].filter(Boolean).join(" – ");
 const getM    = id => TEAM_DIR.find(t=>t.id===id)||TEAM.find(t=>t.id===id)||null;
 const getR    = id => ROLES.find(r=>r.id===id)||ROLES[0];
-const plIdx   = id => PL_IDS.indexOf(normStage(id));
-// All three slots staffed is the gate out of Draft. These slots are also the
-// access key (canSee only shows a campaign to its amId/cmId/eaId), so until
-// every seat is filled the campaign is invisible to someone who needs it.
-const teamComplete = c => !!(c?.amId && c?.cmId && c?.eaId);
-// Team assignments and the brief stay editable right up to the PO — that is
-// where the numbers get committed to the client, and changing either after
-// would silently desync the PO. One boundary, used by both.
-const beforePO = c => plIdx(c?.stage) < plIdx("po");
+const plIdx   = stageIdx;   // finance-track position, legacy ids normalised
+// Team assignments and the commercial numbers stay editable right up to the
+// PO — that is where they get committed to the client, and changing either
+// after would silently desync it. One boundary, used by both.
+const beforePO = c => plIdx(c?.stage) < plIdx("po_raised");
 // creatorBudgetOf / numReqOf / perCreatorOf / costOf now live in lib/campaign.js
 // — Billing derives the same numbers, and one copy is what keeps the two pages
 // from disagreeing again.
@@ -510,7 +530,7 @@ const today = todayISO; // shared with Billing — see lib/format.js
 // and its ISO end date is within a week (or already past) — a subtle "ending
 // soon" cue on the card + detail header. Completed campaigns never warn.
 const endStatus = (iso, stage) => {
-  if (stage === "completed" || !ISO_DATE.test(iso || "")) return null;
+  if (normStage(stage) === "payment_done" || !ISO_DATE.test(iso || "")) return null;
   const days = Math.round((new Date(`${iso}T00:00:00`) - new Date(`${today()}T00:00:00`)) / 86400000);
   if (days < 0)   return { tone: T.red,   text: "Ended",           key: "ended"  };
   if (days === 0) return { tone: T.amber, text: "Ends today",      key: "ending" };
@@ -537,63 +557,14 @@ const EndPill = ({ es, style = {} }) => es ? (
 // that is shortlisting, and an asset status on an unconfirmed creator is noise.
 const isLocked = isLockedCreator;
 
-// ── EXECUTION PROGRESS ───────────────────────────────────────────────────────
-// An asset counts as "in" the moment anything arrives — `rework` and
-// `pending_brand` mean it was submitted and is being worked, not that it's
-// missing. Only `yet_to_receive` (and an empty status) is nothing.
-const assetIn = a => !!a?.status && a.status !== "yet_to_receive";
-// Every locked creator walks four milestones — locked → concept in → video in
-// → live — and execution progress is milestones reached over milestones
-// planned. The denominator is the TARGET creator count, not the locked count:
-// locking one of five creators and finishing their work has to read 20%, not
-// 100%. max() keeps it honest if more creators get locked than were planned.
-//
-// The `live` milestone is the one that isn't binary. A creator on a 3-post brief
-// who has posted 2 is two-thirds done, and counting them as 0 (not finished) or
-// 1 (finished) are both wrong — the first stalls a campaign that is visibly
-// progressing, the second calls it complete while a post is still owed. So live
-// contributes delivered/expected per creator, summed. `delivered` and
-// `expected` are reported alongside so the UI can state the real counts rather
-// than only a percentage.
-function execStats(c){
-  const lockd = (c?.creators||[]).filter(isLocked);
-  const target= Math.max(numReqOf(c), lockd.length);
-  const delivered = lockd.reduce((s,x)=>s+delivDoneOf(c,x),0);
-  const expected  = lockd.reduce((s,x)=>s+delivTargetOf(c,x),0);
-  const done  = {
-    locked:  lockd.length,
-    concept: lockd.filter(x=>assetIn(x.concept)).length,
-    video:   lockd.filter(x=>assetIn(x.demo)).length,
-    // Creators with every post up — what "live" means as a headcount.
-    live:    lockd.filter(x=>delivDoneOf(c,x)>=delivTargetOf(c,x)).length,
-  };
-  // Fractional credit for partially-posted creators, in creator-equivalents so
-  // it stays commensurate with the other three milestones.
-  const liveFrac = expected>0 ? (delivered/expected)*lockd.length : 0;
-  const total = target*4;
-  const pct   = total>0 ? Math.min(100,Math.round(((done.locked+done.concept+done.video+liveFrac)/total)*100)) : 0;
-  return {...done,target,pct,delivered,expected};
-}
-// Progress is DERIVED from stage + creator milestones, never stored, so it can
-// never drift away from the stage it describes.
 // ── STAGE GATES ──────────────────────────────────────────────────────────────
 // A stage only advances when its own condition is met, so the workflow buttons
 // confirm something that is already true rather than skipping past it.
 //
-// Signing off an empty brief would raise a PO against nothing, so sign-off
-// needs the brief to actually say something first. Returns what's still
-// missing, so the UI can name it instead of just greying a button out.
-const briefGaps = c => [
-  ...[["objective","Objective"],["audience","Audience"],["messages","Key Messages"]]
-    .filter(([k])=>!String(c?.brief?.[k]||"").trim()).map(([,l])=>l),
-  ...((c?.brief?.deliverables||[]).length?[]:["Deliverables"]),
-  ...(creatorBudgetOf(c)>0?[]:["Creator budget"]),
-];
-// Reporting starts once everything actually committed to is live — measured
-// against the LOCKED creators, not the target. A campaign that only ever
-// locked 3 of 5 planned creators can never reach 100% of plan, so gating on
-// the target would trap it in Execution with no way to close it out.
-const execDone = c => { const s=execStats(c); return s.locked>0&&s.live===s.locked; };
+// execStats / execDone / briefGaps / teamComplete / executionStageOf all moved
+// to lib/campaign.js when the pipeline forked: the execution track is derived
+// rather than stored, and the campaign header, the card grid, the Exec filter
+// and Billing all have to derive it the same way.
 
 // ── BILLING BRIDGE ───────────────────────────────────────────────────────────
 // Locking a creator commits money. That commitment used to live only on the
@@ -621,10 +592,12 @@ function syncCreatorExpenses(camp,prevCreators,nextCreators,onError){
   }
 }
 
+// Headline % on the card and the detail chip: the FINANCE track, because that
+// is the stage the chip beside it names. It used to interpolate through a wide
+// "execution" stage; the delivery half now has its own rail with its own
+// percentage (execStats().pct), so this is a flat step lookup again.
 function progressOf(c){
-  const i=plIdx(c?.stage), cur=PIPELINE[i]||PIPELINE[0];
-  if(cur.id!=="execution") return cur.p;
-  return Math.round(cur.p + (execStats(c).pct/100)*(PIPELINE[i+1].p-cur.p));
+  return (PIPELINE[plIdx(c?.stage)]||PIPELINE[0]).p;
 }
 // extUrl / profileUrl now live in lib/campaign.js — the creators directory and
 // the creator-applications inbox render handles too, and all three screens have
@@ -656,41 +629,83 @@ const INP={width:"100%",padding:"9px 12px",borderRadius:9,background:"rgba(0,0,0
 // ── PIPELINE WIDGETS ─────────────────────────────────────────────────────────
 const MiniPipe=({camp})=>{const pct=progressOf(camp),col=T.sc[normStage(camp.stage)]||T.sub;return <div style={{height:2,background:"rgba(0,0,0,0.07)",borderRadius:1,marginTop:9}}><motion.div style={{height:2,borderRadius:1,background:col}} animate={{width:`${pct}%`}} transition={{type:"spring",stiffness:220,damping:26}}/></div>;};
 
-// The EA sees a three-node view of the same pipeline. PO and Advance are
-// commercial steps they neither run nor need to track, so both collapse into
-// Brief Log — which is why that node reads amber for an EA while the campaign
-// is really parked at PO: from their seat it is one continuous wait.
-const EA_PL_IDS=["draft","brief_log","execution"];
-const eaStage = s => s==="draft" ? "draft"
-  : ["brief_log","po","advance"].includes(s) ? "brief_log" : "execution";
-// One source of truth for "what stage does this role see", so a campaign's
-// chip, its colour and its pipeline can never disagree with each other.
-const viewStage = (stage,role) => role==="ea" ? eaStage(normStage(stage)) : normStage(stage);
-const viewCol   = (stage,role) => { const s=viewStage(stage,role); return (role==="ea"&&s==="brief_log"?T.amber:T.sc[s])||T.sub; };
-const viewPl    = (stage,role) => PIPELINE.find(p=>p.id===viewStage(stage,role))||PIPELINE[0];
+// One source of truth for "which node does this role see this campaign on", so
+// a campaign's chip, its colour and its pipeline can never disagree.
+//
+// An EA never runs a commercial step and has no access to the money, so their
+// campaign reads off the EXECUTION track instead of the finance one — the
+// alternative was what shipped before: their chip said "Brief Log" while the
+// campaign was really parked at PO, because three commercial stages were
+// collapsed into one node they could see. Now they simply see the other rail.
+const viewPl  = (camp,role) => role==="ea"
+  ? (EXEC_NODES.find(n=>n.id===executionStageOf(camp))||EXEC_NODES[0])
+  : (PIPELINE.find(p=>p.id===normStage(camp?.stage))||PIPELINE[0]);
+const viewCol = (camp,role) => T.sc[viewPl(camp,role).id]||T.sub;
 
 // ── PIPELINE ─────────────────────────────────────────────────────────────────
-// One continuous rail, one travelling marker, one node per stage. Four things
-// animate, and each of them carries meaning rather than decoration:
+// The campaign header's centrepiece: two common nodes that FORK into two
+// independent rails — Execution on top (the work), Finance below (the money).
 //
-//   the rail fill — how far the campaign has actually got. Inside Execution it
-//                   advances with the creator milestones instead of sitting
-//                   still through the widest stage in the pipeline and then
-//                   jumping 40→90 in one step.
-//   the marker    — a single shared element (layoutId) that TRAVELS to the new
-//                   node when a stage advances, so the change reads as movement
-//                   rather than two colours swapping in place.
-//   the caption   — hovering any node explains that stage without moving the
-//                   campaign, and releases back to where things really are. The
-//                   pipeline stops being a read-only ornament.
-//   the number    — tweens, so locking a creator reads as progress happening
-//                   rather than a re-render.
-const NODE_W = 88;
+// It forks because the two genuinely move independently. A campaign whose
+// creators are all live can still be waiting on a client's advance, and a
+// campaign that has been paid in full can still owe three posts. On one rail
+// each of those is invisible; the fork is the only honest shape.
+//
+// What animates, and why each carries meaning rather than decoration:
+//
+//   the rails    — motion.path pathLength, so a rail DRAWS to where the
+//                  campaign has actually got. The fork curves are part of the
+//                  same paths, which is what makes the split read as one
+//                  movement instead of three shapes that happen to touch.
+//   the marker   — a single shared element (layoutId) that TRAVELS along the
+//                  execution track when it advances, so a change reads as
+//                  movement rather than two colours swapping in place.
+//   the sweep    — a slow highlight along the completed length, so a live
+//                  campaign's rail isn't dead track. It stops when nothing is
+//                  left in flight.
+//   the previews — hovering Execution or Creator Payment shows that node's
+//                  donuts without leaving the header; clicking opens the full
+//                  breakdown. The donuts are deliberately NOT drawn on the
+//                  rail itself — circles sitting on a progress line read as
+//                  ornament, and at rail scale none of them are legible.
+const NODE_W  = 104;   // one node column
+const GUTTER  = 92;    // left of the rails — the two track tags live here
+const TOP_Y   = 16;    // execution rail, y of the marker centres
+const BOT_Y   = 100;   // finance rail
+const MID_Y   = (TOP_Y + BOT_Y) / 2;   // the common head, between the two
+const FORK    = COMMON_STAGES.length;  // first column past the split
+const N_COLS  = FORK + FIN_STAGES.length; // finance is the longer branch
+const PIPE_W  = GUTTER + N_COLS * NODE_W;
+const PIPE_H  = 150;
+const cx = i => GUTTER + i * NODE_W + NODE_W / 2;
+
 const PIPE_GREEN = "#34C759";
-// The marker and the rail travel on the SAME spring. They were on different
+// The marker and the rails travel on the SAME spring. They were on different
 // ones, so on a stage change the circle arrived while the line was still
 // catching up — the two halves of one movement visibly out of step.
 const PIPE_SPRING = { type:"spring", stiffness:260, damping:30 };
+
+// Rail geometry, written once. The fork curves are cubics whose control points
+// sit on the column boundary, so both branches leave the common head at the
+// same angle and arrive flat — a straight diagonal made the split look like a
+// mistake rather than a design.
+const branch = (y, n) =>
+  `M ${cx(FORK-1)} ${MID_Y} C ${cx(FORK-1)+NODE_W*0.5} ${MID_Y}, ${cx(FORK)-NODE_W*0.5} ${y}, ${cx(FORK)} ${y} H ${cx(FORK+n-1)}`;
+const RAIL = {
+  common: `M ${cx(0)} ${MID_Y} H ${cx(FORK-1)}`,
+  exec:   branch(TOP_Y, EXEC_STAGES.length),
+  fin:    branch(BOT_Y, FIN_STAGES.length),
+};
+
+// Milestone palette — one colour per thing, reused by the rail badges, the
+// hover donuts and the expanded modals so a colour means the same everywhere.
+const EXEC_MILESTONES = [
+  { key:"locked",  label:"Creators Locked", color:T.green  },
+  { key:"concept", label:"Scripting",       color:T.accent },
+  { key:"video",   label:"Shooting",        color:T.purple },
+  { key:"live",    label:"Live",            color:T.teal   },
+];
+const PAY_COLOR = { pending:"#C7C7CC", invoice_raised:T.amber, paid:T.green };
 
 // Headline percentage, tweened. Initialised at the true value so mounting (or
 // switching campaigns) snaps rather than counting up from zero every time.
@@ -702,227 +717,450 @@ function useCountUp(value){
   return shown;
 }
 
-// `ended` is whether the CAMPAIGN is finished, and it has to be passed in
-// rather than inferred from the node. Testing `p.id==="completed"` looks
-// equivalent and isn't: the EA node set has no Completed node — eaStage()
-// folds completed (and reporting) into Execution — so an EA opening a finished
-// campaign got the live-Execution treatment on the last node: a "0%" badge and
-// a heartbeat on a campaign that was 100% done.
-function PipeNode({p,i,total,idx,col,ended,onExecClick,onHover,reduce,es}){
-  const done=i<idx, isCur=i===idx;
-  // Only the live Execution node opens the breakdown — on a campaign that has
-  // finished there is no creator work in flight to break down.
-  const clickable=isCur&&!ended&&p.id==="execution"&&!!onExecClick;
-  const dotCol=isCur?col:done?PIPE_GREEN:"#FFFFFF";
+// ── HOVER PREVIEW ────────────────────────────────────────────────────────────
+// Anchors a portalled card under an element and KEEPS it anchored. Measuring
+// once on mouseenter looked equivalent and wasn't: the header scrolls inside
+// the page, so a preview opened before a scroll stayed where the node used to
+// be. Re-measuring on scroll (capture phase, so it catches inner scrollers
+// too) and on resize is what makes the caret line up with the node it
+// describes.
+//
+// The card is portalled to <body> because the header card is `overflow:hidden`
+// — anything anchored inside it was clipped at the card's edge.
+function useAnchor(target, width){
+  const [pos,setPos] = useState(null);
+  useLayoutEffect(()=>{
+    if(!target){ setPos(null); return; }
+    const place = () => {
+      const r = target.getBoundingClientRect();
+      const centre = r.left + r.width/2;
+      // Clamped to the viewport, and the caret is then placed relative to the
+      // card rather than to the node — so a preview near either edge slides
+      // sideways while its pointer stays on the node.
+      const left = Math.min(Math.max(centre - width/2, 12), window.innerWidth - width - 12);
+      setPos({ left, top:r.bottom + 11, caret:centre - left });
+    };
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => { window.removeEventListener("scroll", place, true); window.removeEventListener("resize", place); };
+  },[target,width]);
+  return pos;
+}
+
+function HoverCard({ target, width, title, children }){
+  const pos = useAnchor(target, width);
+  if(!target || !pos) return null;
+  return createPortal(
+    // Positioning lives on a plain wrapper, never on the animated child:
+    // framer writes its own `transform` while animating y/scale and silently
+    // discards any inline transform on the same element.
+    <div style={{position:"fixed",left:pos.left,top:pos.top,width,boxSizing:"border-box",zIndex:900,pointerEvents:"none"}}>
+      <motion.div initial={{opacity:0,y:-6,scale:0.98}} animate={{opacity:1,y:0,scale:1}} exit={{opacity:0,y:-4}}
+        transition={{duration:0.16,ease:[0.16,1,0.3,1]}}
+        style={{position:"relative",width:"100%",boxSizing:"border-box",background:"#FFFFFF",
+          border:"1px solid rgba(0,0,0,0.07)",borderRadius:14,padding:"13px 16px 12px",
+          boxShadow:"0 1px 2px rgba(0,0,0,0.04), 0 16px 40px -12px rgba(0,0,0,0.22)"}}>
+        <div aria-hidden style={{position:"absolute",top:-5,left:pos.caret,width:9,height:9,
+          transform:"translateX(-50%) rotate(45deg)",background:"#FFFFFF",
+          borderLeft:"1px solid rgba(0,0,0,0.07)",borderTop:"1px solid rgba(0,0,0,0.07)"}}/>
+        <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:12,marginBottom:11}}>
+          <Lbl>{title}</Lbl>
+          <span style={{fontSize:8.5,color:"rgba(0,0,0,0.32)",fontFamily:SF,whiteSpace:"nowrap"}}>Click to expand</span>
+        </div>
+        {children}
+      </motion.div>
+    </div>,
+    document.body
+  );
+}
+
+// ── DONUT READOUTS ───────────────────────────────────────────────────────────
+// One milestone: a ring showing n of target, its percentage in the hole.
+// `flex:1 1 0` + minWidth:0 because a flex child defaults to `min-width:auto`
+// — four nowrap labels refused to shrink and pushed the preview wider than the
+// width its own position had been calculated from.
+function DonutStat({label,n,target,color,size=46}){
+  const pct = target>0 ? Math.round((n/target)*100) : 0;
+  return(
+    <div style={{flex:"1 1 0",minWidth:0,display:"flex",flexDirection:"column",alignItems:"center",gap:7}}>
+      <Donut size={size} thickness={size>60?7:6} center={pct}
+        segments={[{value:n,color,label},{value:Math.max(0,target-n),color:"transparent",label:"Remaining"}]}/>
+      <div style={{textAlign:"center",lineHeight:1.3}}>
+        <div style={{fontWeight:600,color:"#1D1D1F",fontSize:11.5,fontFamily:SF}}>{n}/{target}</div>
+        <div style={{fontSize:9,color:"#6E6E73",fontFamily:SF,whiteSpace:"nowrap"}}>{label}</div>
+      </div>
+    </div>
+  );
+}
+const ExecutionDonuts = ({camp,size}) => {
+  const s = execStats(camp);
+  return(<div style={{display:"flex",alignItems:"flex-start",gap:10}}>
+    {EXEC_MILESTONES.map(m=><DonutStat key={m.key} label={m.label} n={s[m.key]} target={s.target} color={m.color} size={size}/>)}
+  </div>);
+};
+// Creator payment is one ring, not four: the three statuses are slices of the
+// same population (every locked creator is in exactly one), so stacking them
+// says "of the people we owe, this many are settled" in a single shape.
+function CreatorPaymentDonut({stats,size=62}){
+  return(<div style={{display:"flex",alignItems:"center",gap:14}}>
+    <Donut size={size} thickness={size>70?9:8}
+      center={stats.total>0?`${stats.paid}/${stats.total}`:"—"} centerSize={size>70?13:11}
+      segments={CREATOR_PAY_STATUSES.map(s=>({value:stats[s.id],color:PAY_COLOR[s.id],label:s.label}))}/>
+    <div style={{flex:1,minWidth:0,display:"flex",flexDirection:"column",gap:6}}>
+      {CREATOR_PAY_STATUSES.map(s=>(
+        <div key={s.id} style={{display:"flex",alignItems:"center",gap:7}}>
+          <Dot color={PAY_COLOR[s.id]} size={6}/>
+          <span style={{flex:1,fontSize:10.5,color:"#6E6E73",fontFamily:SF,whiteSpace:"nowrap"}}>{s.label}</span>
+          <span style={{fontSize:11,fontWeight:600,color:"#1D1D1F",fontFamily:SF}}>{stats[s.id]}</span>
+        </div>
+      ))}
+    </div>
+  </div>);
+}
+
+// ── ONE NODE ─────────────────────────────────────────────────────────────────
+// `state` is "done" | "now" | "next". Passed in rather than inferred from the
+// node's own id, because the same three common nodes are shared by two tracks
+// and only the rail that owns them knows how far each has got.
+function TrackNode({node,x,y,state,col,labelAbove,badge,interactive,onEnter,onLeave,onClick,reduce,marker}){
+  const done = state==="done", now = state==="now";
+  const dotCol = now ? col : done ? PIPE_GREEN : "#FFFFFF";
+  const label = (
+    <motion.span animate={{color:now?col:done?"#1D1D1F":"rgba(0,0,0,0.32)"}}
+      style={{fontSize:9.5,textAlign:"center",whiteSpace:"nowrap",fontWeight:now?700:done?500:400,
+        fontFamily:SF,letterSpacing:"-0.01em",
+        textDecoration:interactive?"underline":"none",textUnderlineOffset:3,textDecorationStyle:"dotted"}}>
+      {node.label}
+    </motion.span>
+  );
+  const pill = badge ? (
+    <motion.span initial={reduce?false:{opacity:0,y:-3}} animate={{opacity:1,y:0}}
+      transition={{delay:0.1,type:"spring",stiffness:400,damping:30}}
+      style={{fontSize:8,fontWeight:700,color:col,background:`${col}16`,borderRadius:5,
+        padding:"1.5px 6px",letterSpacing:"0.06em",fontFamily:SF,whiteSpace:"nowrap"}}>{badge}</motion.span>
+  ) : null;
+
   return(
     <motion.div
-      onHoverStart={()=>onHover(p.id)} onHoverEnd={()=>onHover(null)}
-      onFocus={()=>onHover(p.id)} onBlur={()=>onHover(null)}
-      onClick={clickable?onExecClick:undefined}
-      onKeyDown={clickable?e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();onExecClick();}}:undefined}
-      role={clickable?"button":undefined} tabIndex={clickable?0:undefined}
-      aria-label={`Stage ${i+1} of ${total} — ${p.label}${done?", complete":isCur?", current":""}`}
-      whileHover={reduce?undefined:{y:-3}} whileTap={clickable?{scale:0.94}:undefined}
+      onMouseEnter={onEnter} onMouseLeave={onLeave}
+      onFocus={onEnter} onBlur={onLeave}
+      onClick={onClick}
+      onKeyDown={onClick?e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();onClick();}}:undefined}
+      role={onClick?"button":undefined} tabIndex={onClick?0:undefined}
+      aria-label={`${node.label}${done?" — complete":now?" — current":""}`}
+      whileHover={reduce?undefined:{y:labelAbove?-2:-3}}
+      whileTap={onClick?{scale:0.94}:undefined}
       transition={{type:"spring",stiffness:420,damping:28}}
-      style={{width:NODE_W,display:"flex",flexDirection:"column",alignItems:"center",gap:7,
-        cursor:clickable?"pointer":"default",outline:"none",background:"transparent",border:"none",padding:0}}>
+      // Anchored by whichever END the marker is on, never by a fixed offset:
+      // the marker is the last child when the label is above and the first
+      // when it's below, and a node with no badge is one row shorter than one
+      // with. Pinning `top` for both put the common head's markers 23px above
+      // their own rail whenever the campaign wasn't standing on them.
+      style={{position:"absolute",left:x-NODE_W/2,width:NODE_W,
+        ...(labelAbove?{bottom:PIPE_H-(y+9)}:{top:y-9}),
+        display:"flex",flexDirection:"column",alignItems:"center",gap:5,
+        cursor:onClick?"pointer":"default",outline:"none"}}>
+
+      {labelAbove&&<>{pill}{label}</>}
 
       <div style={{position:"relative",width:18,height:18,display:"flex",alignItems:"center",justifyContent:"center"}}>
-        {/* Heartbeat on the live stage. A looped motion animation rather than a
+        {/* Heartbeat on the live node. A looped motion animation rather than a
             CSS keyframe so it honours prefers-reduced-motion with the rest. */}
-        {isCur&&!reduce&&!ended&&(
+        {now&&!reduce&&(
           <motion.span aria-hidden animate={{scale:[1,2.1],opacity:[0.4,0]}}
             transition={{duration:2,repeat:Infinity,ease:"easeOut"}}
             style={{position:"absolute",width:16,height:16,borderRadius:"50%",background:col}}/>
         )}
-        {/* The travelling marker. One element for the whole pipeline — framer
-            interpolates it between nodes on a stage change. */}
-        {isCur&&(
-          <motion.span layoutId="pipeMarker" aria-hidden transition={PIPE_SPRING}
-            style={{position:"absolute",width:24,height:24,borderRadius:"50%",border:`1.5px solid ${col}`,opacity:0.45}}/>
+        {/* The travelling ring. One element for the whole execution track —
+            framer interpolates it between nodes when the track advances. Only
+            that track has one: two layoutIds sharing the common head would
+            stack two identical rings on one node. */}
+        {now&&marker&&(
+          <motion.span layoutId="pipeNowRing" aria-hidden transition={PIPE_SPRING}
+            style={{position:"absolute",width:25,height:25,borderRadius:"50%",border:`1.5px solid ${col}`,opacity:0.45}}/>
         )}
-        <motion.div
-          animate={{backgroundColor:dotCol,scale:isCur?1:0.86}}
+        <motion.div animate={{backgroundColor:dotCol,scale:now?1:0.86}}
           transition={{type:"spring",stiffness:300,damping:26}}
-          style={{position:"relative",width:16,height:16,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
-            border:done||isCur?"none":"1.5px solid rgba(0,0,0,0.14)"}}>
+          style={{position:"relative",width:16,height:16,borderRadius:"50%",display:"flex",
+            alignItems:"center",justifyContent:"center",border:done||now?"none":"1.5px solid rgba(0,0,0,0.14)"}}>
           {done&&(
             <motion.svg width={10} height={10} viewBox="0 0 12 12" aria-hidden>
-              {/* Drawn rather than popped in — a completed stage should feel
+              {/* Drawn rather than popped in — a completed node should feel
                   ticked off, and the stagger makes a fresh load read as the
                   campaign walking its own history. */}
               <motion.path d="M2.6 6.3 L4.9 8.6 L9.4 3.8" fill="none" stroke="#FFF"
                 strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round"
                 initial={reduce?false:{pathLength:0}} animate={{pathLength:1}}
-                transition={{duration:0.28,delay:reduce?0:0.12+i*0.05,ease:"easeOut"}}/>
+                transition={{duration:0.28,ease:"easeOut"}}/>
             </motion.svg>
           )}
-          {isCur&&<span style={{width:5,height:5,borderRadius:"50%",background:"#FFF"}}/>}
+          {now&&<span style={{width:5,height:5,borderRadius:"50%",background:"#FFF"}}/>}
         </motion.div>
       </div>
 
-      <motion.span animate={{color:isCur?col:done?"#1D1D1F":"rgba(0,0,0,0.32)"}}
-        style={{fontSize:9.5,textAlign:"center",whiteSpace:"nowrap",fontWeight:isCur?700:done?500:400,
-          fontFamily:SF,letterSpacing:"-0.01em",
-          textDecoration:clickable?"underline":"none",textUnderlineOffset:3,textDecorationStyle:"dotted"}}>
-        {p.label}
-      </motion.span>
-
-      {/* The live badge doubles as Execution's own readout — that stage spans
-          half the pipeline, so "NOW" alone would hide all of its movement. */}
-      {isCur&&(
-        <motion.span initial={reduce?false:{opacity:0,y:-3}} animate={{opacity:1,y:0}}
-          transition={{delay:0.1,type:"spring",stiffness:400,damping:30}}
-          style={{fontSize:8,fontWeight:700,color:col,background:`${col}16`,borderRadius:5,
-            padding:"1.5px 6px",letterSpacing:"0.06em",fontFamily:SF,marginTop:-3,whiteSpace:"nowrap"}}>
-          {ended?"DONE":p.id==="execution"?`${es.pct}%`:"NOW"}
-        </motion.span>
-      )}
+      {!labelAbove&&<>{label}{pill}</>}
     </motion.div>
   );
 }
 
-function FullPipe({camp,role,onExecClick}){
-  const reduce=useReducedMotion();
-  const cur=viewStage(camp.stage,role), col=viewCol(camp.stage,role);
-  const nodes=role==="ea"?PIPELINE.filter(p=>EA_PL_IDS.includes(p.id)):PIPELINE;
-  const idx=nodes.findIndex(p=>p.id===cur);
-  const [hover,setHover]=useState(null);
-  const es=execStats(camp);
-  const shown=useCountUp(progressOf(camp));
-  // The real stage, not the role-collapsed one — see PipeNode.
-  const ended=normStage(camp.stage)==="completed";
+// A rail: the grey base, the coloured fill drawn to `frac`, and the sweep.
+function Rail({d,frac,col,flowing,reduce}){
+  return(<>
+    <path d={d} fill="none" stroke="rgba(0,0,0,0.07)" strokeWidth={3} strokeLinecap="round"/>
+    <motion.path d={d} fill="none" stroke={col} strokeWidth={3} strokeLinecap="round"
+      initial={reduce?false:{pathLength:0}} animate={{pathLength:frac}}
+      transition={reduce?{duration:0}:PIPE_SPRING}/>
+    {flowing&&frac>0.02&&(
+      // Clipped to the drawn length by the same pathLength, so the highlight
+      // never runs past progress that hasn't happened.
+      <motion.path d={d} fill="none" stroke="rgba(255,255,255,0.85)" strokeWidth={3} strokeLinecap="round"
+        style={{pathLength:0.12}}
+        animate={{pathOffset:[-0.12,frac]}}
+        transition={{duration:2.6,repeat:Infinity,ease:"easeInOut",repeatDelay:0.9}}/>
+    )}
+  </>);
+}
 
-  // Hovering previews another stage's meaning; releasing returns to the real
-  // one. `focus` is display-only — nothing here can move a campaign.
-  const focus=nodes.some(p=>p.id===hover)?hover:cur;
-  const focusIdx=nodes.findIndex(p=>p.id===focus);
-  const focusNode=nodes[focusIdx]||nodes[0];
-  const previewing=focus!==cur;
+// ── THE HEADER PIPELINE ──────────────────────────────────────────────────────
+// `onOpen` opens a track's expanded breakdown; `onFinNode` sends a click on a
+// finance node to wherever that step is actually done. A pipeline whose nodes
+// only tell you where you are is a picture; one whose nodes take you to the
+// work is navigation.
+function TrackPipeline({camp,role,expenseById,onOpen,onFinNode,onGoTeam}){
+  const reduce = useReducedMotion();
+  const [preview,setPreview] = useState(null);   // {id, el}
+  const eaOnly = role==="ea";                    // no commercial rail for an EA
 
-  // Rail fill, in two layers that mean different things:
-  //   done — stages actually behind us, green, ends on the live node
-  //   head — progress WITHIN the live stage, in the stage's own colour
-  // Only Execution has a meaningful head today, and that is the point: it spans
-  // half the pipeline, so without it the rail would sit still through the
-  // longest stretch of the campaign and then jump.
-  //
-  // Two solid layers rather than one gradient: a gradient's end colour cannot
-  // be interpolated, so it snapped to the new stage colour mid-slide while the
-  // width was still moving. Each layer now owns one colour and never changes it.
-  const seg=nodes.length>1?nodes.length-1:1;
-  const sub=cur==="execution"?es.pct/100:0;
-  const doneFrac=Math.min(1,Math.max(0,idx/seg));
-  const headFrac=Math.min(1-doneFrac,sub/seg);
-  const railW=seg*NODE_W;
-  const filled=doneFrac+headFrac;
-  // The rail carried no motion of its own, so next to a pulsing node it read as
-  // dead track. A slow sweep along the completed length says the campaign is
-  // running — and it stops once there is nothing left in flight.
-  const flowing=!reduce&&filled>0.02&&!ended;
+  const si   = plIdx(camp.stage);                       // stored-track index
+  const es   = execStats(camp);
+  const pay  = creatorPayStats(camp, expenseById);
+  const exId = executionStageOf(camp);
+  const execIdx = EXEC_STAGES.findIndex(n=>n.id===exId);   // -1 while still common
+  // Team Assigned is stored but drawn on the execution branch, so the finance
+  // branch starts one stage later than the common head ends.
+  const finIdx  = si - (FORK + 1);                         // -1 before the PO
+  const paidOut = pay.total>0 && pay.paid===pay.total;
+  const settled = si === PL_IDS.length-1;
+
+  // How far each rail is drawn. The fork counts as one step of the branch it
+  // belongs to, which is why each denominator is the branch's node count and
+  // reaching node i costs i+1 steps.
+  const commonFrac = Math.min(si,FORK-1)/(FORK-1);
+  const execFrac   = execIdx<0 ? 0
+    // Inside Execution the fill advances with the work rather than sitting
+    // still through the longest node on the branch.
+    : (1 + execIdx + (exId==="execution" ? es.pct/100 : 0))/EXEC_STAGES.length;
+  const finFrac    = finIdx<0 ? 0 : (1+finIdx)/FIN_STAGES.length;
+  const flowing    = !reduce && !(settled && paidOut);
+
+  const stateOf = (idx,i,terminalDone) =>
+    idx>i ? "done" : idx===i ? (terminalDone?"done":"now") : "next";
+
+  const execCol = T.sc[exId] || T.accent;
+  const finCol  = T.sc[normStage(camp.stage)] || T.sub;
+
+  const enter = (id,e) => setPreview({id, el:e.currentTarget});
+  const leave = () => setPreview(null);
 
   return(
-    <div style={{marginTop:2}}>
-      {/* Caption — the stage in focus, and what it means right now. */}
-      <div style={{display:"flex",alignItems:"baseline",gap:10,minHeight:34,padding:"0 2px 6px"}}>
-        <div style={{flex:1,minWidth:0}}>
-          <motion.div key={focus} initial={reduce?false:{opacity:0,y:4}} animate={{opacity:1,y:0}}
-            transition={{duration:0.18,ease:"easeOut"}}>
-            <div style={{display:"flex",alignItems:"center",gap:7}}>
-              <span style={{fontFamily:"'Newsreader',serif",fontSize:15,fontStyle:"italic",fontWeight:600,
-                color:previewing?"#6E6E73":"#1D1D1F",letterSpacing:"-0.01em"}}>{focusNode.label}</span>
-              <span style={{fontSize:9,color:"rgba(0,0,0,0.30)",fontFamily:SF}}>
-                {previewing?`stage ${focusIdx+1} of ${nodes.length}`:`stage ${idx+1} of ${nodes.length}`}
-              </span>
-            </div>
-            <div style={{fontSize:10.5,color:"#6E6E73",fontFamily:SF,marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-              {/* Execution earns a live readout instead of a static sentence —
-                  it is the only stage whose meaning changes day to day. */}
-              {focus==="execution"&&focus===cur&&!ended
-                ? `${es.locked}/${es.target} locked · ${es.concept} concept${es.concept===1?"":"s"} · ${es.video} video${es.video===1?"":"s"} · ${es.live} live — click for the breakdown`
-                : STAGE_HINT[focus]}
-            </div>
-          </motion.div>
-        </div>
-        <div style={{display:"flex",alignItems:"baseline",gap:2,flexShrink:0}}>
-          <motion.span animate={{color:col}} style={{fontSize:19,fontWeight:700,fontFamily:SF,letterSpacing:"-0.03em",lineHeight:1}}>{shown}</motion.span>
-          <span style={{fontSize:10,color:"#86868B",fontFamily:SF,fontWeight:600}}>%</span>
-        </div>
+    <div style={{overflowX:"auto",overflowY:"hidden",padding:"6px 0 2px"}}>
+      <div style={{position:"relative",width:PIPE_W,minWidth:PIPE_W,height:PIPE_H}}>
+        <svg width={PIPE_W} height={PIPE_H} style={{position:"absolute",inset:0,pointerEvents:"none"}} aria-hidden>
+          <Rail d={RAIL.common} frac={commonFrac} col={PIPE_GREEN} flowing={flowing} reduce={reduce}/>
+          <Rail d={RAIL.exec}   frac={execFrac}   col={execCol}    flowing={flowing} reduce={reduce}/>
+          {!eaOnly&&<Rail d={RAIL.fin} frac={finFrac} col={finCol} flowing={flowing} reduce={reduce}/>}
+        </svg>
+
+        {/* Track tags, in the gutter the fork leaves empty. They say which rail
+            is which without a legend, and carry each track's own headline. */}
+        <TrackTag y={TOP_Y} label="Execution" col={execCol}
+          sub={es.locked?`${es.live}/${es.locked} live · ${es.pct}%`:"no creators locked"}/>
+        {!eaOnly&&<TrackTag y={BOT_Y} label="Finance" col={finCol}
+          sub={finIdx<0?"not started":FIN_STAGES[finIdx].label}/>}
+
+        {/* Common head — labels ABOVE the markers, into the space the fork
+            leaves free, so they can't collide with the finance rail below. */}
+        {COMMON_STAGES.map((n,i)=>(
+          <TrackNode key={n.id} node={n} x={cx(i)} y={MID_Y} labelAbove reduce={reduce}
+            state={stateOf(si,i,false)} col={T.sc[n.id]}
+            badge={si===i?"NOW":null}/>
+        ))}
+
+        {/* Execution rail. Only the last two open a breakdown — Team Assigned
+            has no donut to preview, it's three names on the Team tab. */}
+        {EXEC_STAGES.map((n,i)=>{
+          const st = stateOf(execIdx,i,n.id==="creator_payment"&&paidOut);
+          const opens = n.id!=="team_assigned";
+          return(
+            <TrackNode key={n.id} node={n} x={cx(FORK+i)} y={TOP_Y} reduce={reduce}
+              state={st} col={T.sc[n.id]} interactive marker={st==="now"}
+              badge={st==="now"?(n.id==="execution"?`${es.pct}%`:n.id==="creator_payment"?`${pay.paid}/${pay.total}`:"NOW"):null}
+              onEnter={opens?e=>enter(n.id,e):undefined} onLeave={opens?leave:undefined}
+              onClick={opens?()=>{leave();onOpen(n.id);}:()=>onGoTeam()}/>
+          );
+        })}
+
+        {/* Finance rail — hidden from an EA, who neither runs these steps nor
+            can see the numbers behind them. */}
+        {!eaOnly&&FIN_STAGES.map((n,i)=>(
+          <TrackNode key={n.id} node={n} x={cx(FORK+i)} y={BOT_Y} reduce={reduce}
+            state={stateOf(finIdx,i,n.id==="payment_done")} col={T.sc[n.id]} interactive
+            badge={finIdx===i&&n.id!=="payment_done"?"NOW":null}
+            onClick={()=>onFinNode(n.id)}/>
+        ))}
       </div>
 
-      {/* Rail + nodes. Scrolls in its own lane; the padding keeps the heartbeat
-          ring and the hover lift from being clipped by the overflow. */}
-      <div style={{overflowX:"auto",overflowY:"hidden",padding:"10px 0 4px"}}>
-        <div style={{position:"relative",width:nodes.length*NODE_W,minWidth:nodes.length*NODE_W}}>
-          <div aria-hidden style={{position:"absolute",left:NODE_W/2,top:8,width:railW,height:3,
-            borderRadius:2,background:"rgba(0,0,0,0.07)",overflow:"hidden"}}>
-            {/* Stages complete */}
-            <motion.div animate={{width:doneFrac*railW}} transition={reduce?{duration:0}:PIPE_SPRING}
-              style={{position:"absolute",left:0,top:0,height:3,background:PIPE_GREEN}}/>
-            {/* Progress inside the live stage, parked at the end of the green */}
-            <motion.div animate={{width:headFrac*railW,x:doneFrac*railW,backgroundColor:col}}
-              transition={reduce?{duration:0}:PIPE_SPRING}
-              style={{position:"absolute",left:0,top:0,height:3}}/>
-            {/* The sweep. Clipped to the rail, travelling only as far as the
-                fill reaches, so it never implies progress that hasn't happened. */}
-            {flowing&&(
-              <motion.div
-                animate={{x:[-56,filled*railW]}}
-                transition={{duration:2.6,repeat:Infinity,ease:"easeInOut",repeatDelay:0.9}}
-                style={{position:"absolute",left:0,top:0,height:3,width:56,
-                  background:"linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,0.8),rgba(255,255,255,0))"}}/>
-            )}
-          </div>
-          <div style={{position:"relative",display:"flex"}}>
-            {nodes.map((p,i)=>(
-              <PipeNode key={p.id} p={p} i={i} total={nodes.length} idx={idx} col={col} ended={ended}
-                onExecClick={onExecClick} onHover={setHover} reduce={reduce} es={es}/>
-            ))}
-          </div>
-        </div>
-      </div>
+      <AnimatePresence>
+        {preview?.id==="execution"&&(
+          <HoverCard key="exec" target={preview.el} width={452} title="Execution">
+            <ExecutionDonuts camp={camp}/>
+          </HoverCard>
+        )}
+        {preview?.id==="creator_payment"&&(
+          <HoverCard key="pay" target={preview.el} width={272} title="Creator Payment">
+            <CreatorPaymentDonut stats={pay}/>
+          </HoverCard>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-// ── EXECUTION BREAKDOWN ──────────────────────────────────────────────────────
-// What the Execution node opens. Four milestones, all measured against the same
-// target creator count so the four bars and the headline percentage are reading
-// off one denominator — showing "concepts 1/1" next to "locked 1/5" would look
-// finished when 80% of the campaign hasn't started.
-function ExecutionModal({camp,onClose}){
-  const s=execStats(camp);
-  const rows=[
-    {l:"Creators locked",    n:s.locked,  c:T.green},
-    {l:"Concepts submitted", n:s.concept, c:T.accent},
-    {l:"Videos submitted",   n:s.video,   c:T.purple},
-    {l:"Posts live",         n:s.live,    c:T.teal},
-  ];
-  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
-    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(4px)"}}/>
-    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(420px,92vw)",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,padding:"20px"}}>
-      <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",marginBottom:2}}>
-        <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic"}}>Execution</div>
-        <div style={{fontSize:22,fontWeight:600,color:T.amber,fontFamily:SF,lineHeight:1}}>{s.pct}%</div>
+const TrackTag = ({y,label,col,sub}) => (
+  <div style={{position:"absolute",left:0,top:y-16,width:GUTTER-14,textAlign:"right"}}>
+    <div style={{fontSize:9,fontWeight:700,color:col,textTransform:"uppercase",letterSpacing:"0.09em",fontFamily:SF}}>{label}</div>
+    <div style={{fontSize:9,color:"rgba(0,0,0,0.35)",fontFamily:SF,marginTop:3,lineHeight:1.35}}>{sub}</div>
+  </div>
+);
+
+// ── EXPANDED BREAKDOWNS ──────────────────────────────────────────────────────
+// The modal shell both breakdowns share. Extracted because they were the same
+// twenty lines of backdrop, spring and header twice over.
+function Sheet({title,right,sub,onClose,width=520,children}){
+  return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}}
+      onClick={onClose} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.55)",backdropFilter:"blur(6px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:10}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:6}}
+      transition={{duration:0.2,ease:[0.16,1,0.3,1]}}
+      style={{position:"relative",width:`min(${width}px,94vw)`,maxHeight:"86vh",overflowY:"auto",
+        background:"#FFFFFF",border:"1px solid rgba(0,0,0,0.07)",borderRadius:18,padding:"20px 22px 18px",
+        boxShadow:"0 1px 2px rgba(0,0,0,0.05), 0 30px 60px -20px rgba(0,0,0,0.35)"}}>
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16,marginBottom:2}}>
+        <div style={{fontFamily:"'Newsreader',serif",fontSize:19,color:"#1D1D1F",fontStyle:"italic",fontWeight:600,letterSpacing:"-0.01em"}}>{title}</div>
+        {right}
       </div>
-      <div style={{fontSize:10.5,color:T.sub,marginBottom:16}}>{camp.name} · {s.target} creator{s.target!==1?"s":""} planned</div>
-      {rows.map(({l,n,c},i)=>(
-        <div key={l} style={{marginBottom:i<rows.length-1?12:4}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
-            <span style={{fontSize:11.5,color:T.sub,fontFamily:SF}}>{l}</span>
-            <span style={{fontSize:11.5,fontWeight:600,color:n>0?T.text:T.label,fontFamily:SF}}>{n} / {s.target}</span>
-          </div>
-          <div style={{height:4,background:"rgba(0,0,0,0.06)",borderRadius:2,overflow:"hidden"}}>
-            <motion.div initial={{width:0}} animate={{width:`${s.target>0?Math.min(100,(n/s.target)*100):0}%`}} transition={{type:"spring",stiffness:200,damping:28}} style={{height:4,borderRadius:2,background:c}}/>
-          </div>
-        </div>
-      ))}
-      <div style={{fontSize:9.5,color:T.label,lineHeight:1.55,margin:"14px 0 16px"}}>
-        Each locked creator counts four milestones — locked, concept in, video in, post live. Update them on the Deliverables tab.
-      </div>
-      <div style={{display:"flex"}}><div style={{flex:1}}/><Btn variant="ghost" onClick={onClose}>Close</Btn></div>
+      <div style={{fontSize:10.5,color:"#86868B",fontFamily:SF,marginBottom:18}}>{sub}</div>
+      {children}
+      <div style={{display:"flex",marginTop:18}}><div style={{flex:1}}/><Btn variant="ghost" onClick={onClose}>Close</Btn></div>
     </motion.div>
   </div>);
+}
+
+// A tile the donuts sit in, so four rings read as one instrument panel rather
+// than four floating circles.
+const Tile = ({children}) => (
+  <div style={{background:"rgba(0,0,0,0.022)",border:"1px solid rgba(0,0,0,0.05)",borderRadius:14,padding:"16px 10px 14px"}}>{children}</div>
+);
+
+// What the Execution node opens. Four milestones as donuts, all measured
+// against the same target creator count so the rings and the headline are
+// reading one denominator — "concepts 1/1" next to "locked 1/5" would look
+// finished while 80% of the campaign hadn't started. Under them, the same four
+// milestones per creator, which is the detail the rings summarise.
+function ExecutionModal({camp,onClose}){
+  const s = execStats(camp);
+  const locked = (camp.creators||[]).filter(isLocked);
+  const hit = (cr,key) =>
+    key==="locked"  ? true :
+    key==="concept" ? assetIn(cr.concept) :
+    key==="video"   ? assetIn(cr.demo) :
+                      delivDoneOf(camp,cr) >= delivTargetOf(camp,cr);
+  return(
+    <Sheet title="Execution" onClose={onClose} width={560}
+      sub={`${camp.name} · ${s.target} creator${s.target!==1?"s":""} planned · ${s.delivered} of ${s.expected} deliverables posted`}
+      right={<div style={{textAlign:"right"}}>
+        <div style={{fontSize:26,fontWeight:700,color:T.amber,fontFamily:SF,lineHeight:1,letterSpacing:"-0.03em"}}>{s.pct}%</div>
+        <div style={{fontSize:9,color:"#86868B",fontFamily:SF,marginTop:3}}>of all milestones</div>
+      </div>}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+        {EXEC_MILESTONES.map(m=>(
+          <Tile key={m.key}><DonutStat label={m.label} n={s[m.key]} target={s.target} color={m.color} size={64}/></Tile>
+        ))}
+      </div>
+
+      {locked.length>0&&<>
+        <Lbl style={{display:"block",margin:"20px 0 8px"}}>Per creator</Lbl>
+        <div style={{border:"1px solid rgba(0,0,0,0.06)",borderRadius:12,overflow:"hidden"}}>
+          {locked.map((cr,i)=>(
+            <div key={cr._id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 13px",
+              borderTop:i?"1px solid rgba(0,0,0,0.05)":"none",background:i%2?"rgba(0,0,0,0.014)":"transparent"}}>
+              <span style={{flex:1,minWidth:0,fontSize:11.5,color:"#1D1D1F",fontFamily:SF,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{cr.name}</span>
+              <span style={{fontSize:9.5,color:"#86868B",fontFamily:SF,whiteSpace:"nowrap"}}>
+                {delivDoneOf(camp,cr)}/{delivTargetOf(camp,cr)} posted
+              </span>
+              <div style={{display:"flex",gap:5}}>
+                {EXEC_MILESTONES.map(m=>{
+                  const on = hit(cr,m.key);
+                  return <span key={m.key} title={m.label} style={{width:9,height:9,borderRadius:"50%",
+                    background:on?m.color:"transparent",border:on?"none":"1.5px solid rgba(0,0,0,0.14)"}}/>;
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </>}
+      <div style={{fontSize:9.5,color:"#86868B",lineHeight:1.6,marginTop:14}}>
+        Every locked creator walks four milestones — locked, script in, shoot in, every post live. Move them on the Deliverables tab.
+      </div>
+    </Sheet>
+  );
+}
+
+// What the Creator Payment node opens. The same three statuses as the preview,
+// then who is in each — because "2 pending" is only actionable once you know
+// which two and what they're owed.
+function CreatorPaymentModal({camp,expenseById,role,onClose}){
+  const pay = creatorPayStats(camp, expenseById);
+  const locked = (camp.creators||[]).filter(isLocked);
+  const owed = locked.reduce((s,cr)=>s + (creatorPayStatusOf(camp.id,cr,expenseById)==="paid"?0:costOf(cr)),0);
+  return(
+    <Sheet title="Creator Payment" onClose={onClose} width={480}
+      sub={`${camp.name} · ${pay.total} locked creator${pay.total!==1?"s":""}${canCrFin(role)?` · ${fmtINR(owed)} still owed`:""}`}
+      right={<div style={{textAlign:"right"}}>
+        <div style={{fontSize:26,fontWeight:700,color:T.green,fontFamily:SF,lineHeight:1,letterSpacing:"-0.03em"}}>
+          {pay.total>0?Math.round((pay.paid/pay.total)*100):0}%
+        </div>
+        <div style={{fontSize:9,color:"#86868B",fontFamily:SF,marginTop:3}}>settled</div>
+      </div>}>
+      <Tile><div style={{padding:"2px 8px"}}><CreatorPaymentDonut stats={pay} size={92}/></div></Tile>
+
+      {CREATOR_PAY_STATUSES.map(st=>{
+        const rows = locked.filter(cr=>creatorPayStatusOf(camp.id,cr,expenseById)===st.id);
+        if(!rows.length) return null;
+        return(<div key={st.id} style={{marginTop:16}}>
+          <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:7}}>
+            <Dot color={PAY_COLOR[st.id]} size={6}/><Lbl>{st.label}</Lbl>
+            <span style={{fontSize:9,color:"rgba(0,0,0,0.3)",fontFamily:SF}}>{rows.length}</span>
+          </div>
+          <div style={{border:"1px solid rgba(0,0,0,0.06)",borderRadius:12,overflow:"hidden"}}>
+            {rows.map((cr,i)=>(
+              <div key={cr._id} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 13px",
+                borderTop:i?"1px solid rgba(0,0,0,0.05)":"none"}}>
+                <span style={{flex:1,minWidth:0,fontSize:11.5,color:"#1D1D1F",fontFamily:SF,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{cr.name}</span>
+                {cr.invoiceNo&&<span style={{fontSize:9,color:"#86868B",fontFamily:"monospace"}}>{cr.invoiceNo}</span>}
+                {canCrFin(role)&&<span style={{fontSize:11.5,fontWeight:600,color:"#1D1D1F",fontFamily:SF}}>{fmtINR(costOf(cr))}</span>}
+              </div>
+            ))}
+          </div>
+        </div>);
+      })}
+      {!pay.total&&<div style={{fontSize:11,color:"#86868B",fontStyle:"italic",marginTop:14}}>No creators locked yet — they appear here as the roster fills.</div>}
+      <div style={{fontSize:9.5,color:"#86868B",lineHeight:1.6,marginTop:16}}>
+        A creator moves to <b>Invoice Raised</b> when their GST invoice is generated on the Creators tab, and to <b>Payment Done</b> when Accounts settles it under Billing → Campaign P&amp;L → Creator Payables.
+      </div>
+    </Sheet>
+  );
 }
 
 // ── DELIVERABLE MULTISELECT ───────────────────────────────────────────────────
@@ -1039,7 +1277,7 @@ function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAge
 
 // ── CAMPAIGN CARD (grid tile) ─────────────────────────────────────────────────
 const CampCard = forwardRef(function CampCard({camp,onClick,role}, ref){
-  const col=viewCol(camp.stage,role),pl=viewPl(camp.stage,role);
+  const col=viewCol(camp,role),pl=viewPl(camp,role);
   const am=getM(camp.amId),cm=getM(camp.cmId),ea=getM(camp.eaId);
   const es=endStatus(camp.end,camp.stage);
   return(
@@ -1122,10 +1360,17 @@ function CampaignGrid({campaigns,role,onSelect,brandName}){
 }
 
 // ── FILTER TABS (sliding pill indicator) ──────────────────────────────────────
-// Grid filter groups — the seven stages collapsed into the four phases the
-// team actually talks in. Declared next to STAGE_FILTERS so the two can't drift.
-const STAGE_GROUPS={setup:["draft","brief_log"],commercial:["po","advance"],execution:["execution"],done:["reporting","completed"]};
-const STAGE_FILTERS=[["all","All"],["setup","Setup"],["commercial","PO"],["execution","Exec"],["done","Done"],["ended","Ended"]];
+// Grid filter groups — the phases the team actually talks in. Predicates
+// rather than an id list, because "Exec" now spans a track that isn't stored:
+// a campaign is in execution when its creators are working, whatever its
+// finance stage says. Declared next to STAGE_FILTERS so the two can't drift.
+const STAGE_MATCH={
+  setup:      c=>["draft","brief_locked","team_assigned"].includes(normStage(c.stage)),
+  commercial: c=>["po_raised","advance_received","invoice_raised"].includes(normStage(c.stage)),
+  execution:  c=>executionStageOf(c)==="execution",
+  done:       c=>normStage(c.stage)==="payment_done",
+};
+const STAGE_FILTERS=[["all","All"],["setup","Setup"],["commercial","Money"],["execution","Exec"],["done","Done"],["ended","Ended"]];
 function FilterTabs({value,onChange,endedCount=0}){
   return(
     <div style={{display:"flex",background:"rgba(0,0,0,0.04)",borderRadius:8,padding:2,gap:1}}>
@@ -1301,7 +1546,7 @@ function ClientPOModal({camp,invoiceAmount,onConfirm,onCancel}){
       <div style={{fontFamily:"'Newsreader',serif",fontSize:16,color:T.text,fontStyle:"italic",marginBottom:4}}>Record client Purchase Order</div>
       <div style={{fontSize:11,color:T.sub,lineHeight:1.6,marginBottom:14}}>
         The PO <strong style={{color:T.text}}>{camp.client}</strong> raised against <strong style={{color:T.text}}>{camp.name}</strong>.
-        Saving it moves the campaign to Advance and links the PO to its invoice in Billing.
+        Saving it starts the finance track at PO Raised and links the PO to its invoice in Billing.
       </div>
 
       <Lbl style={{display:"block",marginBottom:5}}>Client PO number</Lbl>
@@ -1500,7 +1745,7 @@ export function AddCreatorModal({onAdd,onClose,editing=null}){
         <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Handle / Tag <span style={{color:T.red}}>*</span></Lbl><input value={f.handle} onChange={e=>u("handle",e.target.value)} placeholder="@username" style={{...INP,resize:"none"}}/></div>
         <Hr style={{margin:"14px 0"}}/>
         <Lbl style={{display:"block",marginBottom:10}}>Profile stats <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— auto-filled by Fetch, editable</span></Lbl>
-        <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Phone <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— internal only</span></Lbl><input value={f.phone} onChange={e=>u("phone",e.target.value)} placeholder="+91 98765 43210" style={{...INP,resize:"none",borderColor:errors.phone?T.red:`${T.amber}30`}}/><Err k="phone"/></div>
+        <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Phone <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— internal only</span></Lbl><PhoneInput value={f.phone} onChange={v=>u("phone",v)} style={{...INP,resize:"none",borderColor:errors.phone?T.red:`${T.amber}30`}}/><Err k="phone"/></div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
           <div><Lbl style={{display:"block",marginBottom:4}}>Niche</Lbl><input value={f.niche} onChange={e=>u("niche",e.target.value)} placeholder="e.g. Food, Fitness, Lifestyle" style={{...INP,resize:"none"}}/></div>
           <div><Lbl style={{display:"block",marginBottom:4}}>State</Lbl><select value={f.state} onChange={e=>u("state",e.target.value)} style={{...INP,resize:"none"}}><option value="">— Select —</option>{INDIAN_STATES.map(s=><option key={s}>{s}</option>)}</select></div>
@@ -1687,7 +1932,12 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
             {fields.map(([l,k,ph]) => (
               <div key={k}>
                 <Lbl style={{display:"block",marginBottom:4}}>{l}{required.includes(k)&&<span style={{color:T.red}}> *</span>}</Lbl>
-                <input value={form[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none",borderColor:errors[k]?T.red:undefined}}/>
+                {/* Phone is the one field in this generic loop with a fixed
+                    shape (+91 and ten digits), so it gets its own control
+                    rather than a placeholder asking people to type the code. */}
+                {k==="phone"
+                  ? <PhoneInput value={form[k]} onChange={v=>u(k,v)} style={{...INP,resize:"none",borderColor:errors[k]?T.red:undefined}}/>
+                  : <input value={form[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none",borderColor:errors[k]?T.red:undefined}}/>}
                 {errors[k]&&<div style={{fontSize:9.5,color:T.red,marginTop:3}}>{errors[k]}</div>}
               </div>
             ))}
@@ -2067,6 +2317,9 @@ function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
         // URL would just 502 the whole creator's refresh.
         const trackable=links.filter(u=>livePostUrlOk(u,cr.platform));
         const target=delivTargetOf(camp,cr);
+        // Confirmed posts — links whose metrics have actually come back. This
+        // is what "n / N posted" counts, and what marks the creator live.
+        const posted=delivDoneOf(camp,cr);
         const trk=cr.tracking||{};
         const isFetch=!!fetching[cr._id];
         return(<div key={cr._id} style={{background:T.raised,borderRadius:8,border:`1px solid ${T.border}`,overflow:"hidden"}}>
@@ -2093,8 +2346,12 @@ function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
                   rather than a loose property of the creator. */}
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8,gap:6}}>
                 <Lbl>Live</Lbl>
-                <span style={{display:"flex",alignItems:"center",gap:3,fontSize:8.5,color:links.length>=target?T.green:T.label,whiteSpace:"nowrap"}}>
-                  {links.length} /
+                {/* Counts CONFIRMED posts, not pasted links — see delivDoneOf.
+                    The gap between the two is called out under the field, so
+                    "0 / 1" next to a link that is visibly there reads as
+                    "not verified yet" rather than as a bug. */}
+                <span style={{display:"flex",alignItems:"center",gap:3,fontSize:8.5,color:posted>=target?T.green:T.label,whiteSpace:"nowrap"}}>
+                  {posted} /
                   {canEdit
                     ? <DelivCell value={target} onCommit={n=>setDeliv(cr,n)}
                         title="How many posts this creator owes on this campaign — changes are logged to the timeline"
@@ -2105,7 +2362,23 @@ function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
               </div>
               {!demoReceived(dem.status)?<div style={{fontSize:10.5,color:T.label,fontStyle:"italic"}}>Unlocks once the demo video is received.</div>:<>
               <LiveLinks links={links} platform={cr.platform} canEdit={canEdit}
-                onChange={urls=>pCr(cr._id,{live:withLiveLinks(cr.live,urls)})}/>
+                onChange={urls=>pCr(cr._id,{live:withLiveLinks(cr.live,urls),
+                  // Editing or removing a link invalidates the proof — the
+                  // metrics on file were fetched against URLs that are no
+                  // longer the ones on the row, so the confirmed count has to
+                  // be earned again. APPENDING is the exception: the links
+                  // already verified are untouched, and dropping their proof
+                  // would punish a creator for posting a second time.
+                  ...(links.every((u,i)=>urls[i]===u) ? {} : {tracking:{...trk,postsCounted:0}})})}/>
+              {/* A link on its own doesn't count. Said here, next to the links,
+                  because this is where the gap between "I pasted it" and "it
+                  counts" is actually visible — the alternative is a count that
+                  silently disagrees with what's on screen. */}
+              {links.length>posted&&<div style={{fontSize:9.5,color:T.amber,marginTop:6,lineHeight:1.45}}>
+                {links.length-posted} link{links.length-posted!==1?"s":""} not confirmed yet — {trackable.length>posted
+                  ? "hit Refresh to pull its metrics; the post counts once they come back."
+                  : "the URL has to be a valid " + (cr.platform==="YouTube"?"YouTube":"Instagram") + " post link before it can be checked."}
+              </div>}
               {links.length>0
                 ? (canEdit
                     ? <DateInput value={liv.postedDate||""} onChange={v=>pLiv(cr._id,{postedDate:v})} max={today()} placeholder="First posted date" style={{...INP,fontSize:10,padding:"5px 8px",marginTop:6}}/>
@@ -2139,7 +2412,8 @@ function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
 }
 
 // ── BRIEF TAB ────────────────────────────────────────────────────────────────
-function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
+function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction,onGoTab}){
+  const [locking,setLocking]=useState(false);
   // One field is editable at a time. `edit` holds the field key being edited
   // and `draft` its working value — editing the whole brief at once made it
   // unclear what a Save was about to write.
@@ -2151,22 +2425,25 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
   // matters because an AM or CM can raise a campaign, and locking them out of
   // their own brief means the two people who own commercials have to retype it.
   const isCreator=!!currentUser?.teamId&&camp.createdBy===currentUser.teamId;
-  const canEditBrief=(["founder","pcm"].includes(role)||isCreator)&&beforePO(camp);
-  // The commercial numbers — scope, total budget, dates — stay editable one
-  // stage longer than the brief text: THROUGH the PO stage, frozen from Advance
-  // on, once the client has authorised the spend and the invoice exists.
+  // The brief text freezes the moment the brief is LOCKED, not at the PO: the
+  // lock is what the client is quoted from, and an edit after it desyncs the
+  // quote. This is the first node of both tracks now, so it is also the
+  // earliest freeze in the campaign.
+  const canEditBrief=(["founder","pcm"].includes(role)||isCreator)&&!briefLocked(camp);
+  // The commercial numbers — scope, total budget, dates — stay editable longer
+  // than the brief text: right up to the client PO, once they've authorised
+  // the spend and the invoice exists.
   //
-  // The brief text freezes at sign-off because an edit after that desyncs the
-  // quote. These three are different. `numReq` is what the roster gate measures
-  // against, so a team that planned five, locked four and settled on four has
-  // to be able to say so or the PO gate is a trap. Budget is what the PO modal
-  // and the invoice are both raised from, so it has to be right AT the PO, not
-  // one stage before it. Dates move for real reasons all the way through.
-  const canEditCommercials=(["founder","pcm"].includes(role)||isCreator)&&plIdx(camp.stage)<=plIdx("po");
-  // Sign-off stays with the two roles that own commercials, regardless of who
-  // wrote the brief — it's the act that commits the numbers and moves to PO,
-  // and it only unlocks once the brief is actually filled in (briefGaps).
-  const canSignOff=["founder","pcm"].includes(role)&&normStage(camp.stage)==="brief_log";
+  // `numReq` is what the roster gate measures against, so a team that planned
+  // five, locked four and settled on four has to be able to say so or the PO
+  // gate is a trap. Budget is what the PO modal and the invoice are both
+  // raised from, so it has to be right AT the PO, not before it. Dates move
+  // for real reasons all the way through.
+  const canEditCommercials=(["founder","pcm"].includes(role)||isCreator)&&beforePO(camp);
+  // Locking stays with the two roles that own commercials, regardless of who
+  // wrote the brief — it's the act that commits the numbers — and it only
+  // unlocks once the brief is actually filled in (briefGaps).
+  const canLock=["founder","pcm"].includes(role)&&!briefLocked(camp);
   const gaps=briefGaps(camp);
 
   const open  = (key,value) => { setEdit(key); setDraft(value); };
@@ -2330,26 +2607,70 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction}){
       </>})}
     {camp.cmNote&&role!=="ea"&&<div style={{marginTop:14,paddingLeft:10,borderLeft:`2px solid ${T.accent}`}}><Lbl color={T.accent} style={{display:"block",marginBottom:4}}>CM Note</Lbl><div style={{fontSize:11.5,color:T.sub,lineHeight:1.6}}>{camp.cmNote}</div></div>}
     {role!=="ea"&&camp.internalNotes&&<div style={{marginTop:12,paddingLeft:10,borderLeft:`2px solid ${T.amber}`}}><Lbl color={T.amber} style={{display:"block",marginBottom:4}}>Internal — not visible to client</Lbl><div style={{fontSize:11.5,color:T.sub,lineHeight:1.6}}>{camp.internalNotes}</div></div>}
-    {/* Sign-off is the only way out of Brief Log. Blocked while a field is open
-        so a half-typed draft can't be sealed away by the stage moving on. */}
-    {canSignOff&&<div style={{marginTop:20}}>
+    {/* Locking the brief is the campaign's first real gate — everything after
+        it, on both tracks, is downstream of these numbers. Blocked while a
+        field is open so a half-typed draft can't be sealed away by the stage
+        moving on. */}
+    {canLock&&<div style={{marginTop:20}}>
       <Hr style={{marginBottom:16}}/>
       <Lbl style={{display:"block",marginBottom:6}}>Brief sign-off</Lbl>
       <div style={{fontSize:11.5,color:T.sub,lineHeight:1.55,marginBottom:10}}>
-        Signing off locks the brief and moves this campaign to PO. It can't be edited afterwards.
+        Locking freezes the brief text and raises the client quote. Scope, budget and dates stay editable until the client PO is recorded; the brief itself can't be edited afterwards.
       </div>
       {gaps.length>0&&<div style={{fontSize:10.5,color:T.amber,lineHeight:1.5,marginBottom:10}}>
-        Still needed before sign-off: {gaps.join(", ")}.
+        Still needed before the brief can be locked: {gaps.join(", ")}.
       </div>}
-      <Btn variant="primary" onClick={()=>onAction("brief_complete")} disabled={!!edit||gaps.length>0}>Sign off brief &amp; move to PO</Btn>
+      <Btn variant="primary" onClick={()=>setLocking(true)} disabled={!!edit||gaps.length>0}>🔒 Lock brief</Btn>
     </div>}
-    {!canEditBrief&&!canSignOff&&<div style={{marginTop:16,fontSize:10,color:T.label}}>
-      {beforePO(camp)
-        ? "The brief is edited by the Founder, PCM or whoever raised this campaign, and signed off by the Founder or PCM."
+    <AnimatePresence>
+      {locking&&<LockBriefModal camp={camp} onCancel={()=>setLocking(false)}
+        onConfirm={()=>{ setLocking(false); onAction("lock_brief"); onGoTab?.("team"); }}/>}
+    </AnimatePresence>
+    {!canEditBrief&&!canLock&&<div style={{marginTop:16,fontSize:10,color:T.label}}>
+      {!briefLocked(camp)
+        ? "The brief is written by the Founder, PCM or whoever raised this campaign, and locked by the Founder or PCM."
         : canEditCommercials
-          ? "The brief text was locked at sign-off. Scope, budget and dates stay editable until the client PO is recorded — that's what the PO and the invoice are raised from."
-          : "The brief was locked when the Purchase Order was raised."}
+          ? "The brief text was frozen when the brief was locked. Scope, budget and dates stay editable until the client PO is recorded — that's what the PO and the invoice are raised from."
+          : "The brief and its commercials were locked when the Purchase Order was raised."}
     </div>}
+  </div>);
+}
+
+// ── LOCK BRIEF ───────────────────────────────────────────────────────────────
+// Its own dialog rather than the generic "confirm stage change", because this
+// is the one irreversible step a non-Accounts role takes: it freezes the brief
+// text, raises the client quote, and opens both tracks. The generic modal
+// could only repeat the button's label back; this names what is about to
+// happen and where the campaign lands next.
+function LockBriefModal({camp,onConfirm,onCancel}){
+  const staffed=teamComplete(camp);
+  return(<div style={{position:"fixed",inset:0,zIndex:650,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}}
+      onClick={onCancel} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.55)",backdropFilter:"blur(6px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:10}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:6}}
+      transition={{duration:0.2,ease:[0.16,1,0.3,1]}}
+      style={{position:"relative",width:"min(420px,94vw)",background:"#FFFFFF",border:"1px solid rgba(0,0,0,0.07)",
+        borderRadius:18,padding:"22px 24px 18px",boxShadow:"0 30px 60px -20px rgba(0,0,0,0.35)"}}>
+      <div style={{fontFamily:"'Newsreader',serif",fontSize:19,fontStyle:"italic",fontWeight:600,color:"#1D1D1F",marginBottom:4}}>Lock this brief?</div>
+      <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF,lineHeight:1.6,marginBottom:14}}>{camp.name}</div>
+      <div style={{border:"1px solid rgba(0,0,0,0.06)",borderRadius:12,overflow:"hidden",marginBottom:14}}>
+        {[
+          ["Brief text",  "frozen — objective, audience, messages and deliverables can't be edited again"],
+          ["Client quote","raised in Billing from the campaign's own budget split"],
+          ["Next",        staffed?"the team is already assigned, so execution opens immediately":"assign the AM, CM and Exec Associate — that's the blocker into execution"],
+        ].map(([l,d],i)=>(
+          <div key={l} style={{display:"flex",gap:12,padding:"10px 13px",borderTop:i?"1px solid rgba(0,0,0,0.05)":"none"}}>
+            <span style={{width:78,flexShrink:0,fontSize:10,fontWeight:600,color:"#1D1D1F",fontFamily:SF}}>{l}</span>
+            <span style={{flex:1,fontSize:10.5,color:"#6E6E73",fontFamily:SF,lineHeight:1.5}}>{d}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <Btn variant="subtle" onClick={onCancel}>Cancel</Btn>
+        <div style={{flex:1}}/>
+        <Btn variant="primary" onClick={onConfirm}>🔒 Lock brief</Btn>
+      </div>
+    </motion.div>
   </div>);
 }
 
@@ -2379,10 +2700,23 @@ function TabTeam({camp,role,onAction}){
     onAction(slot.action,{[slot.campKey]:sel});
     setEditing(null);
   };
-  // True when saving THIS slot is what completes the team and starts the brief.
-  const startsBrief=slot=>normStage(camp.stage)==="draft"
+  // True when saving THIS slot is what completes the team and opens execution.
+  const opensExec=slot=>normStage(camp.stage)==="brief_locked"
     &&TEAM_SLOTS.every(s=>s.key===slot.key||camp[s.campKey]);
   return(<div>
+    {/* The blocker, stated up front. Assignment is the one step between a
+        locked brief and any work happening, and it is restricted to the four
+        roles that own staffing — so the people who can't do it should be told
+        what the campaign is waiting for rather than shown three dead rows. */}
+    {normStage(camp.stage)==="brief_locked"&&(
+      <div style={{display:"flex",alignItems:"center",gap:9,padding:"10px 13px",marginBottom:6,
+        background:`${T.amber}0D`,border:`1px solid ${T.amber}30`,borderRadius:10}}>
+        <Dot color={T.amber} size={6}/>
+        <span style={{fontSize:11,color:T.sub,fontFamily:SF,lineHeight:1.5}}>
+          Brief locked — the campaign is blocked here until all three slots are filled. Assigning is done by the Founder, PCM, Category Manager or Account Manager.
+        </span>
+      </div>
+    )}
     {TEAM_SLOTS.map((slot,i)=>{
       const m=getM(camp[slot.campKey]),isEditing=editing===slot.key;
       const pool=TEAM_DIR.filter(t=>slot.roles.includes(t.role));
@@ -2405,7 +2739,7 @@ function TabTeam({camp,role,onAction}){
             {!pool.length&&<div style={{fontSize:9.5,color:T.amber,marginBottom:8}}>No one with this role yet — add them on the Access &amp; Credentials page (they need a Team ID).</div>}
             {/* Warned up front because the transition is automatic — there's no
                 confirmation dialog after the fact to catch it. */}
-            {startsBrief(slot)&&<div style={{fontSize:9.5,color:T.amber,marginBottom:8}}>This is the last empty slot — saving it starts the brief.</div>}
+            {opensExec(slot)&&<div style={{fontSize:9.5,color:T.amber,marginBottom:8}}>This is the last empty slot — saving it opens execution.</div>}
             <div style={{display:"flex",gap:8}}>
               <Btn variant="primary" onClick={()=>save(slot)} disabled={!sel}>{m?"Reassign":"Assign"}</Btn>
               <Btn variant="subtle" onClick={()=>setEditing(null)}>Cancel</Btn>
@@ -2416,9 +2750,9 @@ function TabTeam({camp,role,onAction}){
       </div>);
     })}
     <div style={{marginTop:14,fontSize:10,color:T.label,lineHeight:1.5}}>{
-      !can(role,"assignUsers") ? "Assignments are managed by the Account Manager, Category Manager or Founder."
+      !can(role,"assignUsers") ? "Assignments are managed by the Founder, PCM, Category Manager or Account Manager."
       : !beforePO(camp)        ? "The team was locked when the Purchase Order was raised — reassigning now also changes who can see this campaign, so it's handled outside the campaign."
-      : "All three roles must be filled before the brief can start. They stay reassignable until the Purchase Order is raised."
+      : "All three roles must be filled before execution can start. They stay reassignable until the Purchase Order is raised."
     }</div>
   </div>);
 }
@@ -2448,68 +2782,73 @@ function TabFinancials({camp,role}){
 function TabTimeline({camp}){const events=camp.timeline||[];if(!events.length)return <div style={{padding:"20px 0",color:T.label,fontSize:11,textAlign:"center"}}>No events yet.</div>;return(<div>{events.map((ev,i)=><div key={i} style={{display:"flex",gap:12,marginBottom:i<events.length-1?16:0}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",flexShrink:0}}><div style={{width:5,height:5,borderRadius:"50%",marginTop:4,background:i===events.length-1?T.accent:T.green}}/>{i<events.length-1&&<div style={{width:1,flex:1,background:T.border,marginTop:5}}/>}</div><div><div style={{fontSize:11.5,color:T.text,lineHeight:1.5}}>{ev.event}</div><div style={{fontSize:9.5,color:T.sub,marginTop:2}}>{ev.actor} &middot; {ev.date}</div></div></div>)}</div>);}
 
 // ── WORKFLOW ACTIONS ─────────────────────────────────────────────────────────
-// Shows the right next-step CTA(s) for the current role and stage.
-// Each entry: { stages, roles, actions: [{label, action, variant, data}], hint }
+// The right next-step CTA(s) for the current role and stage. Only the FINANCE
+// track gets buttons: it is the track that moves on somebody saying a document
+// exists. The execution track moves on the work itself — locking a creator,
+// posting a link — so there is nothing here to press for it, only the hint
+// that says what it's waiting on.
 function WorkflowActions({camp, role, onAction}) {
-  const isAM   = ["am","founder","pcm"].includes(role);
   const isAcc  = ["accounts","founder","pcm"].includes(role);
   const isLead = ["founder","pcm"].includes(role);
   const stage  = normStage(camp.stage);
 
   const actions = [];
 
-  // Draft has no button by design — it advances on its own once the three
-  // slots are filled, so the only thing to say is what's still missing.
+  // Draft has no button by design — the brief is locked from the Brief tab,
+  // where the thing being locked is actually in front of you.
   if (stage==="draft") {
-    const missing=TEAM_SLOTS.filter(s=>!camp[s.campKey]).map(s=>s.label);
-    if (missing.length) actions.push({action:null, hint:`Assign ${missing.join(", ")} on the Team tab to start the brief`});
-    // Fully staffed but still at Draft is only reachable by a campaign that was
-    // already staffed before this gate existed — the auto-advance fires on the
-    // assign action, so nothing is left to trigger it. Without this it's stuck.
-    else if (isAM) actions.push({label:"Start Brief", action:"brief_start", variant:"primary"});
-  }
-  // Sign-off deliberately has no button here — it lives on the Brief tab, so
-  // it can't be given without the brief being in front of you.
-  if (stage==="brief_log") {
     const gaps=briefGaps(camp);
     actions.push({action:null, hint:gaps.length
       ? `Brief incomplete — ${gaps.join(", ")} still needed`
-      : isLead ? "Brief is complete — sign it off on the Brief tab"
-               : "Waiting on Founder/PCM to sign off the brief"});
+      : isLead ? "Brief is complete — lock it on the Brief tab"
+               : "Waiting on Founder/PCM to lock the brief"});
   }
-  // Both record something that happened outside the system, so both stay
-  // manual — but they now produce the record rather than merely asserting it.
-  // Raising the PO writes the client PO and links it to the invoice; confirming
-  // the advance settles the invoice's advance leg. The stage moves because the
-  // document exists, which is the same shape as the Draft gate.
+  // The blocker into execution. No button either: assignment is three dropdown
+  // picks on the Team tab and the stage advances on its own when the last one
+  // lands, so a button here would only be a link with a stage change attached.
+  if (stage==="brief_locked") {
+    const missing=TEAM_SLOTS.filter(s=>!camp[s.campKey]).map(s=>s.label);
+    actions.push({action:null, hint: missing.length
+      ? `Blocked — assign ${missing.join(", ")} on the Team tab to open execution`
+      : "Team complete — execution is open"});
+  }
+  // Every step below records something that happened OUTSIDE the system, which
+  // is why each stays manual — but each now produces the record rather than
+  // merely asserting it, and the stage moves because the document exists.
+  //
   // The client PO buys a specific set of creators at a specific set of fees, so
   // the roster has to be confirmed before it can be raised. Recorded against a
   // half-locked list, the PO's value was a guess: anyone still negotiating could
   // land above the number, and anyone who backed off meant reissuing it.
-  if (stage==="po") {
+  if (stage==="team_assigned") {
     const gap=rosterGap(camp);
     if (isAcc) actions.push({label:"Record Client PO", action:"raise_po", variant:"primary", disabled:!!gap});
     else if (!gap) actions.push({action:null, hint:"Waiting on Accounts to record the client's Purchase Order"});
     if (gap) actions.push({action:null, hint:`${gap} — settle the roster on the Creators tab before the PO is raised`});
   }
-  if (stage==="advance") {
+  if (stage==="po_raised") {
     if (isAcc) actions.push({label:"Confirm Advance Received", action:"advance_received", variant:"success"});
     else actions.push({action:null, hint:"PO recorded — waiting on the client's advance payment"});
   }
-  if (stage==="execution" && isAM) {
-    const s=execStats(camp), done=execDone(camp);
-    actions.push({label:"Start Reporting", action:"start_reporting", variant:done?"success":"primary", disabled:!done});
-    if (!done) actions.push({action:null, hint:s.locked===0
-      ? "No creators locked yet — lock creators on the Creators tab"
-      // Real post counts, not `pct` — pct is overall execution progress
-      // (locked + concept + video + live), so calling it "of plan delivered"
-      // overstated what was actually posted. This is the gate's own number:
-      // Start Reporting unlocks when every locked creator has posted every
-      // deliverable, so that is what the hint should be counting down.
+  // Deliberately NOT gated on delivery. The final invoice usually follows the
+  // campaign going live, and the hint says how delivery is doing — but the two
+  // tracks are independent by design, and a hard gate here would let one late
+  // creator hold up billing a client who is ready to pay.
+  if (stage==="advance_received") {
+    const s=execStats(camp);
+    if (isAcc) actions.push({label:"Raise Client Invoice", action:"raise_invoice", variant:"primary"});
+    else actions.push({action:null, hint:"Advance in — Accounts raises the final invoice"});
+    actions.push({action:null, hint: execDone(camp)
+      ? "All locked creators are live"
+      : s.locked===0 ? "No creators locked yet — lock creators on the Creators tab"
       : `${s.live} of ${s.locked} locked creator${s.locked!==1?"s":""} live · ${s.delivered} of ${s.expected} deliverables posted`});
   }
-  if (stage==="reporting" && isAM)
-    actions.push({label:"Mark Campaign Completed", action:"mark_completed", variant:"success"});
+  if (stage==="invoice_raised") {
+    if (isAcc) actions.push({label:"Confirm Payment Received", action:"payment_done", variant:"success"});
+    else actions.push({action:null, hint:"Invoice issued — waiting on the client's payment"});
+  }
+  if (stage==="payment_done")
+    actions.push({action:null, hint:"Client settled in full — creator payouts finish on the execution track"});
 
   if (!actions.length) return null;
   return (
@@ -2524,21 +2863,31 @@ function WorkflowActions({camp, role, onAction}) {
 }
 
 // ── DETAIL ───────────────────────────────────────────────────────────────────
-function Detail({camp,role,currentUser,onAction,onSaveBrief,onSaveCampaign,onUpdateCreators,onDelete,onLogTimeline,onBack,onPrev,onNext,hasPrev,hasNext}){
+function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCampaign,onUpdateCreators,onDelete,onLogTimeline,onBack,onPrev,onNext,hasPrev,hasNext}){
+  const navigate=useNavigate();
   const [tab,setTab]=useState("brief");
   const [confirmDelete,setConfirmDelete]=useState(false);
   const [extending,setExtending]=useState(false);
-  const [showExec,setShowExec]=useState(false);
+  const [sheet,setSheet]=useState(null);        // "execution" | "creator_payment"
   const [raisingPO,setRaisingPO]=useState(false);
   // Selecting a different campaign resets the panel to Brief — the tab chosen
   // on one campaign shouldn't leak onto the next.
-  useEffect(()=>{setTab("brief");setConfirmDelete(false);setExtending(false);setShowExec(false);setRaisingPO(false);},[camp.id]);
+  useEffect(()=>{setTab("brief");setConfirmDelete(false);setExtending(false);setSheet(null);setRaisingPO(false);},[camp.id]);
   // raise_po needs a form before it can do anything, so it opens ClientPOModal
   // instead of firing straight through. Everything else passes untouched.
   const handleAction=(action,data)=>action==="raise_po"?setRaisingPO(true):onAction(action,data);
-  const stCol=viewCol(camp.stage,role),pl=viewPl(camp.stage,role);
+  // Clicking a finance node goes to where that step is actually DONE, rather
+  // than only telling you where the campaign stands. The PO is recorded on the
+  // campaign, so it opens the Financials tab where the button lives; the rest
+  // happen in Billing, so they open the tab in Billing that owns the document.
+  const goFinNode=id=>{
+    if(id==="po_raised"&&plIdx(camp.stage)<plIdx("po_raised")) return setTab("financials");
+    if(id==="po_raised") return navigate("/billing?tab=purchase_orders");
+    return navigate("/billing?tab=income");
+  };
+  const stCol=viewCol(camp,role),pl=viewPl(camp,role);
   const es=endStatus(camp.end,camp.stage);
-  // The EA works the campaign, not its audit trail — their three-node pipeline
+  // The EA works the campaign, not its audit trail — their execution rail
   // already says where it stands, and the timeline is mostly commercial events
   // (PO raised, advance confirmed) that sit outside their view entirely.
   const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},...(role==="ea"?[]:[{id:"timeline",label:"Timeline"}]),...(canFin(role)||canCrFin(role)?[{id:"financials",label:"Financials"}]:[])];
@@ -2585,14 +2934,16 @@ function Detail({camp,role,currentUser,onAction,onSaveBrief,onSaveCampaign,onUpd
           <AnimatePresence>
             {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
             {extending&&<ExtendEndModal camp={camp} onConfirm={(end,reason)=>{setExtending(false);onAction("extend_end_date",{end,reason});}} onCancel={()=>setExtending(false)}/>}
-            {showExec&&<ExecutionModal camp={camp} onClose={()=>setShowExec(false)}/>}
+            {sheet==="execution"&&<ExecutionModal camp={camp} onClose={()=>setSheet(null)}/>}
+            {sheet==="creator_payment"&&<CreatorPaymentModal camp={camp} role={role} expenseById={expenseById} onClose={()=>setSheet(null)}/>}
             {raisingPO&&<ClientPOModal camp={camp} invoiceAmount={camp.budget||0}
               onConfirm={po=>{setRaisingPO(false);onAction("raise_po",po);}} onCancel={()=>setRaisingPO(false)}/>}
           </AnimatePresence>
           <WorkflowActions camp={camp} role={role} onAction={handleAction}/>
           {/* Scrolls inside its own lane so it never widens the card */}
-          <div style={{overflowX:"auto",margin:"0 -22px",padding:"0 22px"}}>
-            <FullPipe camp={camp} role={role} onExecClick={()=>setShowExec(true)}/>
+          <div style={{margin:"0 -22px",padding:"0 22px"}}>
+            <TrackPipeline camp={camp} role={role} expenseById={expenseById}
+              onOpen={setSheet} onFinNode={goFinNode} onGoTeam={()=>setTab("team")}/>
           </div>
         </div>
         {/* Tab strip — sliding indicator shared across tab switches AND campaign switches */}
@@ -2610,7 +2961,7 @@ function Detail({camp,role,currentUser,onAction,onSaveBrief,onSaveCampaign,onUpd
       <div style={{...card,padding:"22px 24px"}}>
         <AnimatePresence mode="wait" initial={false}>
           <motion.div key={tab} initial={{opacity:0,y:5}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-3}} transition={{duration:0.16,ease:"easeOut"}}>
-            {tab==="brief"        &&<TabBrief        camp={camp} role={role} currentUser={currentUser} onAction={onAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign}/>}
+            {tab==="brief"        &&<TabBrief        camp={camp} role={role} currentUser={currentUser} onAction={onAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign} onGoTab={setTab}/>}
             {tab==="team"         &&<TabTeam         camp={camp} role={role} onAction={onAction}/>}
             {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
             {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
@@ -2785,6 +3136,15 @@ export default function InternalCampaigns(){
       .catch(err=>{ if(!cancelled){ setLoadError(err.message); setLoading(false); } });
     return ()=>{ cancelled=true; };
   },[]);
+  // Creator expenses, keyed by their derived id. The execution track's payment
+  // node reads them: an expense flips to `paid` in Billing, and that is what
+  // "Payment Done" means for a creator — so the campaign has to see the same
+  // rows Accounts settles rather than storing a second answer of its own.
+  // Silent on failure: it only softens the payment donut to "not paid yet",
+  // and a billing hiccup must not stop a campaign from loading.
+  const [expenses,setExpenses]=useState([]);
+  useEffect(()=>{ ExpensesAPI.list().then(setExpenses).catch(()=>{}); },[]);
+  const expenseById=useMemo(()=>Object.fromEntries((expenses||[]).map(e=>[e.id,e])),[expenses]);
   // Live team directory from the users collection — silent fallback to the
   // hardcoded TEAM if the API is unreachable. The state bump re-renders so
   // getM()/Team-tab dropdowns pick up the fetched names.
@@ -2812,36 +3172,52 @@ export default function InternalCampaigns(){
       if(c.id!==selectedId)return c;
       const addEv=(ev,actor)=>[...(c.timeline||[]),{date:today(),event:ev,actor:actor||"Ops"}];
       let next=c;
-      // Staffing a slot is also the Draft gate: the moment all three are
-      // filled the campaign moves itself to Brief Log. Guarded on stage so
-      // reassigning someone later can never rewind a live campaign, and the
-      // check runs against the POST-assignment campaign, not `c`.
+      // Staffing a slot is also the gate into execution: with a locked brief
+      // already behind it, the moment all three slots are filled the campaign
+      // moves itself to Team Assigned. Guarded on stage so reassigning someone
+      // later can never rewind a live campaign, and the check runs against the
+      // POST-assignment campaign, not `c`.
       const assign=(campKey,id,label)=>{
         const after={...c,[campKey]:id};
-        const starts=normStage(c.stage)==="draft"&&teamComplete(after);
-        return {...after,...(starts?{stage:"brief_log"}:{}),
-          timeline:addEv(`${label} assigned: ${getM(id)?.name||id}${starts?" — team complete, brief started":""}`)};
+        const opens=normStage(c.stage)==="brief_locked"&&teamComplete(after);
+        return {...after,...(opens?{stage:"team_assigned"}:{}),
+          timeline:addEv(`${label} assigned: ${getM(id)?.name||id}${opens?" — team complete, execution open":""}`)};
       };
       switch(action){
         case "assign_am": next=assign("amId",data.amId,"AM");break;
         case "assign_cm": next=assign("cmId",data.cmId,"CM");break;
         case "assign_ea": next=assign("eaId",data.eaId,"EA");break;
-        case "brief_start": next=teamComplete(c)?{...c,stage:"brief_log",timeline:addEv("Team complete — brief started")}:(blocked="All three team slots must be filled first",c);break;
-        // The two gated transitions re-check their condition here as well as in
-        // the UI. The reducer is the only write path, so guarding it means a
-        // stale render (or a second tab) can't push a campaign through a gate
-        // that has stopped being satisfied.
-        case "brief_complete": next=briefGaps(c).length?(blocked=`Brief incomplete — ${briefGaps(c).join(", ")} still needed`,c):{...c,stage:"po",briefStatus:"signed_off",timeline:addEv("Brief signed off — moved to PO",currentUser.name||role)};break;
+        // Every gated transition re-checks its condition HERE as well as in the
+        // UI. The reducer is the only write path, so guarding it means a stale
+        // render (or a second tab) can't push a campaign through a gate that
+        // has stopped being satisfied.
+        //
+        // Locking the brief lands on Team Assigned directly when the team is
+        // already staffed. That case is normal, not exotic: the wizard stamps
+        // the creator into their own slot, so a campaign raised by an AM only
+        // needs a CM and an EA, and both may well be picked before anyone
+        // writes the brief. Stopping at Brief Locked with nothing left to
+        // assign would strand it on a node it had already satisfied.
+        case "lock_brief": {
+          const gaps=briefGaps(c);
+          if(gaps.length){ blocked=`Brief incomplete — ${gaps.join(", ")} still needed`; next=c; break; }
+          const staffed=teamComplete(c);
+          next={...c,stage:staffed?"team_assigned":"brief_locked",briefStatus:"signed_off",
+            timeline:addEv(`Brief locked${staffed?" — team already assigned, execution open":" — assign the team to open execution"}`,currentUser.name||role)};
+          break;
+        }
         // Deliberately does NOT copy the PO onto the campaign. client_pos is
         // the record and the timeline is the audit trail; a third copy here
         // would go stale the moment Accounts corrects the number in Billing.
         case "raise_po": next=rosterGap(c)?(blocked=`Roster not confirmed — ${rosterGap(c)}`,c)
-          :data.poNumber?{...c,stage:"advance",
+          :data.poNumber?{...c,stage:"po_raised",
           timeline:addEv(`Client PO ${data.poNumber} recorded — ${fmtINR(data.amount)}, awaiting advance`,currentUser.name||"Accounts")}:(blocked="A client PO number is required",c);break;
-        case "advance_received": next={...c,stage:"execution",advanceReceivedOn:today(),
-          timeline:addEv("Advance received — execution started",currentUser.name||"Accounts")};break;
-        case "start_reporting": next=execDone(c)?{...c,stage:"reporting",timeline:addEv("All locked creators live — reporting started")}:(blocked="Every locked creator must be live before reporting starts",c);break;
-        case "mark_completed": next={...c,stage:"completed",timeline:addEv("Campaign marked complete")};break;
+        case "advance_received": next={...c,stage:"advance_received",advanceReceivedOn:today(),
+          timeline:addEv("Advance received from the client",currentUser.name||"Accounts")};break;
+        case "raise_invoice": next={...c,stage:"invoice_raised",invoiceRaisedOn:today(),
+          timeline:addEv("Client invoice issued — NET 30",currentUser.name||"Accounts")};break;
+        case "payment_done": next={...c,stage:"payment_done",paidOn:today(),
+          timeline:addEv("Client payment received in full",currentUser.name||"Accounts")};break;
         // Schedule change only — the stage is deliberately untouched, so
         // extending a campaign that ran long doesn't rewind its pipeline.
         case "extend_end_date": next={...c,end:data.end,timeline:addEv(
@@ -2864,8 +3240,8 @@ export default function InternalCampaigns(){
         // PO left no quote and no invoice, the stage moved anyway, and nobody
         // found out until the books were reconciled. `warn` says so instead.
         const warn=what=>()=>showToast(`${what} — campaign moved, but the record wasn't created. Retry from Billing.`);
-        // Sign-off is the moment the commercials stop being a draft: the budget
-        // and the creator split are agreed and the brief locks. That is what a
+        // The lock is the moment the commercials stop being a draft: the budget
+        // and the creator split are agreed and the brief freezes. That is what a
         // quote is, so it is raised here — with the campaign's real numbers,
         // not the invented percentages the old auto-quote carried.
         //
@@ -2875,10 +3251,10 @@ export default function InternalCampaigns(){
         // `updatedCamp`, not `next` — `next` is scoped to the setCampaigns
         // updater above, so reading it here threw a ReferenceError before the
         // create could fire. The stage had already been PATCHed on the line
-        // above, so sign-off moved the campaign to PO and silently raised no
-        // quote at all. Caught by walking the UI; an API-level test can't see
-        // it, because the test makes the POST itself.
-        if(action==="brief_complete"&&normStage(updatedCamp.stage)==="po"){
+        // above, so the lock moved the campaign on and silently raised no quote
+        // at all. Caught by walking the UI; an API-level test can't see it,
+        // because the test makes the POST itself.
+        if(action==="lock_brief"&&briefLocked(updatedCamp)){
           const budget=updatedCamp.budget||0, pool=creatorBudgetOf(updatedCamp);
           if(budget>0) QuotesAPI.create({
             id:`QT-${id}`, campaignId:id, client:updatedCamp.client||"",
@@ -2888,7 +3264,7 @@ export default function InternalCampaigns(){
             marginPct: Math.round(((budget-pool)/budget)*1000)/10,
             agencyFeePct:0, agencyFeeType:"baked_in", isRetainerClient:false,
             lines:[{desc:`Influencer Marketing — ${updatedCamp.name}`,sac:"998361",qty:1,rate:budget,gstRate:18}],
-            notes:"Raised on brief sign-off. Review and send before recording the client's PO.",
+            notes:"Raised when the brief was locked. Review and send before recording the client's PO.",
           }).catch(warn("Quote not raised"));
         }
         if(action==="raise_po"&&data.poNumber){
@@ -2925,17 +3301,38 @@ export default function InternalCampaigns(){
             });
           }).catch(warn("Invoice not raised"));
         }
-        if(action==="advance_received"){
+        // The last three finance steps all land on the SAME invoice — the one
+        // the client PO authorised — so they share one read-modify-write.
+        // Read-modify-write rather than a blind overwrite because the schedule
+        // may have been edited in Billing since the invoice was created, and
+        // an overwrite would silently undo that.
+        const INVOICE_PATCH={
           // Settle the advance leg only. The invoice stays `pending` until the
           // final leg lands, so Outstanding keeps reporting what's still owed.
-          // Read-modify-write rather than a blind overwrite: the schedule may
-          // have been edited in Billing since the invoice was created.
+          advance_received: inv => inv.schedule?.advance
+            ? {schedule:{...inv.schedule,advance:{...inv.schedule.advance,status:"paid",paidDate:today()}}}
+            : null,
+          // Issuing the invoice restarts the receivables clock. The document
+          // has existed since the PO (that's what authorised the billing), but
+          // NET 30 runs from the day it actually goes to the client — dating it
+          // from the PO is what made invoices read overdue before anyone had
+          // asked to be paid.
+          raise_invoice: () => ({raisedDate:today(), dueDate:addDays(today(),30)}),
+          // Paid in full: the invoice closes and any outstanding leg closes
+          // with it, so Collected and Outstanding agree with the stage.
+          payment_done: inv => ({
+            status:"paid", paidDate:today(),
+            ...(inv.schedule?.final?{schedule:{...inv.schedule,final:{...inv.schedule.final,status:"paid",paidDate:today()}}}:{}),
+          }),
+        };
+        if(INVOICE_PATCH[action]){
+          const label={advance_received:"Advance not settled",raise_invoice:"Invoice not issued",payment_done:"Payment not recorded"}[action];
           InvoicesAPI.list().then(list=>{
             const inv=list.find(i=>i.campaign===id&&i.type==="campaign");
-            if(!inv?.schedule?.advance) return;
-            InvoicesAPI.update(inv.id,{schedule:{...inv.schedule,
-              advance:{...inv.schedule.advance,status:"paid",paidDate:today()}}}).catch(warn("Advance not settled"));
-          }).catch(warn("Advance not settled"));
+            if(!inv) return;
+            const patch=INVOICE_PATCH[action](inv);
+            if(patch) return InvoicesAPI.update(inv.id,patch).catch(warn(label));
+          }).catch(warn(label));
         }
       }
     },0);
@@ -2996,6 +3393,9 @@ export default function InternalCampaigns(){
     setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,...patch}));
     CampaignsAPI.update(selectedId,patch).catch(()=>showToast("Save failed — check connection"));
     if(camp)syncCreatorExpenses(camp,camp.creators,next,()=>showToast("Creator cost saved, but Billing wasn't updated — check connection"));
+    // Re-read the expenses the sync just wrote, so the Creator Payment donut
+    // moves with the roster instead of waiting for a page reload.
+    if(camp)ExpensesAPI.list().then(setExpenses).catch(()=>{});
     if(sending){
       showToast(`Roster complete — creator list sent to ${camp.client||"client"}`);
       onLogTimeline(`Roster confirmed — ${next.filter(isLockedCreator).length} creators locked, creator list sent to client`);
@@ -3066,7 +3466,7 @@ export default function InternalCampaigns(){
     // and raise_po side effects in onAction.
     setCampaigns(p=>[c,...p]);setSelId(c.id);setCreate(false);showToast("Campaign created");
   },[showToast,role,currentUser,brandName]);
-  const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(brandFilter&&c.brandId!==brandFilter)return false;if(stageFilter==="ended"){if(endStatus(c.end,c.stage)?.key!=="ended")return false;}else if(stageFilter!=="all"){if(!STAGE_GROUPS[stageFilter]?.includes(normStage(c.stage)))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search,brandFilter]);
+  const visible=useMemo(()=>campaigns.filter(c=>{if(!canSee(c,role,currentUser.teamId))return false;if(brandFilter&&c.brandId!==brandFilter)return false;if(stageFilter==="ended"){if(endStatus(c.end,c.stage)?.key!=="ended")return false;}else if(stageFilter!=="all"){if(!STAGE_MATCH[stageFilter]?.(c))return false;}if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}return true;}),[campaigns,role,currentUser.teamId,stageFilter,search,brandFilter]);
   // Selection must respect the active filters — resolve against `visible`, not
   // `campaigns`, or the detail panel (and its Creators tab) keeps showing a
   // campaign from another brand after the brand filter changes.
@@ -3085,7 +3485,7 @@ export default function InternalCampaigns(){
   const goNext=useCallback(()=>{if(selIndex>=0&&selIndex<visible.length-1)setSelId(visible[selIndex+1].id);},[selIndex,visible]);
   // Stages that are blocked on a person rather than on work in progress —
   // Draft is waiting on staffing, Brief Log on sign-off, PO on Accounts.
-  const needsAttn=visible.filter(c=>["draft","brief_log","po"].includes(normStage(c.stage))).length;
+  const needsAttn=visible.filter(c=>["draft","brief_locked","team_assigned"].includes(normStage(c.stage))).length;
   // Ended count deliberately ignores `stageFilter` (but respects role/brand
   // visibility) so the Ended tab badge reads the same from every other tab.
   const endedCount=useMemo(()=>campaigns.filter(c=>
@@ -3104,7 +3504,7 @@ export default function InternalCampaigns(){
     {toast&&<div style={{position:"fixed",bottom:24,right:24,zIndex:9999,padding:"11px 18px",background:"rgba(29,29,31,0.92)",backdropFilter:"blur(16px)",borderRadius:12,fontSize:12,color:"#FFFFFF",fontFamily:SF,boxShadow:"0 8px 32px rgba(0,0,0,0.24)",letterSpacing:"-0.01em"}}>{toast}</div>}
     <AnimatePresence mode="wait">
       {selected ? (
-        <Detail key={selected.id} camp={selected} role={role} currentUser={currentUser} onAction={requestAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign}
+        <Detail key={selected.id} camp={selected} role={role} currentUser={currentUser} expenseById={expenseById} onAction={requestAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign}
           onUpdateCreators={onUpdateCreators} onDelete={onDeleteCampaign} onLogTimeline={onLogTimeline}
           onBack={()=>setSelId(null)} onPrev={goPrev} onNext={goNext} hasPrev={hasPrev} hasNext={hasNext}/>
       ) : (
@@ -3122,7 +3522,7 @@ export default function InternalCampaigns(){
             </div>
             {/* Stats row */}
             <div style={{display:"flex",gap:0,marginBottom:14,background:"rgba(0,0,0,0.03)",borderRadius:10,padding:"2px",border:"1px solid rgba(0,0,0,0.06)"}}>
-              {[{l:"All",v:visible.length},{l:"Active",v:visible.filter(c=>!["completed","draft"].includes(normStage(c.stage))).length},{l:"In Exec",v:visible.filter(c=>normStage(c.stage)==="execution").length},{l:"Attention",v:needsAttn}].map((s,i)=>(
+              {[{l:"All",v:visible.length},{l:"Active",v:visible.filter(c=>!["payment_done","draft"].includes(normStage(c.stage))).length},{l:"In Exec",v:visible.filter(c=>executionStageOf(c)==="execution").length},{l:"Attention",v:needsAttn}].map((s,i)=>(
                 <div key={s.l} style={{flex:1,padding:"8px 12px",textAlign:"center",borderRight:i<3?"1px solid rgba(0,0,0,0.06)":"none"}}>
                   <div style={{fontSize:18,fontWeight:700,color:s.l==="Attention"&&needsAttn>0?T.amber:"#1D1D1F",letterSpacing:"-0.03em",lineHeight:1,fontFamily:SF}}>{s.v}</div>
                   <div style={{fontSize:9.5,color:"#86868B",marginTop:2,fontFamily:SF}}>{s.l}</div>

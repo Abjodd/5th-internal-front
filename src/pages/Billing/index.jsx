@@ -3,7 +3,7 @@
  * No IIFEs in JSX · All null guards · Clean component structure
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { useOutletContext } from "react-router-dom";
+import { useOutletContext, useSearchParams } from "react-router-dom";
 // RegistryAPI is gone: the registry is derived from campaigns + expenses now
 // (see buildRegistry) rather than read from a collection nothing ever wrote to.
 import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, CampaignsAPI } from "../../lib/api";
@@ -680,12 +680,18 @@ function TabDashboard({ role, invoices, expenses, setTab, anomalies, pos, campsR
   const posPending      = (pos || []).filter(p => p.status === "pending_approval").length;
   const outstanding     = Math.max(0, billed - paid);
   const criticalAnoms   = anomalies.filter(a => ["critical","high"].includes(a.severity));
-  // Campaigns whose advance the pipeline is still waiting on. Derived from the
+  // Campaigns the finance track is waiting on somebody for. Derived from the
   // campaign's own stage — the previous version kept an `advMap` in
   // localStorage and told the founder it "unlocked the campaign stage", which
   // it did not: it was browser-local, invisible to Accounts, and the real gate
   // was a separate button in Campaigns all along.
-  const advancePending  = campsRef.filter(c => c.stage === "advance");
+  //
+  // Two stages, not one. The old widget only watched `advance`; since the
+  // pipeline forked there is a second place a campaign parks waiting on the
+  // client — invoice issued, money not in — and that is the one that ages into
+  // a receivable, so leaving it out was the more expensive omission.
+  const MONEY_WAIT = { po_raised:"advance not received", invoice_raised:"payment not received" };
+  const moneyPending = campsRef.filter(c => MONEY_WAIT[normStage(c.stage)]);
 
   return (
     <div style={{ padding:"20px 24px", overflowY:"auto", height:"100%" }}>
@@ -758,19 +764,19 @@ function TabDashboard({ role, invoices, expenses, setTab, anomalies, pos, campsR
         </div>
       </div>
 
-      {advancePending.length > 0 && (
+      {moneyPending.length > 0 && (
         <div style={{ background:`${T.amber}08`, border:`1px solid ${T.amber}25`, borderRadius:7, padding:"14px" }}>
-          <Lbl color={T.amber} style={{ display:"block", marginBottom:4 }}>Awaiting Advance</Lbl>
+          <Lbl color={T.amber} style={{ display:"block", marginBottom:4 }}>Awaiting Client Money</Lbl>
           <div style={{ fontSize:10, color:T.sub, marginBottom:8 }}>
-            These campaigns are held at the Advance stage. Confirming receipt is done on the campaign — it's the same action that releases it into execution.
+            These campaigns are parked on the finance track waiting for the client. Confirming receipt is done on the campaign — that's the action that moves the stage and settles the invoice leg.
           </div>
-          {advancePending.map(c => (
+          {moneyPending.map(c => (
             <div key={c.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:`1px solid ${T.border}` }}>
               <div style={{ flex:1 }}>
                 <div style={{ fontSize:11.5, fontWeight:500, color:T.text }}>{c.name}</div>
                 <div style={{ fontSize:9.5, color:T.sub }}>{c.client} · Budget: {fmtINR(c.budget)}</div>
               </div>
-              <span style={{ fontSize:10, color:T.amber, fontStyle:"italic" }}>advance not received</span>
+              <span style={{ fontSize:10, color:T.amber, fontStyle:"italic" }}>{MONEY_WAIT[normStage(c.stage)]}</span>
             </div>
           ))}
         </div>
@@ -1634,7 +1640,13 @@ export default function InternalBilling() {
   const propRole = currentUser.role;
   const billingRole = propRole === "accounts_head" || propRole === "accounts_exec" ? "accounts" : propRole;
   const [role] = useState(billingRole);
-  const [tab,       setTab]       = useState("dashboard");
+  // `?tab=` so another screen can link straight at the document it's talking
+  // about — the campaign pipeline's finance nodes send you here, and landing
+  // on the Dashboard and hunting for the invoice is not navigation. Read once
+  // as the initial value: the tab strip owns it from then on, so clicking
+  // around doesn't fight a URL that never changes.
+  const [params] = useSearchParams();
+  const [tab,       setTab]       = useState(() => params.get("tab") || "dashboard");
   const [invoices,  setInvoicesRaw]  = useState([]);
   const [expenses,  setExpensesRaw]  = useState([]);
   const [quotes,    setQuotesRaw]    = useState([]);
@@ -1818,6 +1830,16 @@ export default function InternalBilling() {
     { id:"registry",        lbl:"Registry",      badge:null,                                          show: can(role, "seeRegistry") },
     ...(can(role, "seeCampaignPL") ? [{ id:"campaign_pl", lbl:"Campaign P&L", badge:null, show: true }] : []),
   ].filter(t => t.show);
+
+  // The tab strip is the only permission gate on these panels, so a `?tab=`
+  // naming one this role can't see has to fall back rather than render it with
+  // nothing highlighted. Keyed on the id list, not the array, so this doesn't
+  // re-fire on every render just because TABS is rebuilt each time.
+  const tabIds = TABS.map(t => t.id).join(",");
+  useEffect(() => {
+    const ids = tabIds ? tabIds.split(",") : [];
+    if (ids.length && !ids.includes(tab)) setTab(ids[0]);
+  }, [tabIds, tab]);
 
   if (loading) return (
     <div style={{ height:"100%", display:"flex", alignItems:"center", justifyContent:"center", background:"#F5F5F7", fontFamily:SF, fontSize:13, color:"#6E6E73" }}>

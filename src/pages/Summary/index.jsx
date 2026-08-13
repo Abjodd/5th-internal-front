@@ -79,6 +79,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useOutletContext } from "react-router-dom";
 import { motion, useReducedMotion, animate, useScroll, useTransform } from "motion/react";
 import {
   CampaignsAPI, ClientsAPI, InvoicesAPI, UsersAPI, CreatorsAPI,
@@ -1707,10 +1708,10 @@ function Footer() {
 
 export default function FounderSummary() {
   const [data, setData] = useState(EMPTY);
+  // The shell's brand filter is now on every route, so this page has to answer
+  // to it rather than quietly ignore a control the reader can see.
+  const { brandFilter } = useOutletContext() || {};
 
-  // The Summary is an agency-wide report — it deliberately does not take the
-  // shell's brand filter (which is hidden on this route for the same reason):
-  // "the state of the agency" scoped to one brand is a different document.
   useEffect(() => {
     let live = true;
 
@@ -1731,16 +1732,30 @@ export default function FounderSummary() {
       safe(CreatorRequestsAPI.list()),
     ]).then(([campaigns, clients, invoices, users, creators, quotes, clientRequests, creatorRequests]) => {
       if (!live) return;
+      // Only the three collections that actually carry a brand are scoped, plus
+      // the client the brand IS. Team, the creator directory and the inbound
+      // request inboxes are agency-wide by nature — a creator belongs to the
+      // roster, not to a brand, and filtering them would report "0 creators"
+      // for a brand that simply hasn't booked anyone yet, which is a different
+      // and false claim. They stay whole, and the sections that read them stay
+      // agency-wide on purpose.
+      const forBrand = (rows) => brandFilter ? rows.filter(r => r?.brandId === brandFilter) : rows;
       setData(
         buildSummary(
-          { campaigns, clients, invoices, users, creators, quotes, clientRequests, creatorRequests },
+          {
+            campaigns: forBrand(campaigns),
+            clients:   brandFilter ? clients.filter(c => (c.id || c._id) === brandFilter) : clients,
+            invoices:  forBrand(invoices),
+            quotes:    forBrand(quotes),
+            users, creators, clientRequests, creatorRequests,
+          },
           F,
         ),
       );
     });
 
     return () => { live = false; };
-  }, []);
+  }, [brandFilter]);
 
   const asOfLabel = useMemo(() => {
     if (data.asOf) return data.asOf;

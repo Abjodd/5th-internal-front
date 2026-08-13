@@ -14,11 +14,29 @@ const RULES = {
   upi:     { re: /^[\w.\-]{2,}@[a-zA-Z]{2,}$/,   msg: "UPI ID must look like name@bank" },
 };
 
+// ── PHONE ────────────────────────────────────────────────────────────────────
+// Every number we collect is an Indian mobile, so the country code is fixed
+// rather than typed: PhoneInput renders "+91" as a locked prefix and the field
+// holds the ten digits. These two helpers are what keep the stored shape and
+// the displayed shape from drifting.
+//
+// The ten SUBSCRIBER digits of whatever was pasted, typed or already stored.
+// Slicing the first ten off the raw digits (which is what this used to do) ate
+// the country code instead of the number: "+919876543210" became "9198765432".
+// So a 91/0 prefix is stripped first, and the LAST ten digits win.
+export const phoneDigits = (v) => {
+  const d = String(v || "").replace(/\D/g, "");
+  const bare = d.length > 10 ? d.replace(/^(?:0*91|0)/, "") : d;
+  return bare.slice(-10);
+};
+// The canonical stored form. Empty stays empty — a blank phone is not "+91".
+export const toPhone = (v) => { const d = phoneDigits(v); return d ? `+91${d}` : ""; };
+
 // Input shaping for real-time typing: strips characters the field can never
 // contain and caps length, so e.g. an 11th digit in a phone field is simply
 // not accepted. Pair with validateField for the remaining format checks.
 const SANITIZE = {
-  phone:   v => v.replace(/\D/g, "").slice(0, 10),
+  phone:   v => phoneDigits(v),
   account: v => v.replace(/\D/g, "").slice(0, 18),
   pan:     v => v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10),
   ifsc:    v => v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 11),

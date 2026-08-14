@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { T } from "../theme/tokens";
 import { prettyDate, ISO_DATE } from "../lib/format";
+import { zoomOf } from "../lib/zoom";
 
 // Compact custom date picker — replaces native <input type="date">, whose
 // OS-rendered popup ignores the app theme. Value in/out is "YYYY-MM-DD".
@@ -27,11 +28,17 @@ export default function DateInput({ value, onChange, min, max, placeholder = "Se
   const POP_W = 232, POP_H = 302;
   const toggle = () => {
     if (!open && rootRef.current) {
+      // getBoundingClientRect()/innerWidth/innerHeight report visual (post-
+      // zoom) pixels under the app's `html { zoom }`, while a position:fixed
+      // element's own top/left are layout pixels the browser multiplies by
+      // zoom again on paint — see lib/zoom.js. Dividing back out keeps the
+      // popover anchored under the trigger instead of drifting away from it.
+      const z = zoomOf(rootRef.current);
       const r = rootRef.current.getBoundingClientRect();
-      const up = r.bottom + POP_H + 8 > window.innerHeight;
+      const up = r.bottom / z + POP_H + 8 > window.innerHeight / z;
       setPos({
-        top: up ? Math.max(8, r.top - POP_H - 6) : r.bottom + 6,
-        left: Math.min(r.left, window.innerWidth - POP_W - 8),
+        top: up ? Math.max(8, r.top / z - POP_H - 6) : r.bottom / z + 6,
+        left: Math.min(r.left / z, window.innerWidth / z - POP_W - 8),
       });
       setView(sel || today);
     }

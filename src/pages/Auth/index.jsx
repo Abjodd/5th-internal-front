@@ -18,6 +18,7 @@ import { UsersAPI, BrandCredentialsAPI, ClientsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { PLATFORM_ROLES } from "../../routes/sections";
 import { T } from "../../theme/tokens";
+import BrandPicker from "../../components/BrandPicker";
 
 // ── STYLE HELPERS ────────────────────────────────────────────────────────────
 const thS = {
@@ -144,25 +145,11 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
   const [saving, setSaving] = useState(false);
   const u = (k, v) => { setForm(p => ({ ...p, [k]: v })); setErr(""); };
 
-  // New-brand staging — same pattern as the campaign creation modal: nothing
-  // is written to the backend until the credential is actually submitted, so
-  // abandoning this modal never leaves an orphan brand.
-  const [newBrandName, setNewBrandName] = useState("");
+  // New-brand staging — nothing is written to the backend until the
+  // credential is actually submitted, so abandoning this modal never leaves
+  // an orphan brand. BrandPicker owns the search/create UI; this is just the
+  // committed value, same shape as the campaign creation modal.
   const [pendingBrandName, setPendingBrandName] = useState(null);
-  const handleStageBrand = () => {
-    const name = newBrandName.trim();
-    if (!name) return;
-    setErr("");
-    const existing = brands.find(b => b.name.toLowerCase() === name.toLowerCase());
-    if (existing) {
-      u("brandId", existing.id);
-      setPendingBrandName(null);
-    } else {
-      setPendingBrandName(name);
-      u("brandId", "__new__");
-    }
-    setNewBrandName("");
-  };
 
   const submit = async () => {
     if (!form.username.trim()) return setErr("Username (email) is required.");
@@ -226,14 +213,10 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
           ) : (
             <div style={{ marginBottom: 12 }}>
               <Lbl>Brand</Lbl>
-              <select value={form.brandId} onChange={e => { u("brandId", e.target.value); if (e.target.value !== "__new__") setPendingBrandName(null); }} style={{ ...INP, cursor: "pointer" }}>
-                <option value="">— Select brand —</option>
-                {brands.slice().sort((a, b) => a.name.localeCompare(b.name)).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-                {pendingBrandName && <option value="__new__">{pendingBrandName} (new)</option>}
-              </select>
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <input value={newBrandName} onChange={e => setNewBrandName(e.target.value)} placeholder="+ Add new brand…" style={{ ...INP, flex: 1 }} />
-                <Btn onClick={handleStageBrand} disabled={!newBrandName.trim()}>Add</Btn>
+              <div style={{ marginTop: 5 }}>
+                <BrandPicker brands={brands} value={form.brandId} pendingName={pendingBrandName}
+                  onSelect={id => { u("brandId", id); setPendingBrandName(null); }}
+                  onCreate={name => { setPendingBrandName(name); u("brandId", "__new__"); }} />
               </div>
               {pendingBrandName && form.brandId === "__new__" && (
                 <div style={{ fontSize: 9.5, color: T.amber, marginTop: 6 }}>"{pendingBrandName}" will be created when you save this credential.</div>

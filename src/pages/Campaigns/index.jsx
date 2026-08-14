@@ -29,6 +29,8 @@ import { creatorBudgetOf, numReqOf, perCreatorOf, costOf, normCreator, creatorEx
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
 import PhoneInput from "../../components/PhoneInput";
+import BrandPicker from "../../components/BrandPicker";
+import { zoomOf } from "../../lib/zoom";
 import CreatorHandle from "../../components/CreatorHandle";
 import Donut from "../../components/Donut";
 
@@ -549,13 +551,8 @@ const addDays = (iso, n) => {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 };
 const daysBetween = (a,b) => Math.round((new Date(`${b}T00:00:00`)-new Date(`${a}T00:00:00`))/86400000);
-// Small inline pill matching the stage-chip styling, used for the end-date nudge.
-// Uses a color dot instead of "!" — reads as a status, not an alarm.
-const EndPill = ({ es, style = {} }) => es ? (
-  <span style={{ display:"inline-flex", alignItems:"center", gap:5, padding:"3px 10px", borderRadius:20, background:`${es.tone}18`, border:`1px solid ${es.tone}45`, fontSize:10.5, fontWeight:700, color:es.tone, fontFamily:SF, whiteSpace:"nowrap", ...style }}>
-    <Dot color={es.tone} size={5}/>{es.text}
-  </span>
-) : null;
+// The end-date nudge, in the same chip as every other status (see Pill).
+const EndPill = ({ es, style = {} }) => es ? <Pill tone={es.tone} dot style={style}>{es.text}</Pill> : null;
 // A creator only reaches Deliverables once they're locked — everything before
 // that is shortlisting, and an asset status on an unconfirmed creator is noise.
 const isLocked = isLockedCreator;
@@ -618,9 +615,65 @@ const demoReceived = s => ["received", "rework", "approved", "pending_brand", "l
 const SF = "'SF Pro Display','-apple-system','BlinkMacSystemFont','Helvetica Neue',sans-serif";
 
 // ── ATOMS ────────────────────────────────────────────────────────────────────
-const Av=({init,size=22})=><div style={{width:size,height:size,borderRadius:Math.max(4,size*0.28),flexShrink:0,background:`${T.accent}18`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:Math.max(7,size*0.38),fontWeight:600,color:T.accent,fontFamily:SF}}>{init}</div>;
+const Av=({init,size=22,muted})=><div style={{width:size,height:size,borderRadius:Math.max(4,size*0.28),flexShrink:0,background:muted?"rgba(0,0,0,0.055)":`${T.accent}18`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:Math.max(8,size*0.4),fontWeight:600,color:muted?"#86868B":T.accent,fontFamily:SF}}>{init}</div>;
 const Dot=({color=T.sub,size=6})=><span style={{width:size,height:size,borderRadius:"50%",background:color,display:"inline-block",flexShrink:0,boxShadow:`0 0 0 2px ${color}22`}}/>;
+// One tinted status chip, everywhere. The card's stage chip, the detail
+// header's and the end-date nudge each carried their own copy of this markup
+// and had already drifted apart — 10px vs 10.5px, weight 500 vs 700, tint 14
+// vs 18 — so the same campaign read as a slightly different kind of thing
+// depending on which screen you were looking at.
+const Pill=({tone,dot,children,style={}})=>(
+  <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"3px 10px",borderRadius:20,background:`${tone}14`,border:`1px solid ${tone}30`,fontSize:10.5,fontWeight:600,color:tone,fontFamily:SF,whiteSpace:"nowrap",...style}}>
+    {dot&&<Dot color={tone} size={5}/>}{children}
+  </span>
+);
+// Toggle chip. Deliverables, niches, the creator-budget presets and the
+// end-date presets each carried their own copy of this button — same accent
+// fill, same border trick, four different paddings — so a change to how
+// "selected" looks had to be made four times.
+const Chip=({on,onClick,title,children,style={}})=>(
+  <button onClick={onClick} title={title} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,
+    background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`,...style}}>{children}</button>
+);
+// Overlapping team stack. Only the AM is accented — the slot that owns the
+// campaign — so the colour means something rather than being three different
+// tints you have to decode. Full names sit in the tooltip.
+const AvStack=({people})=>(
+  <div style={{display:"flex",alignItems:"center"}}>
+    {people.map(({m,l},i)=>(
+      <div key={l} title={`${l} · ${m.name}`} style={{marginLeft:i?-5:0,zIndex:people.length-i,borderRadius:6,boxShadow:"0 0 0 1.5px #FFFFFF"}}>
+        <Av init={m.avatar} size={19} muted={l!=="AM"}/>
+      </div>
+    ))}
+  </div>
+);
 const Lbl=({children,color,style={}})=><span style={{fontSize:9.5,fontWeight:600,color:color||"#6E6E73",textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:SF,...style}}>{children}</span>;
+// Caps label over a value. The card's delivery strip and the detail header's
+// meta row are the same object at two sizes — `small` is the card's.
+// `children` sits after the value for the one stat that carries a chip.
+const Stat=({label,value,small,children})=>(
+  <div style={{minWidth:0}}>
+    <Lbl style={small?{fontSize:8.5}:{}}>{label}</Lbl>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginTop:small?2:3,fontSize:small?12:13,fontWeight:600,color:"#1D1D1F",fontFamily:SF,letterSpacing:"-0.02em",fontVariantNumeric:"tabular-nums",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+      {value}{children}
+    </div>
+  </div>
+);
+// Label over a control, with an optional hint beneath. The create wizard had a
+// dozen hand-written copies of this — a Lbl forced to display:block with a 5px
+// gap — each with its own spacing, so the form's rhythm drifted screen to
+// screen. Required is the default: only what can be skipped says so, which is
+// the shorter thing to read and the one worth pointing at.
+const Field=({label,hint,optional,children,style={}})=>(
+  <div style={{marginBottom:14,...style}}>
+    <Lbl style={{display:"block",marginBottom:5}}>
+      {label}
+      {optional&&<span style={{marginLeft:6,fontSize:9,fontWeight:500,letterSpacing:0,textTransform:"none",color:T.label}}>optional</span>}
+    </Lbl>
+    {children}
+    {hint&&<div style={{fontSize:9.5,color:T.label,marginTop:5,lineHeight:1.55,fontFamily:SF}}>{hint}</div>}
+  </div>
+);
 const Hr=({style={}})=><div style={{height:"0.5px",background:"rgba(0,0,0,0.08)",...style}}/>;
 function Btn({children,onClick,variant="ghost",disabled,style={}}){
   const b={padding:"7px 14px",borderRadius:8,fontSize:11,fontWeight:500,cursor:disabled?"not-allowed":"pointer",fontFamily:SF,border:"none",display:"inline-flex",alignItems:"center",gap:5,opacity:disabled?0.35:1,letterSpacing:"-0.01em",transition:"all 0.15s",...style};
@@ -628,9 +681,6 @@ function Btn({children,onClick,variant="ghost",disabled,style={}}){
   return <button onClick={onClick} disabled={disabled} style={{...b,...(v[variant]||v.ghost)}}>{children}</button>;
 }
 const INP={width:"100%",padding:"9px 12px",borderRadius:9,background:"rgba(0,0,0,0.03)",border:"1px solid rgba(0,0,0,0.1)",color:"#1D1D1F",fontSize:12,fontFamily:SF,outline:"none",resize:"vertical",transition:"border 0.15s"};
-
-// ── PIPELINE WIDGETS ─────────────────────────────────────────────────────────
-const MiniPipe=({camp})=>{const pct=progressOf(camp),col=T.sc[normStage(camp.stage)]||T.sub;return <div style={{height:2,background:"rgba(0,0,0,0.07)",borderRadius:1,marginTop:9}}><motion.div style={{height:2,borderRadius:1,background:col}} animate={{width:`${pct}%`}} transition={{type:"spring",stiffness:220,damping:26}}/></div>;};
 
 // One source of truth for "which node does this role see this campaign on", so
 // a campaign's chip, its colour and its pipeline can never disagree.
@@ -738,12 +788,8 @@ function useCountUp(value){
 // So the card landed at zoom × the intended x — drifting further right the
 // further right the node sat, which is why the caret missed the node it was
 // describing rather than being uniformly off. Dividing the measurement back out
-// puts both halves in the card's own units.
-const zoomOf = el => {
-  let z = 1;
-  for (let n = el; n; n = n.parentElement) z *= parseFloat(getComputedStyle(n).zoom) || 1;
-  return z;
-};
+// puts both halves in the card's own units. See lib/zoom.js — shared with
+// every other position:fixed popover anchored to a trigger's rect.
 
 function useAnchor(target, width){
   const [pos,setPos] = useState(null);
@@ -1225,7 +1271,7 @@ function CreatorPaymentModal({camp,expenseById,role,onClose}){
 }
 
 // ── DELIVERABLE MULTISELECT ───────────────────────────────────────────────────
-function DelvSelect({value=[],onChange}){const t=d=>onChange(value.includes(d)?value.filter(x=>x!==d):[...value,d]);return(<div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:2}}>{IM_DELIVERABLES.map(d=>{const on=value.includes(d);return <button key={d} onClick={()=>t(d)} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{d}</button>;})}</div>);}
+function DelvSelect({value=[],onChange}){const t=d=>onChange(value.includes(d)?value.filter(x=>x!==d):[...value,d]);return(<div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:2}}>{IM_DELIVERABLES.map(d=>{const on=value.includes(d);return <Chip key={d} on={on} onClick={()=>t(d)}>{d}</Chip>;})}</div>);}
 
 // ── NICHE MULTISELECT ────────────────────────────────────────────────────────
 // Same chip pattern as DelvSelect, plus a free-text row for niches we don't
@@ -1251,7 +1297,7 @@ function NicheSelect({value=[],onChange}){
     <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:2}}>
       {all.map(n=>{
         const on=value.includes(n),custom=!NICHES.includes(n);
-        return <button key={n} onClick={()=>toggle(n)} title={custom?"Custom niche — click to remove":undefined} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{n}{custom&&on&&<span style={{marginLeft:5,opacity:0.6}}>×</span>}</button>;
+        return <Chip key={n} on={on} onClick={()=>toggle(n)} title={custom?"Custom niche — click to remove":undefined}>{n}{custom&&on&&<span style={{marginLeft:5,opacity:0.6}}>×</span>}</Chip>;
       })}
     </div>
     <div style={{display:"flex",gap:8,marginTop:8,alignItems:"center"}}>
@@ -1293,7 +1339,7 @@ function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAge
   const seg = on => ({padding:"4px 12px",borderRadius:6,fontSize:10,fontWeight:600,fontFamily:SF,cursor:"pointer",border:"none",transition:"all 0.15s",background:on?T.surface:"transparent",color:on?T.text:T.label,boxShadow:on?"0 1px 2px rgba(0,0,0,0.08)":"none"});
   return(<div style={{marginBottom:14}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
-      <Lbl>Creator budget *</Lbl>
+      <Lbl>Creator budget</Lbl>
       <div style={{display:"flex",gap:2,padding:2,borderRadius:8,background:T.mute}}>
         <button onClick={()=>onChange({creatorBudgetMode:"pct"})}    style={seg(isPct)}>% of budget</button>
         <button onClick={()=>onChange({creatorBudgetMode:"amount"})} style={seg(!isPct)}>₹ amount</button>
@@ -1314,7 +1360,7 @@ function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAge
     </div>
     {isPct&&<div style={{display:"flex",gap:6,marginTop:8}}>{[50,60,70,75].map(p=>{
       const on=clampPct(pct)===p;
-      return <button key={p} onClick={()=>onChange({creatorBudgetPct:p})} style={{padding:"3px 10px",borderRadius:20,fontSize:10,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:T.sub,border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{p}%</button>;
+      return <Chip key={p} on={on} onClick={()=>onChange({creatorBudgetPct:p})} style={{padding:"3px 10px",fontSize:10}}>{p}%</Chip>;
     })}</div>}
     {/* Allocation bar — the creator share split into one block per creator,
         with the agency remainder trailing it. Makes "where does the money go"
@@ -1337,34 +1383,67 @@ function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAge
 }
 
 // ── CAMPAIGN CARD (grid tile) ─────────────────────────────────────────────────
+// Three bands, always in the same place: identity, then the money, then a
+// status footer. Fixing the bands means a row of tiles lines up even when one
+// campaign has no team and another has an end-date warning — the old card let
+// every element shift vertically, so a row read as a ragged list rather than a
+// grid.
+//
+// The progress bar is the tile's bottom edge rather than a hairline floating in
+// the padding: it's the one element you compare ACROSS tiles, so it belongs on
+// a shared baseline. It carries the stage colour, which makes 90%-and-ended
+// (red) look nothing like 90%-and-live (amber) at a glance.
 const CampCard = forwardRef(function CampCard({camp,onClick,role}, ref){
   const col=viewCol(camp,role),pl=viewPl(camp,role);
-  const am=getM(camp.amId),cm=getM(camp.cmId),ea=getM(camp.eaId);
   const es=endStatus(camp.end,camp.stage);
+  const team=[{m:getM(camp.amId),l:"AM"},{m:getM(camp.cmId),l:"CM"},{m:getM(camp.eaId),l:"EA"}].filter(x=>x.m);
+  const pct=progressOf(camp), st=execStats(camp);
+  // A finished campaign is reference material, not work — it recedes until you
+  // point at it, so the eye lands on what still needs doing.
+  const done=hasEnded(camp)||normStage(camp.stage)==="payment_done";
   return(
     <motion.div
       ref={ref}
       initial={{opacity:0,y:10,scale:0.98}}
-      animate={{opacity:1,y:0,scale:1}}
+      animate={{opacity:done?0.72:1,y:0,scale:1}}
       exit={{opacity:0,scale:0.96,transition:{duration:0.12}}}
-      whileHover={{y:-3,boxShadow:"0 10px 28px rgba(0,0,0,0.10)"}}
+      whileHover={{y:-3,opacity:1,boxShadow:"0 12px 30px -8px rgba(0,0,0,0.16)"}}
       whileTap={{scale:0.985}}
       transition={{type:"spring",stiffness:340,damping:30}}
       onClick={onClick}
-      style={{padding:"16px 18px 14px",borderRadius:16,cursor:"pointer",background:"#FFFFFF",border:"1px solid rgba(0,0,0,0.07)",boxShadow:"0 1px 2px rgba(0,0,0,0.04)",overflow:"hidden",position:"relative"}}>
-      <div style={{position:"absolute",top:0,left:0,right:0,height:3,background:col}}/>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4,marginTop:2}}>
-        <span style={{fontSize:14,fontWeight:600,color:"#1D1D1F",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,letterSpacing:"-0.02em",fontFamily:SF}}>{camp.name}</span>
-        <span style={{fontSize:10,color:"#6E6E73",marginLeft:8,flexShrink:0,fontFamily:SF}}>{progressOf(camp)}%</span>
+      style={{display:"flex",flexDirection:"column",borderRadius:14,cursor:"pointer",background:"#FFFFFF",border:"1px solid rgba(0,0,0,0.08)",boxShadow:"0 1px 2px rgba(0,0,0,0.04)",overflow:"hidden",position:"relative"}}>
+      <div style={{padding:"15px 16px 13px",display:"flex",flexDirection:"column",gap:11,flex:1}}>
+        {/* Identity — name and the number it costs, on one line */}
+        <div style={{display:"flex",alignItems:"baseline",gap:10}}>
+          <span style={{fontSize:14.5,fontWeight:600,color:"#1D1D1F",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,letterSpacing:"-0.02em",fontFamily:SF}}>{camp.name}</span>
+          {canFin(role)&&<span style={{fontSize:12,color:"#1D1D1F",fontFamily:SF,fontWeight:600,flexShrink:0,letterSpacing:"-0.02em"}}>{fmtINR(camp.budget)}</span>}
+        </div>
+        <div style={{fontSize:11,color:"#86868B",fontFamily:SF,marginTop:-7,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{camp.client}{camp.region?` · ${camp.region}`:""}</div>
+        {/* Delivery at a glance. The grid used to carry a stage name and a
+            percentage and nothing else, so "is this campaign in trouble" meant
+            opening it — the two numbers that answer it are the roster and the
+            posts. Spread edge to edge, so a tile that stretches to fill a row
+            stays composed instead of leaving a hole in the middle. */}
+        <div style={{display:"flex",justifyContent:"space-between",gap:12,padding:"9px 12px",borderRadius:9,background:"rgba(0,0,0,0.025)",border:"1px solid rgba(0,0,0,0.045)"}}>
+          {[{k:"Creators",v:`${st.locked} / ${st.target}`},
+            {k:"Posts live",v:st.expected?`${st.delivered} / ${st.expected}`:"—"},
+            {k:"Ends",v:prettyDate(camp.end)||"TBD"}].map(s=>
+            <Stat key={s.k} small label={s.k} value={s.v}/>
+          )}
+        </div>
+        {/* Status footer — pushed to the bottom so it sits on one line across
+            the row whatever the title above it wrapped to */}
+        <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginTop:"auto"}}>
+          <Pill tone={col}>{pl.label}</Pill>
+          <EndPill es={es}/>
+          <div style={{flex:1}}/>
+          <AvStack people={team}/>
+          <span style={{fontSize:11,color:"#86868B",fontFamily:SF,fontWeight:600,fontVariantNumeric:"tabular-nums"}}>{pct}%</span>
+        </div>
       </div>
-      <div style={{fontSize:11.5,color:"#6E6E73",marginBottom:12,fontFamily:SF}}>{camp.client}{camp.region?` · ${camp.region}`:""}</div>
-      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
-        <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 9px",borderRadius:20,background:`${col}14`,border:`1px solid ${col}28`,fontSize:10,fontWeight:500,color:col,fontFamily:SF}}>{pl.label}</span>
-        <EndPill es={es}/>
-        {canFin(role)&&<span style={{marginLeft:"auto",fontSize:11.5,color:"#1D1D1F",fontFamily:SF,fontWeight:600}}>{fmtINR(camp.budget)}</span>}
+      <div style={{height:3,background:"rgba(0,0,0,0.06)"}}>
+        <motion.div style={{height:3,background:col}} animate={{width:`${pct}%`}} transition={{type:"spring",stiffness:220,damping:26}}/>
       </div>
-      <MiniPipe camp={camp}/>
-      {(am||cm||ea)&&<div style={{display:"flex",gap:8,marginTop:12,alignItems:"center"}}>{[{m:am,l:"AM"},{m:cm,l:"CM"},{m:ea,l:"EA"}].filter(x=>x.m).map(({m,l})=><div key={l} style={{display:"flex",alignItems:"center",gap:4}}><Av init={m.avatar} size={18}/><span style={{fontSize:9,color:"#6E6E73",fontFamily:SF}}>{l}</span></div>)}</div>}
     </motion.div>
   );
   });
@@ -1406,7 +1485,11 @@ function CampaignGrid({campaigns,role,onSelect,brandName}){
             <span style={{padding:"1.5px 7px",borderRadius:20,background:"rgba(0,0,0,0.05)",fontSize:9.5,fontWeight:600,color:"#6E6E73",fontFamily:SF}}>{groups[label].length}</span>
             <div style={{flex:1,height:1,background:`linear-gradient(to right,${bcol}26,rgba(0,0,0,0))`}}/>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
+          {/* auto-FIT, not auto-fill: a brand with one campaign used to leave a
+              full row of empty grid columns beside it, so a page with several
+              small brands was mostly dead space. auto-fit collapses the empty
+              tracks and the tiles share the row. */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))",gap:12}}>
             <AnimatePresence mode="popLayout">
               {groups[label].map(c=>(
                 <CampCard key={c.id} camp={c} role={role} onClick={()=>onSelect(c.id)}/>
@@ -1429,20 +1512,41 @@ function CampaignGrid({campaigns,role,onSelect,brandName}){
 // FILTERED list, which collapsed every number to 0 or 1 the moment a pill was
 // picked. Reading a count and acting on it are the same gesture now.
 //
+// "Active" (not draft/paid, not ended) used to sit here too, next to
+// "In Execution" (creators actively posting). Almost every campaign that isn't
+// a draft, isn't fully paid and hasn't ended IS mid-execution — the two
+// predicates target different axes (finance-track health vs. delivery state)
+// but land on the same campaigns often enough that the pair read as one stat
+// counted twice. In Execution is the one with a specific, actionable meaning
+// ("creators are posting right now"), so it's the one that stayed.
+//
 // Predicates rather than stage-id lists, because two of these span the derived
 // execution track: a campaign is in execution when its creators are working and
 // ended when its date has passed, whatever its stored finance stage says.
 const VIEWS=[
-  { id:"all",       label:"All",               match:()=>true },
-  // Everything still moving: not a draft, not settled, not past its end date.
-  { id:"active",    label:"Active",            match:c=>!["draft","payment_done"].includes(normStage(c.stage))&&!hasEnded(c) },
-  { id:"execution", label:"In Execution",      match:c=>executionStageOf(c)==="execution" },
+  { id:"all",       label:"All",               icon:"grid",  match:()=>true },
+  { id:"execution", label:"In Execution",      icon:"pulse", match:c=>executionStageOf(c)==="execution" },
   // Blocked on a person rather than on work in progress — Draft waits on the
   // brief, Brief Locked on staffing, Team Assigned on Accounts raising the PO.
-  { id:"attention", label:"Require Attention", match:c=>["draft","brief_locked","team_assigned"].includes(normStage(c.stage)), tone:T.amber },
-  { id:"done",      label:"Completed",         match:c=>normStage(c.stage)==="payment_done" },
-  { id:"ended",     label:"Ended",             match:hasEnded, tone:T.red },
+  { id:"attention", label:"Require Attention", icon:"alert", match:c=>["draft","brief_locked","team_assigned"].includes(normStage(c.stage)), tone:T.amber },
+  { id:"done",      label:"Completed",         icon:"check", match:c=>normStage(c.stage)==="payment_done" },
+  { id:"ended",     label:"Ended",             icon:"flag",  match:hasEnded, tone:T.red },
 ];
+
+// Tiny stroke icons for the view bar — feather-style, 13px, so each view reads
+// at a glance instead of only by its label. No icon library for five shapes.
+const VIEW_ICON_PATHS={
+  grid:  <><rect x="2.5" y="2.5" width="4" height="4" rx="1"/><rect x="8.5" y="2.5" width="4" height="4" rx="1"/><rect x="2.5" y="8.5" width="4" height="4" rx="1"/><rect x="8.5" y="8.5" width="4" height="4" rx="1"/></>,
+  pulse: <polyline points="1.5,8 4.5,8 6,3.5 8.5,12.5 10,8 13.5,8"/>,
+  alert: <><path d="M7.5 1.5 L14 13 H1 Z"/><line x1="7.5" y1="6" x2="7.5" y2="9"/><circle cx="7.5" cy="11.2" r="0.6" fill="currentColor" stroke="none"/></>,
+  check: <><circle cx="7.5" cy="7.5" r="6"/><polyline points="4.7,7.6 6.6,9.5 10.5,5.2"/></>,
+  flag:  <><path d="M3.5 1.5 V14"/><path d="M3.5 2.5 H11.5 L9.5 5 L11.5 7.5 H3.5"/></>,
+};
+const ViewIcon=({id,color})=>(
+  <svg width="13" height="13" viewBox="0 0 15 15" fill="none" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+    {VIEW_ICON_PATHS[id]}
+  </svg>
+);
 
 function ViewBar({counts,value,onChange}){
   return(
@@ -1451,15 +1555,22 @@ function ViewBar({counts,value,onChange}){
         const on=value===v.id, n=counts[v.id]||0;
         // A tone only fires when there is something to look at — a red 0 under
         // "Ended" is an alarm about nothing.
-        const numCol=v.tone&&n>0?v.tone:"#1D1D1F";
+        const hot=v.tone&&n>0;
+        const numCol=hot?v.tone:"#1D1D1F";
+        const iconCol=on?numCol:hot?v.tone:"#ADADB2";
         return(
           <button key={v.id} onClick={()=>onChange(v.id)} aria-pressed={on} title={`Show ${v.label.toLowerCase()}`}
-            style={{position:"relative",flex:1,minWidth:0,padding:"9px 6px",borderRadius:9,border:"none",background:"transparent",cursor:"pointer",fontFamily:SF}}>
+            style={{position:"relative",flex:1,minWidth:0,padding:"10px 6px 9px",borderRadius:9,border:"none",
+              // A hot-but-unselected view (something needs looking at) gets a
+              // faint tint of its own — a red "Ended" pill shouldn't look
+              // identical to an empty one just because it isn't clicked yet.
+              background:on?"transparent":hot?`${v.tone}0C`:"transparent",cursor:"pointer",fontFamily:SF}}>
             {on&&<motion.div layoutId="viewPill" transition={{type:"spring",stiffness:500,damping:38}}
-              style={{position:"absolute",inset:0,background:"#FFFFFF",borderRadius:9,boxShadow:"0 1px 3px rgba(0,0,0,0.10)",zIndex:0}}/>}
-            <span style={{position:"relative",zIndex:1,display:"block",textAlign:"center"}}>
-              <span style={{display:"block",fontSize:18,fontWeight:700,letterSpacing:"-0.03em",lineHeight:1,color:numCol}}>{n}</span>
-              <span style={{display:"block",fontSize:9.5,marginTop:3,whiteSpace:"nowrap",color:on?"#1D1D1F":"#86868B",fontWeight:on?600:400}}>{v.label}</span>
+              style={{position:"absolute",inset:0,background:"#FFFFFF",borderRadius:9,boxShadow:`0 1px 3px rgba(0,0,0,0.10)${hot?`, inset 0 0 0 1px ${v.tone}30`:""}`,zIndex:0}}/>}
+            <span style={{position:"relative",zIndex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+              <ViewIcon id={v.icon} color={iconCol}/>
+              <span style={{fontSize:17,fontWeight:700,letterSpacing:"-0.03em",lineHeight:1,color:numCol}}>{n}</span>
+              <span style={{fontSize:9.5,whiteSpace:"nowrap",color:on?"#1D1D1F":"#86868B",fontWeight:on?600:400}}>{v.label}</span>
             </span>
           </button>
         );
@@ -1649,7 +1760,7 @@ function ExtendEndModal({camp,onConfirm,onCancel}){
       <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
         {presets.map(([label,n])=>{
           const v=addDays(base,n),on=end===v;
-          return <button key={label} onClick={()=>setEnd(v)} style={{padding:"4px 10px",borderRadius:20,fontSize:10,cursor:"pointer",fontFamily:SF,background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`}}>{label}</button>;
+          return <Chip key={label} on={on} onClick={()=>setEnd(v)} style={{padding:"4px 10px",fontSize:10}}>{label}</Chip>;
         })}
       </div>
       <DateInput value={end} onChange={setEnd} min={floor} placeholder="Pick a new end date" style={{...INP,marginBottom:6}}/>
@@ -3037,27 +3148,40 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
 
       {/* ── HEADER CARD — identity, stage, actions, pipeline, tabs ── */}
       <div style={{...card,overflow:"hidden",marginBottom:16}}>
-        {/* Stage accent — crossfades between campaigns of different stages */}
-        <motion.div style={{height:3}} animate={{backgroundColor:stCol}} transition={{duration:0.3}}/>
-        <div style={{padding:"18px 22px 16px"}}>
-          <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:8}}>
+        {/* Stage accent — the bar, plus a tint that bleeds down behind the
+            title so the campaign's state colours the whole header rather than
+            being a 3px line you have to notice. */}
+        <div style={{height:3,background:stCol}}/>
+        <div style={{padding:"18px 22px 16px",position:"relative",background:`linear-gradient(180deg,${stCol}0F,${stCol}00 110px)`}}>
+          <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16,marginBottom:14}}>
             <div style={{flex:1,minWidth:0}}>
-              <h2 style={{fontFamily:"'Newsreader',serif",fontSize:24,fontWeight:600,color:"#1D1D1F",margin:"0 0 5px",fontStyle:"italic",letterSpacing:"-0.02em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{camp.name}</h2>
-              <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF,display:"flex",alignItems:"center",flexWrap:"wrap",gap:8}}><span>{camp.client} · {camp.service} · {camp.region} · {prettyDate(camp.start)}–{prettyDate(camp.end)}{canFin(role)&&<span style={{marginLeft:8,fontWeight:600,color:"#1D1D1F"}}>{fmtINR(camp.budget)}</span>}</span><EndPill es={es}/>
-                {/* Offered exactly when the end-date nudge is showing — the
-                    campaign is running out of runway, so the fix belongs next
-                    to the warning rather than buried in an edit form. */}
-                {es&&can(role,"extendCampaignEnd")&&(
-                  <button onClick={()=>setExtending(true)} style={{background:"transparent",border:"none",padding:0,cursor:"pointer",fontFamily:SF,fontSize:11,fontWeight:600,color:T.accent,textDecoration:"underline",textUnderlineOffset:2}}>
-                    Extend
-                  </button>
-                )}</div>
+              <h2 style={{fontFamily:"'Newsreader',serif",fontSize:24,fontWeight:600,color:"#1D1D1F",margin:"0 0 4px",fontStyle:"italic",letterSpacing:"-0.02em",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{camp.name}</h2>
+              <div style={{fontSize:11.5,color:"#6E6E73",fontFamily:SF}}>{camp.client} · {camp.service} · {camp.region}</div>
             </div>
-            <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:5,marginLeft:16,flexShrink:0}}>
-              <span style={{display:"inline-flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:`${stCol}14`,border:`1px solid ${stCol}28`,fontSize:10.5,fontWeight:600,color:stCol,fontFamily:SF}}>{pl.label}</span>
-              <span style={{fontSize:10,color:"#6E6E73",fontFamily:SF}}>{progressOf(camp)}% complete</span>
+            <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+              <Pill tone={stCol} dot style={{padding:"5px 12px",fontSize:11}}>{pl.label}</Pill>
               {can(role,"deleteCampaign")&&<Btn variant="danger" onClick={()=>setConfirmDelete(true)} style={{fontSize:10,padding:"4px 10px"}}>Delete</Btn>}
             </div>
+          </div>
+          {/* The four numbers the header used to run together into one grey
+              sentence. Labelled and evenly spaced, they can be read one at a
+              time instead of parsed left to right. */}
+          <div style={{display:"flex",flexWrap:"wrap",gap:"10px 30px",marginBottom:14}}>
+            {[...(canFin(role)?[{k:"Budget",v:fmtINR(camp.budget)}]:[]),
+              {k:"Creators",v:`${lockedCountOf(camp)} of ${numReqOf(camp)} locked`},
+              {k:"Progress",v:`${progressOf(camp)}%`},
+             ].map(s=><Stat key={s.k} label={s.k} value={s.v}/>)}
+            <Stat label="Window" value={`${prettyDate(camp.start)} – ${prettyDate(camp.end)}`}>
+              <EndPill es={es}/>
+              {/* Offered exactly when the end-date nudge is showing — the
+                  campaign is running out of runway, so the fix belongs next
+                  to the warning rather than buried in an edit form. */}
+              {es&&can(role,"extendCampaignEnd")&&(
+                <button onClick={()=>setExtending(true)} style={{background:"transparent",border:"none",padding:0,cursor:"pointer",fontFamily:SF,fontSize:11,fontWeight:600,color:T.accent,textDecoration:"underline",textUnderlineOffset:2}}>
+                  Extend
+                </button>
+              )}
+            </Stat>
           </div>
           <AnimatePresence>
             {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
@@ -3103,6 +3227,45 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
 }
 
 // ── CREATE MODAL ─────────────────────────────────────────────────────────────
+// Each step says what it wants and why in one line. A four-screen form that
+// only labels itself "BASICS — 1 OF 4" gives you no reason to keep going and no
+// idea what's coming, so the two steps that are entirely skippable read as work
+// rather than as the free passes they actually are.
+const STEPS=[
+  {id:"Basics",     title:"Start with the basics",     sub:"A name and a brand is most of it."},
+  {id:"Brief",      title:"What's the campaign for?",  sub:"Objective is the one thing worth pinning down now — the rest can be written properly later, on its own tab."},
+  {id:"Commercial", title:"Scope and money",           sub:"The budget, how many creators it buys, and when it runs."},
+  {id:"Internal",   title:"Anything the client shouldn't see?", sub:"Optional. Check the summary and you're done."},
+];
+
+// Numbered rail with every step named, ticked once it's behind you and
+// clickable to go back. Replaces a 1.5px progress line, which showed how far
+// along you were but never what was left — the thing that makes a multi-step
+// form feel open-ended.
+function StepRail({step,onGo}){
+  return(
+    <div style={{display:"flex",alignItems:"center",padding:"0 20px 15px"}}>
+      {STEPS.map((s,i)=>{
+        const passed=i<step, here=i===step;
+        const col=passed?T.green:here?T.text:T.label;
+        return(
+          <div key={s.id} style={{display:"flex",alignItems:"center",flex:i<STEPS.length-1?1:"0 0 auto",minWidth:0}}>
+            <button onClick={()=>passed&&onGo(i)} disabled={!passed} title={passed?`Back to ${s.id}`:undefined}
+              style={{display:"flex",alignItems:"center",gap:6,background:"transparent",border:"none",padding:0,cursor:passed?"pointer":"default",fontFamily:SF}}>
+              <span style={{width:20,height:20,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9.5,fontWeight:700,
+                color:here?"#FFFFFF":passed?T.green:T.label,
+                background:here?T.accent:passed?`${T.green}1A`:"rgba(0,0,0,0.05)",
+                border:`1px solid ${here?T.accent:passed?`${T.green}45`:"transparent"}`}}>{passed?"✓":i+1}</span>
+              <span style={{fontSize:10.5,fontWeight:here?600:500,color:col,whiteSpace:"nowrap"}}>{s.id}</span>
+            </button>
+            {i<STEPS.length-1&&<div style={{flex:1,height:1.5,margin:"0 8px",borderRadius:1,background:passed?`${T.green}55`:"rgba(0,0,0,0.08)"}}/>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
   const [step,setStep]=useState(0);
   // creatorBudgetMode decides which of the two creator-budget inputs is live —
@@ -3116,7 +3279,6 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
   // field; only the default changes. `brands` may not have loaded yet, so the
   // id is validated against the list before it's trusted.
   const [f,setF]=useState({name:"",brandId:brands.some(b=>b.id===brandFilter)?brandFilter:"",service:"Influencer Marketing",region:"",niches:[],budget:"",numCreators:5,deliverablesPerCreator:1,creatorBudgetMode:"pct",creatorBudgetPct:60,creatorBudgetAmt:"",objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
-  const [newBrandName,setNewBrandName]=useState("");
   // Staged only — nothing is written to the backend until the campaign is
   // actually submitted, so abandoning this modal never leaves an orphan brand.
   const [pendingBrandName,setPendingBrandName]=useState(null);
@@ -3124,34 +3286,19 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
   const [brandErr,setBrandErr]=useState(null);
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const merge=patch=>setF(p=>({...p,...patch}));
-  const STEPS=["Basics","Brief","Commercial","Internal"];
   const budgetNum=parseInt(f.budget)||0;
   const creatorBudget=resolveCreatorBudget(f,budgetNum);
   // Per-step required fields — Next/Create stay disabled until the current
   // step's required inputs are filled (Brief + Internal have none).
   const stepOk=[
     !!(f.name.trim()&&f.service&&f.brandId),
-    true,
+    !!f.objective.trim(),
     budgetNum>0&&parseInt(f.numCreators)>0&&parseInt(f.deliverablesPerCreator)>0&&creatorBudget>0&&creatorBudget<=budgetNum&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
     true,
   ];
   const ok=stepOk[step];
   const allOk=stepOk.every(Boolean);
   const timelineLabel=f.timelineStart&&f.timelineEnd?`${prettyDate(f.timelineStart)} – ${prettyDate(f.timelineEnd)}`:"";
-  const handleStageBrand=()=>{
-    const name=newBrandName.trim();
-    if(!name)return;
-    setBrandErr(null);
-    const existing=brands.find(b=>b.name.toLowerCase()===name.toLowerCase());
-    if(existing){
-      u("brandId",existing.id);
-      setPendingBrandName(null);
-    }else{
-      setPendingBrandName(name);
-      u("brandId","__new__");
-    }
-    setNewBrandName("");
-  };
   const handleSubmit=async()=>{
     if(!allOk)return;
     // creatorBudget is resolved here rather than in onCreate so the stored
@@ -3167,67 +3314,102 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
       setSubmitting(false);
     }
   };
-  // Backdrop is intentionally not clickable — the modal only closes via ✕.
-  // This keeps its own shell rather than using <Panel>: it differs in four ways
-  // at once (undismissable backdrop, a step progress bar between header and
-  // body, a Back/Next footer rather than Cancel/confirm, and its own z-index
-  // so it can sit under the confirm dialogs). Teaching Panel all four to serve
-  // one caller would cost more than the copy does.
+  const next=()=>ok&&setStep(s=>Math.min(s+1,STEPS.length-1));
+  // Enter advances the wizard from any single-line input, the way every other
+  // form on the web behaves. Textareas keep Enter for newlines.
+  const onKeyDown=e=>{
+    if(e.key!=="Enter"||e.target.tagName==="TEXTAREA")return;
+    e.preventDefault();
+    step<STEPS.length-1?next():allOk&&handleSubmit();
+  };
+  const brandLabel=f.brandId==="__new__"?`${pendingBrandName} (new)`:brands.find(b=>b.id===f.brandId)?.name||"—";
+  const nCr=parseInt(f.numCreators)||0, nDv=parseInt(f.deliverablesPerCreator)||0;
+  // Backdrop is intentionally not clickable — half-filled wizards are not worth
+  // losing to a stray click, so the modal only closes via ✕. It also keeps its
+  // own shell rather than using <Panel>: it differs in four ways at once (that
+  // undismissable backdrop, the step rail, a Back/Next footer rather than
+  // Cancel/confirm, and its own z-index so it can sit under the confirm
+  // dialogs). Teaching Panel all four to serve one caller would cost more than
+  // the copy does.
   return(<div style={{position:"fixed",inset:0,zIndex:500,display:"flex",alignItems:"center",justifyContent:"center"}}><motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(6px)"}}/>
-    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} style={{position:"relative",width:"min(500px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:10,overflow:"hidden",display:"flex",flexDirection:"column"}}>
-      <div style={{padding:"16px 20px",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}><div><div style={{fontFamily:"'Newsreader',serif",fontSize:18,color:T.text,fontStyle:"italic",marginBottom:2}}>New Campaign</div><Lbl>{STEPS[step]} — {step+1} of {STEPS.length}</Lbl></div><button onClick={onClose} style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer"}}>✕</button></div>
-      <div style={{height:1.5,background:T.mute}}><div style={{height:1.5,background:T.accent,width:`${((step+1)/STEPS.length)*100}%`,transition:"width 0.25s"}}/></div>
-      <div style={{padding:"18px 20px",overflowY:"auto",flex:1}}>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}} onKeyDown={onKeyDown} style={{position:"relative",width:"min(560px,94vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:14,overflow:"hidden",display:"flex",flexDirection:"column"}}>
+      <div style={{padding:"16px 20px 13px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{fontFamily:"'Newsreader',serif",fontSize:18,color:T.text,fontStyle:"italic"}}>New Campaign</div>
+        <button onClick={onClose} title="Close" style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer",lineHeight:1}}>✕</button>
+      </div>
+      <StepRail step={step} onGo={setStep}/>
+      <div style={{padding:"16px 20px 20px",overflowY:"auto",flex:1,borderTop:`1px solid ${T.border}`}}>
+        {/* What this screen wants, before the fields that want it */}
+        <div style={{marginBottom:16}}>
+          <div style={{fontSize:14,fontWeight:600,color:T.text,fontFamily:SF,letterSpacing:"-0.02em"}}>{STEPS[step].title}</div>
+          <div style={{fontSize:11,color:T.sub,fontFamily:SF,marginTop:3,lineHeight:1.55}}>{STEPS[step].sub}</div>
+        </div>
         {step===0&&<>
-          <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Campaign name *</Lbl><input value={f.name} onChange={e=>u("name",e.target.value)} placeholder="e.g. Summer Launch Teaser" style={{...INP,resize:"none"}}/></div>
-          <div style={{marginBottom:6}}>
-            <Lbl style={{display:"block",marginBottom:5}}>Brand *</Lbl>
-            <select value={f.brandId} onChange={e=>{u("brandId",e.target.value);if(e.target.value!=="__new__")setPendingBrandName(null);}} style={{...INP,resize:"none"}}>
-              <option value="">— Select brand —</option>
-              {brands.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(b=><option key={b.id} value={b.id}>{b.name}</option>)}
-              {pendingBrandName&&<option value="__new__">{pendingBrandName} (new)</option>}
-            </select>
-          </div>
-          <div style={{display:"flex",gap:8,marginBottom:6,alignItems:"center"}}>
-            <input value={newBrandName} onChange={e=>setNewBrandName(e.target.value)} placeholder="+ Add new brand…" style={{...INP,resize:"none",flex:1}}/>
-            <Btn variant="ghost" onClick={handleStageBrand} disabled={!newBrandName.trim()}>Add</Btn>
-          </div>
-          {pendingBrandName&&f.brandId==="__new__"&&<div style={{fontSize:9.5,color:T.amber,marginBottom:10}}>"{pendingBrandName}" will be created when you submit this campaign.</div>}
+          <Field label="Campaign name"><input value={f.name} onChange={e=>u("name",e.target.value)} placeholder="e.g. Summer Launch Teaser" style={{...INP,resize:"none"}}/></Field>
+          <Field label="Brand" hint={f.brandId==="__new__"&&pendingBrandName?`"${pendingBrandName}" will be created when you submit this campaign.`:undefined}>
+            <BrandPicker brands={brands} value={f.brandId} pendingName={pendingBrandName}
+              onSelect={id=>{u("brandId",id);setPendingBrandName(null);}}
+              onCreate={name=>{setPendingBrandName(name);u("brandId","__new__");}}/>
+          </Field>
           {brandErr&&<div style={{fontSize:10.5,color:T.red,marginBottom:10}}>{brandErr}</div>}
-          <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Service *</Lbl><select value={f.service} onChange={e=>u("service",e.target.value)} style={{...INP,resize:"none"}}>{["Influencer Marketing","IM — Mass","IM — Sales"].map(s=><option key={s}>{s}</option>)}</select></div><div><Lbl style={{display:"block",marginBottom:5}}>Region</Lbl><input value={f.region} onChange={e=>u("region",e.target.value)} placeholder="e.g. South India" style={{...INP,resize:"none"}}/></div></>}
-        {step===1&&<>{[["Objective","objective",60],["Target audience","audience",50],["Key Messages","messages",50]].map(([l,k,h])=><div key={k} style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>{l}</Lbl><textarea value={f[k]} onChange={e=>u(k,e.target.value)} style={{...INP,minHeight:h}}/></div>)}<div><Lbl style={{display:"block",marginBottom:6}}>Deliverables</Lbl><DelvSelect value={f.deliverables} onChange={v=>u("deliverables",v)}/></div></>}
+          <Field label="Service"><select value={f.service} onChange={e=>u("service",e.target.value)} style={{...INP,resize:"none"}}>{["Influencer Marketing","IM — Mass","IM — Sales"].map(s=><option key={s}>{s}</option>)}</select></Field>
+          <Field label="Region" optional style={{marginBottom:0}}><input value={f.region} onChange={e=>u("region",e.target.value)} placeholder="e.g. South India" style={{...INP,resize:"none"}}/></Field>
+        </>}
+        {step===1&&<>
+          {[["Objective","objective",60,false],["Target audience","audience",50,true],["Key Messages","messages",50,true]].map(([l,k,h,opt])=>
+            <Field key={k} label={l} optional={opt}><textarea value={f[k]} onChange={e=>u(k,e.target.value)} style={{...INP,minHeight:h}}/></Field>)}
+          <Field label="Deliverables" optional style={{marginBottom:0}}><DelvSelect value={f.deliverables} onChange={v=>u("deliverables",v)}/></Field>
+        </>}
         {step===2&&<>
-          <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:5}}>Total budget (₹) *</Lbl><MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="e.g. 12,50,000" style={{...INP,resize:"none"}}/></div>
+          <Field label="Total budget (₹)"><MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="e.g. 12,50,000" style={{...INP,resize:"none"}}/></Field>
           {/* The two numbers that size a campaign. Deliverables-per-creator is
               the PLAN — any single creator can be set higher on the
               Deliverables tab without changing it (see delivTargetOf). */}
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
-            <div><Lbl style={{display:"block",marginBottom:5}}>Creators required *</Lbl><input type="number" min={1} value={f.numCreators} onChange={e=>u("numCreators",e.target.value)} placeholder="5" style={{...INP,resize:"none"}}/></div>
-            <div><Lbl style={{display:"block",marginBottom:5}}>Deliverables per creator *</Lbl><input type="number" min={1} value={f.deliverablesPerCreator} onChange={e=>u("deliverablesPerCreator",e.target.value)} placeholder="1" style={{...INP,resize:"none"}}/></div>
-          </div>
-          <div style={{fontSize:9.5,color:T.label,marginTop:-8,marginBottom:14}}>{(parseInt(f.numCreators)||0)*(parseInt(f.deliverablesPerCreator)||0)} deliverables planned in total — individual creators can be set higher later.</div>
+          <Field label="Scope" hint={`${nCr*nDv} deliverables planned in total — individual creators can be set higher later.`}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <div><Lbl style={{display:"block",marginBottom:4,fontSize:8.5}}>Creators required</Lbl><input type="number" min={1} value={f.numCreators} onChange={e=>u("numCreators",e.target.value)} placeholder="5" style={{...INP,resize:"none"}}/></div>
+              <div><Lbl style={{display:"block",marginBottom:4,fontSize:8.5}}>Deliverables each</Lbl><input type="number" min={1} value={f.deliverablesPerCreator} onChange={e=>u("deliverablesPerCreator",e.target.value)} placeholder="1" style={{...INP,resize:"none"}}/></div>
+            </div>
+          </Field>
           <CreatorBudgetField
-            budget={budgetNum} numCreators={parseInt(f.numCreators)||0}
+            budget={budgetNum} numCreators={nCr}
             mode={f.creatorBudgetMode} pct={f.creatorBudgetPct} amount={f.creatorBudgetAmt}
             onChange={merge} showAgency={canFF(role)}/>
-          <div style={{marginBottom:14}}>
-            <Lbl style={{display:"block",marginBottom:5}}>Niches</Lbl>
+          <Field label="Niches" optional hint="Steers Generate towards creators in the same or similar niches. Leave empty for any niche.">
             <NicheSelect value={f.niches} onChange={v=>u("niches",v)}/>
-            <div style={{fontSize:9,color:T.sub,marginTop:6}}>Steers Generate towards creators in the same or similar niches. Leave empty for any niche.</div>
-          </div>
-          <div style={{marginBottom:14}}>
-            <Lbl style={{display:"block",marginBottom:5}}>Timeline *</Lbl>
+          </Field>
+          <Field label="Timeline" style={{marginBottom:0}}>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
               <div><Lbl style={{display:"block",marginBottom:4,fontSize:8.5}}>Start</Lbl><DateInput value={f.timelineStart} onChange={v=>u("timelineStart",v)} max={f.timelineEnd||undefined} placeholder="Start date" style={{...INP,resize:"none"}}/></div>
               <div><Lbl style={{display:"block",marginBottom:4,fontSize:8.5}}>End</Lbl><DateInput value={f.timelineEnd} onChange={v=>u("timelineEnd",v)} min={f.timelineStart||undefined} placeholder="End date" style={{...INP,resize:"none"}}/></div>
             </div>
             {f.timelineStart&&f.timelineEnd&&f.timelineEnd<f.timelineStart&&<div style={{fontSize:9.5,color:T.red,marginTop:5}}>End date must be after the start date.</div>}
             {timelineLabel&&f.timelineEnd>=f.timelineStart&&<div style={{fontSize:9.5,color:T.sub,marginTop:5}}>{timelineLabel}</div>}
-          </div>
+          </Field>
         </>}
-        {step===3&&<div><Lbl color={T.amber} style={{display:"block",marginBottom:5}}>Internal notes — never visible to client</Lbl><textarea value={f.internalNotes} onChange={e=>u("internalNotes",e.target.value)} placeholder="Margin targets, context…" style={{...INP,minHeight:100,borderColor:`${T.amber}30`}}/></div>}
+        {step===3&&<>
+          {/* Everything the three steps behind you added up to. The last screen
+              was one textarea, which is a strange place to be asked to commit
+              without being shown what you're committing to. */}
+          <div style={{display:"flex",flexWrap:"wrap",gap:"12px 26px",padding:"13px 15px",borderRadius:10,background:`${T.accent}08`,border:`1px solid ${T.accent}1F`,marginBottom:16}}>
+            <Stat small label="Campaign" value={f.name||"—"}/>
+            <Stat small label="Brand" value={brandLabel}/>
+            <Stat small label="Budget" value={budgetNum?fmtINR(budgetNum):"—"}/>
+            <Stat small label="Scope" value={`${nCr} creators · ${nDv} each`}/>
+            <Stat small label="Window" value={timelineLabel||"—"}/>
+          </div>
+          <Field label="Internal notes — never visible to client" optional style={{marginBottom:0}}>
+            <textarea value={f.internalNotes} onChange={e=>u("internalNotes",e.target.value)} placeholder="Margin targets, context…" style={{...INP,minHeight:90,borderColor:`${T.amber}30`}}/>
+          </Field>
+        </>}
       </div>
-      <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>{step>0&&<Btn variant="ghost" onClick={()=>setStep(s=>s-1)}>← Back</Btn>}<div style={{flex:1}}/>{step<STEPS.length-1?<Btn variant="primary" onClick={()=>setStep(s=>s+1)} disabled={!ok}>Next</Btn>:<Btn variant="primary" onClick={handleSubmit} disabled={submitting||!allOk}>{submitting?"Creating…":"Create campaign"}</Btn>}</div>
+      <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8,alignItems:"center"}}>
+        {step>0&&<Btn variant="ghost" onClick={()=>setStep(s=>s-1)}>← Back</Btn>}
+        <div style={{flex:1}}/>
+        {step<STEPS.length-1
+          ? <Btn variant="primary" onClick={next} disabled={!ok}>Next →</Btn>
+          : <Btn variant="success" onClick={handleSubmit} disabled={submitting||!allOk}>{submitting?"Creating…":"Create campaign"}</Btn>}
+      </div>
     </motion.div>
   </div>);
 }

@@ -14,6 +14,7 @@ import Summary from "./pages/Summary";
 import Creators from "./pages/Creators";
 import Requests from "./pages/Requests";
 import Auth from "./pages/Auth";
+import Profile from "./pages/Profile";
 
 export default function App() {
   return (
@@ -36,6 +37,11 @@ export default function App() {
             <Route path="/creators"  element={<Creators />} />
             <Route path="/requests"  element={<Requests />} />
             <Route path="/auth"      element={<Auth />} />
+            {/* Not a SECTION — deliberately absent from routes/sections.js, so
+                it never appears as a nav tab or in the command palette. It is
+                reached from the shell's user chip, and it is every role's own
+                page rather than something access-controlled. */}
+            <Route path="/profile"   element={<Profile />} />
             {/* Client Requests was its own section before the two inboxes were
                 merged — keep old bookmarks working rather than bouncing them
                 to Summary via the catch-all below. */}

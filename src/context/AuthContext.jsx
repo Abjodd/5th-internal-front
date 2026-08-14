@@ -66,6 +66,25 @@ export function AuthProvider({ children }) {
     }
   }, [persist]);
 
+  // Merge fields into the signed-in user, in state AND in sessionStorage.
+  //
+  // Exists for the Profile page: when you change your own photo or title, the
+  // record the backend returns has to replace the session copy, or the app
+  // shell's chip keeps rendering the old one until the next sign-in — and a
+  // reload would silently restore the stale version from sessionStorage.
+  //
+  // A merge rather than a replace: the login payload carries fields no other
+  // endpoint returns (notably `email`, which is `username` renamed server-side),
+  // and a PATCH response overwriting the whole object would drop them.
+  const updateUser = useCallback((patch) => {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...patch };
+      try { sessionStorage.setItem("5av_user", JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
+
   // Logout
   const logout = useCallback(() => {
     setUser(null);
@@ -78,6 +97,7 @@ export function AuthProvider({ children }) {
         user,
         login,
         logout,
+        updateUser,
       }}
     >
       {children}

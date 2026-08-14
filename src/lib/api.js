@@ -28,6 +28,19 @@ export const ClientsAPI = {
     request("/api/clients", { method: "POST", body: JSON.stringify(client) }),
   update: (id, patch) =>
     request(`/api/clients/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+
+  // The brand's logo. Same contract as the user/credential avatars — bytes are
+  // never in the list payload, `?v=` busts the immutable cache when the logo
+  // changes, and null means "no logo, render initials" so no request is made
+  // that is certain to 404. See authCrud().avatarUrl below.
+  avatarUrl: (brand) => {
+    const id = typeof brand === "string" ? brand : brand?.id;
+    if (!id || (typeof brand === "object" && !brand?.hasAvatar)) return null;
+    const v = typeof brand === "object" && brand?.avatarUpdatedAt
+      ? `?v=${encodeURIComponent(brand.avatarUpdatedAt)}`
+      : "";
+    return `${BASE}/api/clients/${encodeURIComponent(id)}/avatar${v}`;
+  },
 };
 
 export const FindingsAPI = {
@@ -121,6 +134,24 @@ function authCrud(basePath) {
     update: (id, patch) => request(`${basePath}/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
     remove: (id) => request(`${basePath}/${id}`, { method: "DELETE" }),
     password: (id) => request(`${basePath}/${id}/password`),
+
+    // Profile photo. The bytes never travel in a list or login payload — the
+    // record carries `hasAvatar` + `avatarUpdatedAt` and this builds the <img>
+    // src from them. BASE-prefixed so it resolves against the API, not the SPA.
+    //
+    // `?v=` is the record's own avatarUpdatedAt: the backend serves the image
+    // with a one-year immutable cache, so without a changing URL a replaced
+    // photo would keep showing the old one until the user hard-reloaded. Returns
+    // null when there's nothing to fetch, so callers render initials instead of
+    // requesting a guaranteed 404.
+    avatarUrl: (record) => {
+      const id = typeof record === "string" ? record : record?.id;
+      if (!id || (typeof record === "object" && !record?.hasAvatar)) return null;
+      const v = typeof record === "object" && record?.avatarUpdatedAt
+        ? `?v=${encodeURIComponent(record.avatarUpdatedAt)}`
+        : "";
+      return `${BASE}${basePath}/${encodeURIComponent(id)}/avatar${v}`;
+    },
   };
 }
 

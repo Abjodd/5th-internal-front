@@ -20,6 +20,7 @@ import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, Ex
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
 import { fmtCompact, fmtINR, prettyDate, initials, ISO_DATE, todayISO } from "../../lib/format";
+import { useBrandAccent } from "../../lib/brandAccent";
 import { creatorBudgetOf, numReqOf, perCreatorOf, costOf, normCreator, creatorExpensePlan, isLockedCreator,
          PIPELINE, PL_IDS, COMMON_STAGES, FIN_STAGES, EXEC_STAGES, EXEC_NODES,
          normStage, stageIdx, extUrl, rosterReady, rosterGap, lockedCountOf,
@@ -1393,7 +1394,7 @@ function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAge
 // the padding: it's the one element you compare ACROSS tiles, so it belongs on
 // a shared baseline. It carries the stage colour, which makes 90%-and-ended
 // (red) look nothing like 90%-and-live (amber) at a glance.
-const CampCard = forwardRef(function CampCard({camp,onClick,role}, ref){
+const CampCard = forwardRef(function CampCard({camp,onClick,role,accent}, ref){
   const col=viewCol(camp,role),pl=viewPl(camp,role);
   const es=endStatus(camp.end,camp.stage);
   const team=[{m:getM(camp.amId),l:"AM"},{m:getM(camp.cmId),l:"CM"},{m:getM(camp.eaId),l:"EA"}].filter(x=>x.m);
@@ -1411,8 +1412,25 @@ const CampCard = forwardRef(function CampCard({camp,onClick,role}, ref){
       whileTap={{scale:0.985}}
       transition={{type:"spring",stiffness:340,damping:30}}
       onClick={onClick}
-      style={{display:"flex",flexDirection:"column",borderRadius:14,cursor:"pointer",background:"#FFFFFF",border:"1px solid rgba(0,0,0,0.08)",boxShadow:"0 1px 2px rgba(0,0,0,0.04)",overflow:"hidden",position:"relative"}}>
-      <div style={{padding:"15px 16px 13px",display:"flex",flexDirection:"column",gap:11,flex:1}}>
+      // When the brand has uploaded a logo, the card picks up a colour sampled
+      // from it — but only as a tinted border and a soft wash in the top
+      // corner, at single-digit alpha. Deliberately restrained: STAGE is the
+      // thing you act on, and it owns the loud colour (the status pill and the
+      // progress bar along the bottom). A brand tint strong enough to compete
+      // with those would make the board harder to read, not easier.
+      //
+      // `accent` is null for any brand with no logo — those cards stay plain
+      // white, so colour here always means "this brand's actual colour" rather
+      // than a hue assigned to it by an algorithm.
+      style={{display:"flex",flexDirection:"column",borderRadius:12,cursor:"pointer",background:"#FFFFFF",border:`1px solid ${accent?`${accent}30`:"rgba(0,0,0,0.07)"}`,boxShadow:"0 1px 2px rgba(0,0,0,0.04)",overflow:"hidden",position:"relative",transition:"border-color 0.5s ease"}}>
+      {/* Texture, not content — a whisper of the brand's colour bleeding in
+          from the top-left so the tile feels like it belongs to that brand
+          without any element on it actually being coloured. */}
+      {accent&&<div aria-hidden style={{position:"absolute",inset:0,background:`linear-gradient(135deg,${accent}12,transparent 62%)`,pointerEvents:"none"}}/>}
+      {/* position:relative so the content stacks ABOVE the wash — an absolutely
+          positioned sibling paints over static content, which would put the
+          tint on top of the text rather than behind it. */}
+      <div style={{position:"relative",padding:"15px 16px 13px",display:"flex",flexDirection:"column",gap:11,flex:1}}>
         {/* Identity — name and the number it costs, on one line */}
         <div style={{display:"flex",alignItems:"baseline",gap:10}}>
           <span style={{fontSize:14.5,fontWeight:600,color:"#1D1D1F",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,letterSpacing:"-0.02em",fontFamily:SF}}>{camp.name}</span>
@@ -1441,7 +1459,9 @@ const CampCard = forwardRef(function CampCard({camp,onClick,role}, ref){
           <span style={{fontSize:11,color:"#86868B",fontFamily:SF,fontWeight:600,fontVariantNumeric:"tabular-nums"}}>{pct}%</span>
         </div>
       </div>
-      <div style={{height:3,background:"rgba(0,0,0,0.06)"}}>
+      {/* Also lifted above the brand wash — this bar is the stage colour, and
+          it is the one thing on the card that must never be tinted. */}
+      <div style={{position:"relative",height:3,background:"rgba(0,0,0,0.06)"}}>
         <motion.div style={{height:3,background:col}} animate={{width:`${pct}%`}} transition={{type:"spring",stiffness:220,damping:26}}/>
       </div>
     </motion.div>
@@ -1450,55 +1470,156 @@ const CampCard = forwardRef(function CampCard({camp,onClick,role}, ref){
 
 
 // ── BRAND IDENTITY ────────────────────────────────────────────────────────────
-// A stable accent colour + initials per brand, derived from the name so the
-// same brand always reads the same colour without needing a stored field.
-// Gives each group in the grid a visual anchor instead of one uniform grey
-// caps label, which was hard to pinpoint once several brands were on screen.
-const BRAND_COLORS=[T.accent,T.teal,T.purple,T.gold,T.pink,T.green,T.amber];
-const brandAccent=(s="")=>{let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return BRAND_COLORS[h%BRAND_COLORS.length];};
+// A brand is identified on the board by its logo and its name, not by a colour.
+// There was a per-brand accent here — hashed from the name, then upgraded to a
+// colour sampled from the uploaded logo — and it did separate the groups, but
+// it filled the board with hues that competed with the one colour that carries
+// meaning: a campaign's stage. Structure does that job instead (see BrandGroup),
+// which leaves colour free to mean status and only status.
 const brandInitials=(s="")=>s.split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase()||"?";
+
+// ── BRAND HEADER ──────────────────────────────────────────────────────────────
+// The banner above each brand's group of campaign tiles.
+//
+// It used to be a 24px chip, a 15px name and a hairline rule, all left-aligned
+// and about as prominent as a table caption — on a board carrying several
+// brands, the thing you actually navigate by was the quietest element on the
+// page. It is now a proper tile: centred, taller, and carrying the brand's own
+// logo.
+//
+// The backdrop is that same logo, blown up and heavily blurred. That is what
+// gives each brand a distinct colour field without needing a stored brand
+// colour — the palette comes from the logo itself. Brands with no logo keep the
+// derived accent (brandAccent) so the treatment degrades to something with the
+// same shape rather than to a blank box.
+// The brand's accent colour, sampled from its uploaded logo when there is one
+// and falling back to the name-derived palette colour when there isn't.
+//
+// See useBrandAccent in lib/brandAccent.js.
+
+function BrandHeader({label,count,logoUrl}){
+  const [broken,setBroken]=useState(false);
+  const showLogo=!!logoUrl&&!broken;
+  return(
+    // Sticky, and it must PAINT — the group's field scrolls underneath it, so a
+    // transparent header would let campaign tiles show through the brand name.
+    <div style={{position:"sticky",top:0,zIndex:2}}>
+      <div style={{position:"relative",borderRadius:"15px 15px 0 0",background:"#FFFFFF",borderBottom:"1px solid rgba(0,0,0,0.07)"}}>
+        {/* Deliberately uncoloured. An earlier version tinted this band with a
+            colour sampled from the brand's logo and washed a blurred copy of
+            the logo across it — distinct per brand, but it made the board a
+            field of competing hues and drowned out the one colour that carries
+            meaning here: a campaign's stage. Brand identity is the logo and the
+            name at 27px, which is plenty; colour is reserved for status. */}
+        <div style={{display:"flex",alignItems:"center",gap:14,padding:"18px 22px 17px"}}>
+          {/* Initials keep the original 40px/13px SF treatment — scaling them
+              up with the masthead made the fallback read as a display letterform
+              rather than as a quiet stand-in for a missing logo. */}
+          <div style={{width:40,height:40,borderRadius:11,flexShrink:0,overflow:"hidden",background:showLogo?"#FFFFFF":"rgba(0,0,0,0.05)",border:"1px solid rgba(0,0,0,0.08)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#86868B",fontFamily:SF,letterSpacing:"-0.02em",boxShadow:showLogo?"0 1px 3px rgba(0,0,0,0.08)":"none"}}>
+            {showLogo
+              ? <img src={logoUrl} alt="" onError={()=>setBroken(true)} style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+              : brandInitials(label)}
+          </div>
+          <div style={{minWidth:0,flex:1}}>
+            {/* 27px against the tiles' 14.5px. The brand is the thing you
+                navigate by, so it outranks every campaign name under it rather
+                than competing with them at a near-equal weight. */}
+            <div style={{fontFamily:"'Newsreader',serif",fontSize:27,fontStyle:"italic",fontWeight:600,color:"#1D1D1F",letterSpacing:"-0.015em",lineHeight:1.1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</div>
+            <div style={{marginTop:3,fontSize:10,fontWeight:600,letterSpacing:"0.09em",textTransform:"uppercase",color:"#86868B",fontFamily:SF}}>
+              {count} campaign{count===1?"":"s"}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// One brand's header plus its campaign tiles, as a single visually bounded
+// block. Split out of CampaignGrid so the accent can be resolved per brand —
+// hooks cannot be called inside the `.map()` that renders the groups.
+function BrandGroup({label,brandId,rows,role,onSelect,brandLogoUrl,empty}){
+  const logoUrl=brandLogoUrl?.(brandId);
+  // Null unless this brand has uploaded a logo we can read a colour out of —
+  // see lib/brandAccent. Resolved once here rather than per card: every tile in
+  // the group shares a brand, so decoding the same image N times would be N-1
+  // wasted decodes.
+  const accent=useBrandAccent(logoUrl);
+  return(
+    // The masthead and its tiles are ONE enclosed object: a single rounded
+    // container ruled down its left edge, white masthead over a faint grey
+    // field.
+    //
+    // Before this they were two free-floating white tiles with the same radius
+    // and the same border — a campaign and the brand it belongs to were
+    // rendered as the same KIND of thing, so the eye had to read text to tell a
+    // heading from a row. Enclosing the group says "these belong to that"
+    // structurally, which is what frees the masthead to be styled as a heading
+    // rather than as another card, and frees colour to mean stage.
+    <div style={{marginBottom:34,borderRadius:16,overflow:"hidden",border:"1px solid rgba(0,0,0,0.07)",borderLeft:"3px solid rgba(0,0,0,0.14)",background:"rgba(0,0,0,0.018)",boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
+      <BrandHeader label={label} count={rows.length} logoUrl={logoUrl}/>
+      {empty&&!rows.length
+        ? <div style={{padding:"34px 16px",textAlign:"center",color:"#86868B",fontSize:12.5,fontFamily:SF}}>{empty}</div>
+        : null}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))",gap:12,padding:rows.length?"14px":0}}>
+        <AnimatePresence mode="popLayout">
+          {rows.map(c=>(
+            <CampCard key={c.id} camp={c} role={role} accent={accent} onClick={()=>onSelect(c.id)}/>
+          ))}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
 
 // ── CAMPAIGN GRID ─────────────────────────────────────────────────────────────
 // Groups the already-filtered `visible` list by brand (same grouping rule the
 // old sidebar used) and lays each group out as a responsive card grid.
-function CampaignGrid({campaigns,role,onSelect,brandName}){
+function CampaignGrid({campaigns,role,onSelect,brandName,brandLogoUrl,brandFilter}){
   if(campaigns.length===0){
+    // Scoped to one brand with nothing to show: still render that brand's
+    // header. Dropping straight to bare grey text was reported as "the colour
+    // goes when I add the brand filter" — and it is worse than colourless, it
+    // removes the only on-page confirmation of WHICH brand you are scoped to,
+    // so an empty board is indistinguishable from a broken one.
+    const label=brandFilter?brandName(brandFilter):null;
+    if(label){
+      return(
+        <div style={{padding:"20px 28px 40px"}}>
+          <BrandGroup label={label} brandId={brandFilter} rows={[]} role={role}
+            onSelect={onSelect} brandLogoUrl={brandLogoUrl}
+            empty="No campaigns for this brand yet."/>
+        </div>
+      );
+    }
     return <div style={{padding:"64px 16px",textAlign:"center",color:"#86868B",fontSize:13,fontFamily:SF}}>No campaigns match</div>;
   }
+  // Grouped by brand NAME (the display label), but the logo has to be looked up
+  // by brandId — so the id of the first campaign in each group is carried
+  // alongside. Every campaign in a group shares a brand by construction, so any
+  // one of them identifies it.
   const groups={};
   campaigns.forEach(c=>{
     const label=brandName(c.brandId)||"Unassigned";
-    (groups[label]=groups[label]||[]).push(c);
+    (groups[label]=groups[label]||{brandId:c.brandId,rows:[]}).rows.push(c);
   });
   const labels=Object.keys(groups).sort((a,b)=>a==="Unassigned"?1:b==="Unassigned"?-1:a.localeCompare(b));
   return(
     <div style={{padding:"20px 28px 40px"}}>
-      {labels.map(label=>{
-        const bcol=brandAccent(label);
-        return(
-        <div key={label} style={{marginBottom:28}}>
-          {/* Brand header — colour chip + serif name + count, sticky so the
-              brand you're scrolling through stays identifiable. */}
-          <div style={{position:"sticky",top:0,zIndex:2,display:"flex",alignItems:"center",gap:9,padding:"6px 0 11px",background:"linear-gradient(#F5F5F7 78%,rgba(245,245,247,0))"}}>
-            <div style={{width:24,height:24,borderRadius:7,flexShrink:0,background:`${bcol}16`,border:`1px solid ${bcol}33`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9.5,fontWeight:700,color:bcol,fontFamily:SF,letterSpacing:"-0.02em"}}>{brandInitials(label)}</div>
-            <span style={{fontFamily:"'Newsreader',serif",fontSize:15,fontStyle:"italic",fontWeight:600,color:"#1D1D1F",letterSpacing:"-0.01em",whiteSpace:"nowrap"}}>{label}</span>
-            <span style={{padding:"1.5px 7px",borderRadius:20,background:"rgba(0,0,0,0.05)",fontSize:9.5,fontWeight:600,color:"#6E6E73",fontFamily:SF}}>{groups[label].length}</span>
-            <div style={{flex:1,height:1,background:`linear-gradient(to right,${bcol}26,rgba(0,0,0,0))`}}/>
-          </div>
-          {/* auto-FIT, not auto-fill: a brand with one campaign used to leave a
-              full row of empty grid columns beside it, so a page with several
-              small brands was mostly dead space. auto-fit collapses the empty
-              tracks and the tiles share the row. */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))",gap:12}}>
-            <AnimatePresence mode="popLayout">
-              {groups[label].map(c=>(
-                <CampCard key={c.id} camp={c} role={role} onClick={()=>onSelect(c.id)}/>
-              ))}
-            </AnimatePresence>
-          </div>
-        </div>
-        );
-      })}
+      {/* One BrandGroup per brand — a component rather than inline JSX because
+          each group resolves its own accent colour with a hook, and hooks can't
+          be called inside a map body. Grid layout comment lives there too. */}
+      {labels.map(label=>(
+        <BrandGroup
+          key={label}
+          label={label}
+          brandId={groups[label].brandId}
+          rows={groups[label].rows}
+          role={role}
+          onSelect={onSelect}
+          brandLogoUrl={brandLogoUrl}
+        />
+      ))}
     </div>
   );
 }
@@ -2513,7 +2634,22 @@ function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
   const totF=fw.reduce((s,c)=>s+c.tracking.forwards,0);
   const fwPosts=fw.reduce((s,c)=>s+(c.tracking.postsCounted||1),0);
   const avgF=fwPosts>0?totF/fwPosts:null;
-  const totCost=rows.reduce((s,c)=>s+costOf(c),0);
+  // OVERALL CPV — the campaign's cost per view across every post that has
+  // reported back, which is the number this card exists to give.
+  //
+  // The cost is summed over `wd` (creators WITH view data), not `rows` (every
+  // locked creator), and the difference is the whole correctness of the metric.
+  // Summing over `rows` divided one set by another: the fees of creators who
+  // hadn't posted yet were charged against views only the posted ones had
+  // produced. On a campaign three creators deep with one live, CPV read ~3x its
+  // real value and fell as the others went up — so the number moved most when
+  // nothing about the media buy had changed, and two campaigns could never be
+  // compared unless they happened to be equally far along.
+  //
+  // Matching the sets makes it a true cost-per-view of the measured portion, and
+  // the "Based on N of M creators with live data" line below already states the
+  // scope that qualifies it.
+  const totCost=wd.reduce((s,c)=>s+costOf(c),0);
   // Cost per view runs to five decimals. At agency scale the numerator is
   // lakhs and the denominator is millions, so two decimals rounded almost
   // every campaign to the same ₹0.02–₹0.05 band and the metric couldn't
@@ -2530,7 +2666,7 @@ function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
   const agg=[
     {l:"Total Views",v:fmtNum(totV||null),show:true},
     {l:"Total Likes",v:fmtNum(totL||null),show:true},
-    {l:"CPV",v:cpv!=null?`₹${cpv.toFixed(5)}`:"—",show:canCrFin(role)},  // creator fees ÷ views — creator-side, same band as the fees themselves
+    {l:"Overall CPV",v:cpv!=null?`₹${cpv.toFixed(5)}`:"—",show:canCrFin(role)},  // campaign-wide creator fees ÷ views, over the same set of creators
     {l:"Avg ER",v:er!=null?`${er.toFixed(1)}%`:"—",show:true},
     {l:"Avg Forwards",v:avgF!=null?fmtNum(Math.round(avgF)):"—",show:true},
   ].filter(s=>s.show);
@@ -3425,6 +3561,9 @@ export default function InternalCampaigns(){
   const [brands,setBrands]=useState([]);
   useEffect(()=>{ setBrands(ctxBrands||[]); },[ctxBrands]);
   const brandName = useCallback(id=>brands.find(b=>b.id===id)?.name||null,[brands]);
+  // Null for a brand with no logo, so the header falls back to initials without
+  // firing a request that is certain to 404 (see ClientsAPI.avatarUrl).
+  const brandLogoUrl = useCallback(id=>ClientsAPI.avatarUrl(brands.find(b=>b.id===id)),[brands]);
   const onCreateBrand = useCallback(async(name)=>{
     const id = name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
     const created = await ClientsAPI.create({ id, name });
@@ -3859,7 +3998,7 @@ export default function InternalCampaigns(){
           </AnimatePresence>
           {/* Grid */}
           <div style={{flex:1,minHeight:0,overflowY:"auto"}}>
-            <CampaignGrid campaigns={visible} role={role} onSelect={setSelId} brandName={brandName}/>
+            <CampaignGrid campaigns={visible} role={role} onSelect={setSelId} brandName={brandName} brandLogoUrl={brandLogoUrl} brandFilter={brandFilter}/>
           </div>
         </motion.div>
       )}

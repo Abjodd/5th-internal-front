@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { SECTIONS, canAccess, getRole } from "../routes/sections";
 import { useAuth } from "../context/AuthContext";
-import { ClientsAPI } from "../lib/api";
+import { ClientsAPI, UsersAPI } from "../lib/api";
 
 const SECTION_ICONS = {
   LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck, Building2,
@@ -309,10 +309,43 @@ function SectionTab({ section }) {
   );
 }
 
+// The signed-in user's own photo in the nav chip, falling back to their
+// initials. Kept tiny and self-contained because it renders on every page: the
+// URL is null when the record has no photo, so no request is made that is
+// certain to 404, and a photo that fails to decode degrades to initials rather
+// than a broken-image glyph sitting in the middle of the nav.
+function UserAvatar({ user, size, bg, fg }) {
+  const [broken, setBroken] = useState(false);
+  const url = UsersAPI.avatarUrl(user);
+  const show = url && !broken;
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: "50%", flexShrink: 0, overflow: "hidden",
+      background: show ? "rgba(255,255,255,0.2)" : bg, color: fg,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontSize: size * 0.37, fontWeight: 600,
+      transition: "background 0.35s ease, color 0.35s ease",
+    }}>
+      {show
+        ? <img src={url} alt="" onError={() => setBroken(true)}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        : (user.avatar || initials(user.name))}
+    </div>
+  );
+}
+
+// The chip is TWO controls sharing one pill, not one.
+//
+// Clicking your name or photo goes to your profile — that is what the whole
+// chip looks like it should do, and it is what it now does. The chevron beside
+// it still opens the small menu, because Sign out has to stay one click from
+// anywhere; folding it into the profile page would have made signing out a
+// two-step journey through a page nobody wanted to visit.
 function UserMenu({ user, onLogout }) {
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   const { glass } = useNavSurface();
   const roleLabel = getRole(user.role)?.label || user.role;
 
@@ -323,40 +356,50 @@ function UserMenu({ user, onLogout }) {
   }, [location.pathname]);
 
   return (
-    <div style={{ position: "relative" }}>
+    <div
+      style={{
+        position: "relative", display: "flex", alignItems: "center",
+        height: 44, borderRadius: 999,
+        background: open || hovered ? glass.hoverFill : "transparent",
+        transition: "background 0.15s",
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <button
-        onClick={() => setOpen(o => !o)}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
+        onClick={() => navigate("/profile")}
+        title="Your profile"
         style={{
           display: "flex", alignItems: "center", gap: 9,
-          padding: "4px 12px 4px 4px", height: 44,
-          background: open || hovered ? glass.hoverFill : "transparent",
-          border: "none",
+          padding: "4px 4px 4px 4px", height: 44,
+          background: "transparent", border: "none",
           borderRadius: 999, cursor: "pointer",
           fontFamily: "'Sora', sans-serif", fontSize: 12,
-          transition: "background 0.15s",
         }}
       >
-        <div style={{
-          width: 30, height: 30, borderRadius: "50%",
-          background: glass.chipOnFill, color: glass.chipOnText,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 11, fontWeight: 600, flexShrink: 0,
-          transition: "background 0.35s ease, color 0.35s ease",
-        }}>
-          {user.avatar}
-        </div>
+        <UserAvatar user={user} size={30} bg={glass.chipOnFill} fg={glass.chipOnText} />
         <div style={{ textAlign: "left" }}>
           <div style={{ fontWeight: 600, fontSize: 12.5, color: glass.text, lineHeight: 1.25, transition: "color 0.35s ease" }}>
             {user.name.split(" ")[0]}
           </div>
           <div style={{ fontSize: 10.5, color: glass.textSoft, lineHeight: 1.25, transition: "color 0.35s ease" }}>{roleLabel}</div>
         </div>
+      </button>
+
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-label="Account menu"
+        aria-expanded={open}
+        style={{
+          display: "flex", alignItems: "center", height: 44,
+          padding: "0 10px 0 2px", background: "transparent",
+          border: "none", borderRadius: 999, cursor: "pointer",
+        }}
+      >
         <motion.span
           animate={{ rotate: open ? 180 : 0 }}
           transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-          style={{ display: "flex", marginLeft: 2 }}
+          style={{ display: "flex" }}
         >
           <ChevronDown size={14} color={glass.label} strokeWidth={2} />
         </motion.span>
@@ -383,6 +426,18 @@ function UserMenu({ user, onLogout }) {
               }}>
                 {user.title}
               </div>
+            </div>
+            <div
+              onClick={() => { setOpen(false); navigate("/profile"); }}
+              style={{
+                padding: "11px 16px", cursor: "pointer",
+                fontSize: 11.5, color: F.ink, fontWeight: 500,
+                borderBottom: `1px solid ${F.hairline}`, transition: "background 0.1s",
+              }}
+              onMouseOver={e => e.currentTarget.style.background = F.navyTint}
+              onMouseOut={e => e.currentTarget.style.background = "transparent"}
+            >
+              Your profile
             </div>
             <div
               onClick={() => { setOpen(false); onLogout(); }}
@@ -468,6 +523,7 @@ function BrandSelect({ brands, value, onChange }) {
   if (brands.length === 0) return null;
 
   const selected = brands.find(b => b.id === value);
+  const selectedLogo = ClientsAPI.avatarUrl(selected);
   const shown = q
     ? brands.filter(b => b.name.toLowerCase().includes(q.toLowerCase()))
     : brands;
@@ -518,14 +574,22 @@ function BrandSelect({ brands, value, onChange }) {
           transition: "background 0.15s, color 0.35s ease",
         }}
       >
+        {/* Shows the selected brand's LOGO rather than only its initials, so
+            the control you scoped the app with identifies the brand at a
+            glance. Kept in the theme's own colours — brand-derived hues are
+            deliberately not used anywhere in the shell. */}
         <span style={{
-          width: 24, height: 24, borderRadius: "50%", flexShrink: 0,
-          background: value ? glass.chipOnFill : glass.chipOffFill,
+          width: 24, height: 24, borderRadius: "50%", flexShrink: 0, overflow: "hidden",
+          background: selectedLogo ? "#FFFFFF" : (value ? glass.chipOnFill : glass.chipOffFill),
           color: value ? glass.chipOnText : glass.chipOffText,
           display: "flex", alignItems: "center", justifyContent: "center",
           fontSize: 9, fontWeight: 700,
           transition: "background 0.35s ease, color 0.35s ease",
-        }}>{selected ? initials(selected.name) : "AB"}</span>
+        }}>
+          {selectedLogo
+            ? <img src={selectedLogo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
+            : (selected ? initials(selected.name) : "AB")}
+        </span>
         <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 140 }}>
           {selected ? selected.name : "All brands"}
         </span>
@@ -727,7 +791,12 @@ export default function AppShell() {
   const loadBrands = () => {
     ClientsAPI.list()
       .then(list => {
-        const brandsList = list.map(c => ({ id: c.id, name: c.name })).filter(b => b.name);
+        // hasAvatar/avatarUpdatedAt come along so anything rendering a brand can
+        // build its logo URL (ClientsAPI.avatarUrl) without refetching the
+        // clients collection. Still no image bytes — those are served per-logo.
+        const brandsList = list
+          .map(c => ({ id: c.id, name: c.name, hasAvatar: c.hasAvatar, avatarUpdatedAt: c.avatarUpdatedAt }))
+          .filter(b => b.name);
         setBrands(brandsList);
         setBrandFilter(prev => (prev && !brandsList.some(b => b.id === prev) ? null : prev));
       })

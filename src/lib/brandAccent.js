@@ -60,6 +60,10 @@ function hslToHex(h, s, l) {
 // Decoding the same logo for every card in a brand's group is wasted work, and
 // the result never changes for a given URL (avatar URLs are cache-busted with
 // ?v=avatarUpdatedAt, so a new upload is a new key).
+//
+// The PROMISE is cached, not the resolved colour: several cards for one brand
+// mount in the same tick, and caching only the result would let every one of
+// them start its own decode before the first finished.
 const cache = new Map();
 
 /**
@@ -69,9 +73,9 @@ const cache = new Map();
  */
 export function accentFromImage(url) {
   if (!url) return Promise.resolve(null);
-  if (cache.has(url)) return Promise.resolve(cache.get(url));
+  if (cache.has(url)) return cache.get(url);
 
-  const p = new Promise((resolve) => {
+  const pending = new Promise((resolve) => {
     const img = new Image();
     // Required to read pixels back out. The API sends permissive CORS headers
     // (see server.js), so this succeeds; without it the canvas is tainted and
@@ -118,12 +122,10 @@ export function accentFromImage(url) {
       }
     };
     img.src = url;
-  }).then((hex) => {
-    cache.set(url, hex);
-    return hex;
   });
 
-  return p;
+  cache.set(url, pending);
+  return pending;
 }
 
 /**

@@ -22,6 +22,34 @@ async function request(path, options = {}) {
   return res.json();
 }
 
+/**
+ * Builds the `<img src>` for a photo served from `${basePath}/:id/avatar` —
+ * used for internal users, brand-portal credentials and client logos, which all
+ * store their image the same way (see avatarStore.js on the backend).
+ *
+ * The bytes never travel in a list or login payload; a record carries
+ * `hasAvatar` + `avatarUpdatedAt` and the URL is derived from those. Returns
+ * null when there is nothing to fetch, so callers render initials rather than
+ * firing a request that is certain to 404.
+ *
+ * `?v=` is the record's own avatarUpdatedAt: the backend serves the image with
+ * a one-year immutable cache, so without a changing URL a replaced photo would
+ * keep showing the old one until a hard reload. BASE-prefixed so it resolves
+ * against the API, not the SPA.
+ *
+ * Accepts a record or a bare id — an id alone cannot know whether a photo
+ * exists, so it always produces a URL and leaves the 404 to the <img> onError
+ * fallback.
+ */
+const avatarUrlFor = (basePath) => (record) => {
+  const id = typeof record === "string" ? record : record?.id;
+  if (!id || (typeof record === "object" && !record?.hasAvatar)) return null;
+  const v = typeof record === "object" && record?.avatarUpdatedAt
+    ? `?v=${encodeURIComponent(record.avatarUpdatedAt)}`
+    : "";
+  return `${BASE}${basePath}/${encodeURIComponent(id)}/avatar${v}`;
+};
+
 export const ClientsAPI = {
   list: () => request("/api/clients"),
   create: (client) =>
@@ -29,18 +57,8 @@ export const ClientsAPI = {
   update: (id, patch) =>
     request(`/api/clients/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
 
-  // The brand's logo. Same contract as the user/credential avatars — bytes are
-  // never in the list payload, `?v=` busts the immutable cache when the logo
-  // changes, and null means "no logo, render initials" so no request is made
-  // that is certain to 404. See authCrud().avatarUrl below.
-  avatarUrl: (brand) => {
-    const id = typeof brand === "string" ? brand : brand?.id;
-    if (!id || (typeof brand === "object" && !brand?.hasAvatar)) return null;
-    const v = typeof brand === "object" && brand?.avatarUpdatedAt
-      ? `?v=${encodeURIComponent(brand.avatarUpdatedAt)}`
-      : "";
-    return `${BASE}/api/clients/${encodeURIComponent(id)}/avatar${v}`;
-  },
+  // The brand's logo — same contract as the user/credential avatars.
+  avatarUrl: avatarUrlFor("/api/clients"),
 };
 
 export const FindingsAPI = {
@@ -135,23 +153,7 @@ function authCrud(basePath) {
     remove: (id) => request(`${basePath}/${id}`, { method: "DELETE" }),
     password: (id) => request(`${basePath}/${id}/password`),
 
-    // Profile photo. The bytes never travel in a list or login payload — the
-    // record carries `hasAvatar` + `avatarUpdatedAt` and this builds the <img>
-    // src from them. BASE-prefixed so it resolves against the API, not the SPA.
-    //
-    // `?v=` is the record's own avatarUpdatedAt: the backend serves the image
-    // with a one-year immutable cache, so without a changing URL a replaced
-    // photo would keep showing the old one until the user hard-reloaded. Returns
-    // null when there's nothing to fetch, so callers render initials instead of
-    // requesting a guaranteed 404.
-    avatarUrl: (record) => {
-      const id = typeof record === "string" ? record : record?.id;
-      if (!id || (typeof record === "object" && !record?.hasAvatar)) return null;
-      const v = typeof record === "object" && record?.avatarUpdatedAt
-        ? `?v=${encodeURIComponent(record.avatarUpdatedAt)}`
-        : "";
-      return `${BASE}${basePath}/${encodeURIComponent(id)}/avatar${v}`;
-    },
+    avatarUrl: avatarUrlFor(basePath),
   };
 }
 

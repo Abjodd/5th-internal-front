@@ -19,13 +19,15 @@
  * appear, and is tedious to ask someone else to change — so it is the one thing
  * you can change here.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, LogOut } from "lucide-react";
+import { motion } from "motion/react";
+import { ArrowLeft, LogOut, Check } from "lucide-react";
 
 import { useAuth } from "../../context/AuthContext";
 import { UsersAPI } from "../../lib/api";
 import { getRole } from "../../routes/sections";
+import { profileCompletion } from "../../lib/profileCompletion";
 import { T } from "../../theme/tokens";
 import AvatarPicker from "../../components/AvatarPicker";
 
@@ -55,6 +57,116 @@ function Field({ label, value, mono = false }) {
   );
 }
 
+/**
+ * Completion donut + the list of what is still missing.
+ *
+ * The ring alone would only tell you that you are at 80%; the list is what
+ * makes it actionable. `pending` lets the ring respond to a photo that has been
+ * PICKED but not yet saved — otherwise choosing a file leaves the meter stale
+ * until the save round-trips, which reads as the upload having done nothing.
+ */
+function CompletionCard({ user, pendingPhoto, onFixPhoto }) {
+  const { pct, done, total, items, missing } = profileCompletion(
+    // A picked-but-unsaved photo counts as present; an explicit removal (null)
+    // counts as absent. `undefined` means untouched — fall through to the
+    // saved state.
+    pendingPhoto === undefined ? user : { ...user, hasAvatar: !!pendingPhoto },
+  );
+  const complete = done === total; // not pct === 100 — see lib/profileCompletion
+
+  const SIZE = 96, STROKE = 9;
+  const r = (SIZE - STROKE) / 2;
+  const circ = 2 * Math.PI * r;
+  const stroke = complete ? T.green : T.accent;
+  const offset = circ * (1 - pct / 100);
+
+  // The draw-on is decoration; the arc's LENGTH is data. Browsers pause
+  // requestAnimationFrame in a hidden tab, so an animation started there never
+  // advances and the arc sits frozen part-way — showing a percentage that was
+  // never true. Mounting straight at the target whenever the animation can't
+  // run keeps the ring honest; only the flourish is lost.
+  const still = typeof document !== "undefined" && document.visibilityState === "hidden";
+  const reduce = typeof window !== "undefined"
+    && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const animateIn = !still && !reduce;
+
+  return (
+    <div style={{
+      background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12,
+      padding: "20px 24px", marginBottom: 16, boxShadow: T.shadow,
+      display: "flex", alignItems: "center", gap: 26, flexWrap: "wrap",
+    }}>
+      <div style={{ position: "relative", width: SIZE, height: SIZE, flexShrink: 0 }}>
+        <svg width={SIZE} height={SIZE} style={{ transform: "rotate(-90deg)" }}>
+          <circle cx={SIZE / 2} cy={SIZE / 2} r={r} fill="none" stroke={T.border} strokeWidth={STROKE} />
+          <motion.circle
+            cx={SIZE / 2} cy={SIZE / 2} r={r} fill="none" stroke={stroke}
+            strokeWidth={STROKE} strokeLinecap="round" strokeDasharray={circ}
+            initial={animateIn ? { strokeDashoffset: circ } : false}
+            animate={{ strokeDashoffset: offset }}
+            transition={animateIn ? { duration: 0.9, ease: [0.22, 1, 0.36, 1] } : { duration: 0 }}
+          />
+        </svg>
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center", pointerEvents: "none",
+        }}>
+          <div style={{
+            fontFamily: "'Newsreader', serif", fontStyle: "italic",
+            fontSize: 23, fontWeight: 600, color: T.text, lineHeight: 1,
+          }}>{pct}%</div>
+          <div style={{
+            fontSize: 8.5, fontWeight: 600, color: T.label, marginTop: 3,
+            textTransform: "uppercase", letterSpacing: "0.08em",
+          }}>{done} of {total}</div>
+        </div>
+      </div>
+
+      <div style={{ flex: 1, minWidth: 210 }}>
+        <div style={{
+          fontSize: 9, fontWeight: 600, color: T.label,
+          textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 9,
+        }}>
+          Profile completion
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          {items.map((it) => (
+            <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11.5 }}>
+              <span style={{
+                width: 13, height: 13, borderRadius: 999, flexShrink: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: it.filled ? `${T.green}1A` : "transparent",
+                border: it.filled ? "none" : `1px solid ${T.border}`,
+              }}>
+                {it.filled && <Check size={9} strokeWidth={3} color={T.green} />}
+              </span>
+              <span style={{ color: it.filled ? T.sub : T.text, fontWeight: it.filled ? 400 : 500 }}>
+                {it.label}
+              </span>
+              {!it.filled && it.actionable && (
+                <button onClick={onFixPhoto} style={{
+                  marginLeft: "auto", padding: "2px 9px", borderRadius: 999,
+                  background: "transparent", border: `1px solid ${T.accent}40`,
+                  color: T.accent, fontSize: 10, fontWeight: 500,
+                  fontFamily: "'Sora', sans-serif", cursor: "pointer",
+                }}>Add</button>
+              )}
+            </div>
+          ))}
+        </div>
+        {/* Only when something is outstanding that the reader cannot fix
+            themselves — a standing "ask the founder" line on a finished
+            profile is noise. */}
+        {!complete && missing.some((m) => !m.actionable) && (
+          <div style={{ fontSize: 10.5, color: T.label, marginTop: 10, lineHeight: 1.5 }}>
+            Everything except your photo is set by the founder on Access &amp; Credentials.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Profile() {
   const { user, logout, updateUser } = useAuth();
   const navigate = useNavigate();
@@ -64,6 +176,8 @@ export default function Profile() {
   const [avatarImage, setAvatarImage] = useState(undefined);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState(null); // { tone: "ok" | "err", text }
+  // Target for the completion card's "Add" button.
+  const photoRef = useRef(null);
 
   if (!user) return null;
 
@@ -124,8 +238,14 @@ export default function Profile() {
           How you appear across the platform. Your details are managed by the founder on Access &amp; Credentials.
         </div>
 
+        <CompletionCard
+          user={user}
+          pendingPhoto={avatarImage}
+          onFixPhoto={() => photoRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+        />
+
         {/* Photo — the one editable thing on this page */}
-        <div style={{
+        <div ref={photoRef} style={{
           background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12,
           padding: "22px 24px", marginBottom: 16, boxShadow: T.shadow,
         }}>

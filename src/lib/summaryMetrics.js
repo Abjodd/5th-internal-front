@@ -448,7 +448,16 @@ export function growthFrom(campaigns = []) {
       if (Array.isArray(points) && points.length) tracked.push(points);
     }
   }
-  if (!tracked.length) return { points: [], creators: 0, campaigns: 0 };
+  // Counted once, up front, so the "not enough readings yet" return below
+  // reports the same creator AND campaign totals as the populated one — a
+  // caller that reads them from the empty shape gets a real number, not a zero
+  // that happens to be unread today.
+  const campaignsWithHistory = (campaigns || []).filter(
+    (c) => !c?.deleted && (c.creators || []).some((cr) => cr?.tracking?.history?.length),
+  ).length;
+  const totals = { creators: tracked.length, campaigns: campaignsWithHistory };
+
+  if (!tracked.length) return { points: [], ...totals };
 
   const dayOf = (iso) => String(iso).slice(0, 10);
   const byDay = tracked.map((points) => {
@@ -461,7 +470,7 @@ export function growthFrom(campaigns = []) {
 
   const days = [...new Set(byDay.flatMap((m) => [...m.keys()]))].sort();
   // A growth chart needs two points; one day is a number, not a trajectory.
-  if (days.length < 2) return { points: [], creators: tracked.length, campaigns: 0 };
+  if (days.length < 2) return { points: [], ...totals };
 
   const carried = byDay.map(() => null);
   const points = days.map((date) => {
@@ -476,9 +485,5 @@ export function growthFrom(campaigns = []) {
     return { date, views, engagements };
   });
 
-  const campaignsWithHistory = (campaigns || []).filter(
-    (c) => !c?.deleted && (c.creators || []).some((cr) => cr?.tracking?.history?.length),
-  ).length;
-
-  return { points, creators: tracked.length, campaigns: campaignsWithHistory };
+  return { points, ...totals };
 }

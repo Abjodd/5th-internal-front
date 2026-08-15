@@ -23,10 +23,11 @@
  *
  * Metrics deliberately left null, and what each would need:
  *   health.revenue / .growth  — a target or prior-period baseline to score against
- *   health.clients            — a client health/status field; `clients` has none
  *   team.*.utilizationPct     — capacity or timesheet data; nothing records hours
- *   clients.healthy/atRisk/critical — same missing status field
+ *   clients.healthy/atRisk/critical — a client health/status field; `clients` has none
  *   revenue.renewalsDue       — retainers have no renewal date on the record
+ *
+ * `health.clients` used to be on that list and no longer is — see healthFrom().
  *
  * There used to be a sixth entry here, `risks.*` — a five-signal "risk radar"
  * with nothing behind any of its five values. No risk scoring exists anywhere
@@ -137,14 +138,44 @@ function clientsFrom(clients, campaigns) {
     }
   }
 
+  // The campaigns themselves, per client — what the Portfolio card shows on its
+  // reverse. Matched on brandId OR the denormalized `client` display name,
+  // exactly like the active count above: campaigns predating brandId carry only
+  // the name, and dropping them would under-report a client's book on the card
+  // while still counting them in the badge on its front.
+  const campaignsByClient = new Map();
+  for (const c of campaigns || []) {
+    for (const key of [c.brandId, c.client]) {
+      if (!key) continue;
+      if (!campaignsByClient.has(key)) campaignsByClient.set(key, []);
+      campaignsByClient.get(key).push(c);
+    }
+  }
+
   const names = (clients || []).map((c) => {
     const activeCampaigns = activeByClient.get(c.id) ?? activeByClient.get(c.name) ?? 0;
+    // ?? not ||, and id before name: a client whose id matched an EMPTY list
+    // must not fall through to a same-named bucket.
+    const own = campaignsByClient.get(c.id) ?? campaignsByClient.get(c.name) ?? [];
     return {
       id: c.id,
       name: c.name,
       activeCampaigns,
       status: activeCampaigns > 0 ? "active" : "idle",
       health: null, // no health field exists on a client record
+      // Newest first, so a card opens on what is happening now rather than on
+      // whatever the collection happens to return first.
+      campaigns: [...own]
+        .sort((a, b) => String(b.start || "").localeCompare(String(a.start || "")))
+        .map((x) => ({
+          id: x.id,
+          name: x.name || "Untitled campaign",
+          // The same normalised label the Campaigns board and Billing show, so
+          // a stage never reads differently depending on which screen you are on.
+          stage: PIPELINE.find((p) => p.id === normStage(x.stage))?.label || "Draft",
+          progress: Math.max(0, Math.min(100, Number(x.progress) || 0)),
+          live: isActive(x),
+        })),
     };
   });
 
@@ -194,16 +225,30 @@ function teamFrom(users, campaigns) {
 }
 
 /* ── Agency health ──────────────────────────────────────────────────────────
-   Five 0-100 signals. Only two have anything behind them:
+   Five 0-100 signals. THREE have something real behind them:
 
      delivery — mean `progress` across in-flight campaigns. `progress` is a
                 real stored field, maintained by the pipeline stage.
      team     — share of the roster staffed on a live campaign.
+     clients  — share of the book with a live campaign running.
 
-   revenue, clients and growth need a target, a health field and a prior-period
-   baseline respectively. None exist, so all three are null and the ring draws
-   them grey with an em dash. */
-function healthFrom({ campaigns, team }) {
+   `clients` used to be null on the grounds that the clients collection has no
+   health or status field, which is true — but it was the wrong test. What the
+   ring asks is "how are clients tracking", and ENGAGEMENT answers that from
+   data we do have: clientsFrom() already derives active-vs-idle from whether a
+   client has a campaign in flight, and the Portfolio section has been
+   reporting it as a headline number all along. The signal was being drawn as a
+   grey em dash next to a section stating the very figure it needed.
+
+   It is engagement, not satisfaction, and the card below the ring says so.
+
+   revenue and growth stay null, and for a reason that has not changed: both
+   need a BASELINE the database does not hold — a revenue target to score
+   attainment against, and a prior-period figure to measure growth from. The
+   invoices collection can say what was billed; nothing can say what was
+   supposed to be. Scoring either would mean inventing the denominator, and a
+   confident 74% built on a made-up target is worse than an honest dash. */
+function healthFrom({ campaigns, team, clients }) {
   const active = (campaigns || []).filter(isActive);
   const withProgress = active.filter((c) => Number.isFinite(Number(c.progress)));
   const delivery = withProgress.length
@@ -213,7 +258,7 @@ function healthFrom({ campaigns, team }) {
   return {
     revenue: null,
     delivery,
-    clients: null,
+    clients: pctOrNull(clients.active, clients.total),
     team: team.staffedPct,
     growth: null,
   };
@@ -343,6 +388,10 @@ export function buildSummary(sources = {}, colors = {}) {
   } = sources;
 
   const team = teamFrom(users, campaigns);
+  // Derived before healthFrom, which reads the active/total split for its
+  // `clients` signal rather than recomputing it — one definition of "a client
+  // with live work", used by both the ring and the Portfolio section.
+  const clientStats = clientsFrom(clients, campaigns);
 
   return {
     asOf: new Date()
@@ -361,13 +410,80 @@ export function buildSummary(sources = {}, colors = {}) {
       creators: creators.length,
     },
 
-    health: healthFrom({ campaigns, team }),
+    health: healthFrom({ campaigns, team, clients: clientStats }),
     revenue: revenueFrom(invoices),
     campaigns: { stages: stagesFrom(campaigns) },
-    clients: clientsFrom(clients, campaigns),
+    clients: clientStats,
     team,
 
     decisions: decisionsFrom({ quotes, invoices, clientRequests, creatorRequests }),
     performance: performanceFrom({ invoices, campaigns }, colors),
+    growth: growthFrom(campaigns),
   };
+}
+
+/* ── LIVE-POST GROWTH ────────────────────────────────────────────────────────
+   How the agency's live posts have built up over time, from the append-only
+   `creators[].tracking.history[]` the backend records on every post-metrics
+   refresh (5th-internal-back/trackingHistory.js). Before that history existed
+   each refresh overwrote the previous numbers, so there was only ever a "now".
+
+   The carry-forward rule is deliberately identical to growthSeries() in the
+   client portal (5th-avenue-client-front/src/lib/portalMetrics.js): each
+   creator's series is CUMULATIVE but sampled whenever that creator's post
+   happened to be refreshed, so a creator with no reading on a given day has not
+   dropped to zero — they simply were not measured. Summing only the points that
+   exist on each day would make the total lurch with the refresh schedule and
+   invent collapses that never happened. Carrying each creator's last known
+   value forward keeps the series monotonic, which a cumulative metric must be.
+
+   The two apps quote the same brands the same numbers, so if this rule changes
+   it changes in both. */
+export function growthFrom(campaigns = []) {
+  const tracked = [];
+  for (const c of campaigns) {
+    if (c?.deleted) continue;
+    for (const cr of c.creators || []) {
+      const points = cr?.tracking?.history;
+      if (Array.isArray(points) && points.length) tracked.push(points);
+    }
+  }
+  // Counted once, up front, so the "not enough readings yet" return below
+  // reports the same creator AND campaign totals as the populated one — a
+  // caller that reads them from the empty shape gets a real number, not a zero
+  // that happens to be unread today.
+  const campaignsWithHistory = (campaigns || []).filter(
+    (c) => !c?.deleted && (c.creators || []).some((cr) => cr?.tracking?.history?.length),
+  ).length;
+  const totals = { creators: tracked.length, campaigns: campaignsWithHistory };
+
+  if (!tracked.length) return { points: [], ...totals };
+
+  const dayOf = (iso) => String(iso).slice(0, 10);
+  const byDay = tracked.map((points) => {
+    const m = new Map();
+    for (const p of [...points].sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
+      m.set(dayOf(p.at), p);
+    }
+    return m;
+  });
+
+  const days = [...new Set(byDay.flatMap((m) => [...m.keys()]))].sort();
+  // A growth chart needs two points; one day is a number, not a trajectory.
+  if (days.length < 2) return { points: [], ...totals };
+
+  const carried = byDay.map(() => null);
+  const points = days.map((date) => {
+    let views = 0, engagements = 0;
+    byDay.forEach((m, i) => {
+      if (m.has(date)) carried[i] = m.get(date);
+      const p = carried[i];
+      if (!p) return;
+      views += Number(p.views) || 0;
+      engagements += (Number(p.likes) || 0) + (Number(p.comments) || 0) + (Number(p.forwards) || 0);
+    });
+    return { date, views, engagements };
+  });
+
+  return { points, ...totals };
 }

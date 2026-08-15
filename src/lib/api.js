@@ -22,12 +22,43 @@ async function request(path, options = {}) {
   return res.json();
 }
 
+/**
+ * Builds the `<img src>` for a photo served from `${basePath}/:id/avatar` —
+ * used for internal users, brand-portal credentials and client logos, which all
+ * store their image the same way (see avatarStore.js on the backend).
+ *
+ * The bytes never travel in a list or login payload; a record carries
+ * `hasAvatar` + `avatarUpdatedAt` and the URL is derived from those. Returns
+ * null when there is nothing to fetch, so callers render initials rather than
+ * firing a request that is certain to 404.
+ *
+ * `?v=` is the record's own avatarUpdatedAt: the backend serves the image with
+ * a one-year immutable cache, so without a changing URL a replaced photo would
+ * keep showing the old one until a hard reload. BASE-prefixed so it resolves
+ * against the API, not the SPA.
+ *
+ * Accepts a record or a bare id — an id alone cannot know whether a photo
+ * exists, so it always produces a URL and leaves the 404 to the <img> onError
+ * fallback.
+ */
+const avatarUrlFor = (basePath) => (record) => {
+  const id = typeof record === "string" ? record : record?.id;
+  if (!id || (typeof record === "object" && !record?.hasAvatar)) return null;
+  const v = typeof record === "object" && record?.avatarUpdatedAt
+    ? `?v=${encodeURIComponent(record.avatarUpdatedAt)}`
+    : "";
+  return `${BASE}${basePath}/${encodeURIComponent(id)}/avatar${v}`;
+};
+
 export const ClientsAPI = {
   list: () => request("/api/clients"),
   create: (client) =>
     request("/api/clients", { method: "POST", body: JSON.stringify(client) }),
   update: (id, patch) =>
     request(`/api/clients/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+
+  // The brand's logo — same contract as the user/credential avatars.
+  avatarUrl: avatarUrlFor("/api/clients"),
 };
 
 export const FindingsAPI = {
@@ -121,6 +152,8 @@ function authCrud(basePath) {
     update: (id, patch) => request(`${basePath}/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
     remove: (id) => request(`${basePath}/${id}`, { method: "DELETE" }),
     password: (id) => request(`${basePath}/${id}/password`),
+
+    avatarUrl: avatarUrlFor(basePath),
   };
 }
 

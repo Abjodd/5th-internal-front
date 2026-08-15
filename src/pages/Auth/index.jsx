@@ -18,6 +18,15 @@ import { UsersAPI, BrandCredentialsAPI, ClientsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { PLATFORM_ROLES } from "../../routes/sections";
 import { T } from "../../theme/tokens";
+import BrandPicker from "../../components/BrandPicker";
+import AvatarPicker from "../../components/AvatarPicker";
+
+// Where the brand-portal app lives, for the "open client login" shortcut below.
+// Env-driven so a local portal (localhost:5174) can be targeted during dev
+// without editing this file; falls back to the deployed portal.
+const CLIENT_PORTAL_URL = (
+  import.meta.env.VITE_CLIENT_PORTAL_URL || "https://5th-avenue-client-front.vercel.app"
+).replace(/\/$/, "");
 
 // ── STYLE HELPERS ────────────────────────────────────────────────────────────
 const thS = {
@@ -60,6 +69,29 @@ const Pill = ({ children, color = T.sub }) => (
     border: `1px solid ${color}28`, whiteSpace: "nowrap",
   }}>{children}</span>
 );
+
+// Table-row avatar: the photo when there is one, initials when there isn't.
+// `url` is null for records with no photo (api.avatarUrl returns null on
+// hasAvatar:false), so a row without one never issues a request that 404s; the
+// onError path only covers a photo that exists but fails to decode.
+function RowAvatar({ record, url, size = 26 }) {
+  const [broken, setBroken] = useState(false);
+  const initials = record.avatar
+    || (record.name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase();
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: "50%", overflow: "hidden", flexShrink: 0,
+      background: url && !broken ? T.mute : T.accent, color: "#FFF",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontSize: size * 0.36, fontWeight: 600, fontFamily: "'Sora'",
+    }}>
+      {url && !broken
+        ? <img src={url} alt="" onError={() => setBroken(true)}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        : initials}
+    </div>
+  );
+}
 
 const roleLabel = id => PLATFORM_ROLES.find(r => r.id === id)?.label || id;
 // Hierarchy for sorting the internal-users table — PLATFORM_ROLES is already
@@ -129,7 +161,7 @@ function PasswordCell({ api, record }) {
 // One modal for both collections: `kind` decides which fields show (role for
 // internal users, brand for portal credentials). `editing` = existing record
 // (password optional = reset) vs null = create (password required).
-function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSave, onCreateBrand }) {
+function CredentialModal({ kind, editing, brands, defaultBrandId, currentAvatarUrl, onClose, onSave, onCreateBrand }) {
   const isUser = kind === "internal";
   const [form, setForm] = useState({
     username: editing?.username || "",
@@ -140,29 +172,24 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
     brandId:  editing?.brandId || defaultBrandId || "",
     password: "",
   });
+  // Kept OUT of `form` on purpose: this is the three-state avatar value
+  // (undefined = untouched · null = remove · data URI = replace), and `form` is
+  // spread wholesale into the patch, which would turn "untouched" into an
+  // explicit undefined the caller couldn't distinguish. See AvatarPicker.
+  const [avatarImage, setAvatarImage] = useState(undefined);
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
   const u = (k, v) => { setForm(p => ({ ...p, [k]: v })); setErr(""); };
+  // Initials follow the name as it's typed while no photo is set, so the
+  // placeholder in the picker matches the avatar the record will actually get.
+  const initials = (form.name || "").split(/\s+/).filter(Boolean).slice(0, 2)
+    .map(w => w[0]).join("").toUpperCase();
 
-  // New-brand staging — same pattern as the campaign creation modal: nothing
-  // is written to the backend until the credential is actually submitted, so
-  // abandoning this modal never leaves an orphan brand.
-  const [newBrandName, setNewBrandName] = useState("");
+  // New-brand staging — nothing is written to the backend until the
+  // credential is actually submitted, so abandoning this modal never leaves
+  // an orphan brand. BrandPicker owns the search/create UI; this is just the
+  // committed value, same shape as the campaign creation modal.
   const [pendingBrandName, setPendingBrandName] = useState(null);
-  const handleStageBrand = () => {
-    const name = newBrandName.trim();
-    if (!name) return;
-    setErr("");
-    const existing = brands.find(b => b.name.toLowerCase() === name.toLowerCase());
-    if (existing) {
-      u("brandId", existing.id);
-      setPendingBrandName(null);
-    } else {
-      setPendingBrandName(name);
-      u("brandId", "__new__");
-    }
-    setNewBrandName("");
-  };
 
   const submit = async () => {
     if (!form.username.trim()) return setErr("Username (email) is required.");
@@ -176,7 +203,9 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
         const created = await onCreateBrand(pendingBrandName);
         brandId = created.id;
       }
-      await onSave({ ...form, brandId });
+      // `avatarImage` is passed through only when it was actually touched, so a
+      // plain rename never carries an avatar instruction at all.
+      await onSave({ ...form, brandId, ...(avatarImage !== undefined ? { avatarImage } : {}) });
       onClose();
     } catch (e) {
       setErr(String(e.message).includes("409") ? "That username already exists." : `Save failed: ${e.message}`);
@@ -196,6 +225,20 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
         </div>
 
         <div style={{ padding: "16px 20px", overflowY: "auto", flex: 1 }}>
+          {/* Photo first — it's optional, so it sits above the required fields
+              rather than interrupting them, and the picker states plainly that
+              it can be skipped. */}
+          <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.border}` }}>
+            <Lbl>Profile photo</Lbl>
+            <div style={{ marginTop: 8 }}>
+              <AvatarPicker
+                value={avatarImage}
+                currentUrl={currentAvatarUrl}
+                initials={initials}
+                onChange={(v) => { setAvatarImage(v); setErr(""); }}
+              />
+            </div>
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
             <div>
               <Lbl>Name</Lbl>
@@ -226,14 +269,10 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, onClose, onSav
           ) : (
             <div style={{ marginBottom: 12 }}>
               <Lbl>Brand</Lbl>
-              <select value={form.brandId} onChange={e => { u("brandId", e.target.value); if (e.target.value !== "__new__") setPendingBrandName(null); }} style={{ ...INP, cursor: "pointer" }}>
-                <option value="">— Select brand —</option>
-                {brands.slice().sort((a, b) => a.name.localeCompare(b.name)).map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-                {pendingBrandName && <option value="__new__">{pendingBrandName} (new)</option>}
-              </select>
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <input value={newBrandName} onChange={e => setNewBrandName(e.target.value)} placeholder="+ Add new brand…" style={{ ...INP, flex: 1 }} />
-                <Btn onClick={handleStageBrand} disabled={!newBrandName.trim()}>Add</Btn>
+              <div style={{ marginTop: 5 }}>
+                <BrandPicker brands={brands} value={form.brandId} pendingName={pendingBrandName}
+                  onSelect={id => { u("brandId", id); setPendingBrandName(null); }}
+                  onCreate={name => { setPendingBrandName(name); u("brandId", "__new__"); }} />
               </div>
               {pendingBrandName && form.brandId === "__new__" && (
                 <div style={{ fontSize: 9.5, color: T.amber, marginTop: 6 }}>"{pendingBrandName}" will be created when you save this credential.</div>
@@ -333,23 +372,41 @@ export default function Auth() {
   // assigned by the backend, continuing the seed sequence (u10, bc3, t10, …).
   const handleSave = async (form) => {
     const isUser = tab === "internal";
+    // Present only when the modal's picker was actually used. `avatarImage` may
+    // legitimately be null (remove), so the key's PRESENCE is the signal, not
+    // its truthiness — `form.avatarImage || {}` would drop every removal.
+    const avatarPatch = "avatarImage" in form ? { avatarImage: form.avatarImage } : {};
     if (modal.mode === "edit") {
       const patch = {
         username: form.username, name: form.name, title: form.title,
         ...(isUser ? { role: form.role, ...(form.teamId ? { teamId: form.teamId } : {}) } : { brandId: form.brandId }),
         ...(form.password ? { password: form.password } : {}),
+        ...avatarPatch,
       };
       const updated = await api.update(modal.record.id, patch);
       setRows(prev => prev.map(r => r.id === updated.id ? updated : r));
     } else {
+      // Initials stay the fallback even when a photo is uploaded — it's what
+      // renders while the image loads, and what's left if the photo is removed.
       const avatar = form.name.split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase();
       const created = await api.create({
         avatar, username: form.username, name: form.name, title: form.title,
         password: form.password,
         ...(isUser ? { role: form.role, ...(form.teamId ? { teamId: form.teamId } : {}) } : { brandId: form.brandId }),
+        ...avatarPatch,
       });
       setRows(prev => [...prev, created]);
     }
+  };
+
+  // Opens the brand portal's login with this credential's username already in
+  // the field, so the founder testing a brand's view doesn't have to copy it
+  // across by hand. The PASSWORD is deliberately not passed — it would end up
+  // in a URL, which lands in browser history and any proxy log in between; the
+  // reveal/copy control in the table beside this is the intended path for it.
+  const openClientLogin = (record) => {
+    const url = `${CLIENT_PORTAL_URL}/login?email=${encodeURIComponent(record.username || "")}`;
+    window.open(url, "_blank", "noopener,noreferrer");
   };
 
   // Lets "Add brand credential" create a brand new brand inline, instead of
@@ -430,6 +487,7 @@ export default function Auth() {
             <thead>
               <tr>
                 <th style={{ ...thS, width: 34, textAlign: "right" }}>#</th>
+                <th style={{ ...thS, width: 40 }} />
                 <th style={thS}>Name</th>
                 <th style={thS}>Username</th>
                 <th style={thS}>Password</th>
@@ -444,6 +502,9 @@ export default function Auth() {
                 return (
                   <tr key={r.id}>
                     <td style={{ ...tdS, fontSize: 10.5, color: T.sub, textAlign: "right" }}>{i + 1}</td>
+                    <td style={{ ...tdS, paddingRight: 0 }}>
+                      <RowAvatar record={r} url={api.avatarUrl(r)} />
+                    </td>
                     <td style={{ ...tdS, fontWeight: 500 }}>{r.name}</td>
                     <td style={{ ...tdS, fontFamily: "monospace", fontSize: 10.5 }}>{r.username}</td>
                     <td style={tdS}><PasswordCell api={api} record={r} /></td>
@@ -454,6 +515,17 @@ export default function Auth() {
                     </td>
                     <td style={{ ...tdS, color: T.sub }}>{r.title || "—"}</td>
                     <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
+                      {/* Brand-portal rows only: jump straight to the client
+                          login with this username filled in. Internal users
+                          sign in to THIS app, so the shortcut would point at
+                          the wrong door for them. */}
+                      {tab === "external" && (
+                        <button onClick={() => openClientLogin(r)}
+                          title={`Open the client portal login as ${r.username}`}
+                          style={{ fontSize: 9.5, color: T.teal, background: "transparent", border: `1px solid ${T.teal}30`, borderRadius: 4, padding: "3px 10px", cursor: "pointer", fontFamily: "'Sora'", marginRight: 6 }}>
+                          Client login ↗
+                        </button>
+                      )}
                       <button onClick={() => setModal({ mode: "edit", record: r })}
                         style={{ fontSize: 9.5, color: T.accent, background: "transparent", border: `1px solid ${T.accent}30`, borderRadius: 4, padding: "3px 10px", cursor: "pointer", fontFamily: "'Sora'", marginRight: 6 }}>
                         Edit
@@ -480,6 +552,7 @@ export default function Auth() {
           editing={modal.mode === "edit" ? modal.record : null}
           brands={brands}
           defaultBrandId={brandFilter}
+          currentAvatarUrl={modal.mode === "edit" ? api.avatarUrl(modal.record) : null}
           onClose={() => setModal(null)}
           onSave={handleSave}
           onCreateBrand={onCreateBrand}

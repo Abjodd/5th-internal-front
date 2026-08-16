@@ -31,6 +31,7 @@ import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
 import PhoneInput from "../../components/PhoneInput";
 import BrandPicker from "../../components/BrandPicker";
+import BrandLogoModal from "../../components/BrandLogoModal";
 import { zoomOf } from "../../lib/zoom";
 import CreatorHandle from "../../components/CreatorHandle";
 import Donut from "../../components/Donut";
@@ -1497,9 +1498,13 @@ const brandInitials=(s="")=>s.split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0
 //
 // See useBrandAccent in lib/brandAccent.js.
 
-function BrandHeader({label,count,logoUrl}){
+function BrandHeader({label,count,logoUrl,onEditLogo}){
   const [broken,setBroken]=useState(false);
   const showLogo=!!logoUrl&&!broken;
+  // The logo mark IS the control for setting the logo — that is where someone
+  // looking to change it already is, and an empty one is the most legible
+  // "nothing here yet" button the page could have.
+  const editable=!!onEditLogo;
   return(
     // Sticky, and it must PAINT — the group's field scrolls underneath it, so a
     // transparent header would let campaign tiles show through the brand name.
@@ -1515,7 +1520,13 @@ function BrandHeader({label,count,logoUrl}){
           {/* Initials keep the original 40px/13px SF treatment — scaling them
               up with the masthead made the fallback read as a display letterform
               rather than as a quiet stand-in for a missing logo. */}
-          <div style={{width:40,height:40,borderRadius:11,flexShrink:0,overflow:"hidden",background:showLogo?"#FFFFFF":"rgba(0,0,0,0.05)",border:"1px solid rgba(0,0,0,0.08)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#86868B",fontFamily:SF,letterSpacing:"-0.02em",boxShadow:showLogo?"0 1px 3px rgba(0,0,0,0.08)":"none"}}>
+          <div
+            onClick={editable?onEditLogo:undefined}
+            title={editable?(showLogo?`Change ${label}'s logo`:`Set ${label}'s logo`):undefined}
+            style={{width:40,height:40,borderRadius:11,flexShrink:0,overflow:"hidden",background:showLogo?"#FFFFFF":"rgba(0,0,0,0.05)",border:"1px solid rgba(0,0,0,0.08)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#86868B",fontFamily:SF,letterSpacing:"-0.02em",boxShadow:showLogo?"0 1px 3px rgba(0,0,0,0.08)":"none",cursor:editable?"pointer":"default",transition:"box-shadow 0.15s"}}
+            onMouseOver={e=>{if(editable)e.currentTarget.style.boxShadow="0 0 0 3px rgba(0,0,0,0.07)";}}
+            onMouseOut={e=>{if(editable)e.currentTarget.style.boxShadow=showLogo?"0 1px 3px rgba(0,0,0,0.08)":"none";}}
+          >
             {showLogo
               ? <img src={logoUrl} alt="" onError={()=>setBroken(true)} style={{width:"100%",height:"100%",objectFit:"cover"}}/>
               : brandInitials(label)}
@@ -1538,7 +1549,7 @@ function BrandHeader({label,count,logoUrl}){
 // One brand's header plus its campaign tiles, as a single visually bounded
 // block. Split out of CampaignGrid so the accent can be resolved per brand —
 // hooks cannot be called inside the `.map()` that renders the groups.
-function BrandGroup({label,brandId,rows,role,onSelect,brandLogoUrl,empty}){
+function BrandGroup({label,brandId,rows,role,onSelect,brandLogoUrl,onEditLogo,empty}){
   const logoUrl=brandLogoUrl?.(brandId);
   // Null unless this brand has uploaded a logo we can read a colour out of —
   // see lib/brandAccent. Resolved once here rather than per card: every tile in
@@ -1557,7 +1568,8 @@ function BrandGroup({label,brandId,rows,role,onSelect,brandLogoUrl,empty}){
     // structurally, which is what frees the masthead to be styled as a heading
     // rather than as another card, and frees colour to mean stage.
     <div style={{marginBottom:34,borderRadius:16,overflow:"hidden",border:"1px solid rgba(0,0,0,0.07)",borderLeft:"3px solid rgba(0,0,0,0.14)",background:"rgba(0,0,0,0.018)",boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
-      <BrandHeader label={label} count={rows.length} logoUrl={logoUrl}/>
+      <BrandHeader label={label} count={rows.length} logoUrl={logoUrl}
+        onEditLogo={onEditLogo&&brandId?()=>onEditLogo(brandId):undefined}/>
       {empty&&!rows.length
         ? <div style={{padding:"34px 16px",textAlign:"center",color:"#86868B",fontSize:12.5,fontFamily:SF}}>{empty}</div>
         : null}
@@ -1575,7 +1587,7 @@ function BrandGroup({label,brandId,rows,role,onSelect,brandLogoUrl,empty}){
 // ── CAMPAIGN GRID ─────────────────────────────────────────────────────────────
 // Groups the already-filtered `visible` list by brand (same grouping rule the
 // old sidebar used) and lays each group out as a responsive card grid.
-function CampaignGrid({campaigns,role,onSelect,brandName,brandLogoUrl,brandFilter}){
+function CampaignGrid({campaigns,role,onSelect,brandName,brandLogoUrl,onEditLogo,brandFilter}){
   if(campaigns.length===0){
     // Scoped to one brand with nothing to show: still render that brand's
     // header. Dropping straight to bare grey text was reported as "the colour
@@ -1587,7 +1599,7 @@ function CampaignGrid({campaigns,role,onSelect,brandName,brandLogoUrl,brandFilte
       return(
         <div style={{padding:"20px 28px 40px"}}>
           <BrandGroup label={label} brandId={brandFilter} rows={[]} role={role}
-            onSelect={onSelect} brandLogoUrl={brandLogoUrl}
+            onSelect={onSelect} brandLogoUrl={brandLogoUrl} onEditLogo={onEditLogo}
             empty="No campaigns for this brand yet."/>
         </div>
       );
@@ -1618,6 +1630,7 @@ function CampaignGrid({campaigns,role,onSelect,brandName,brandLogoUrl,brandFilte
           role={role}
           onSelect={onSelect}
           brandLogoUrl={brandLogoUrl}
+          onEditLogo={onEditLogo}
         />
       ))}
     </div>
@@ -3564,6 +3577,19 @@ export default function InternalCampaigns(){
   // Null for a brand with no logo, so the header falls back to initials without
   // firing a request that is certain to 404 (see ClientsAPI.avatarUrl).
   const brandLogoUrl = useCallback(id=>ClientsAPI.avatarUrl(brands.find(b=>b.id===id)),[brands]);
+  // Which brand's logo dialog is open, by id — resolved to the record at render
+  // so it always reflects the freshest `brands` entry.
+  const [logoBrandId,setLogoBrandId]=useState(null);
+  const canEditBrand = can(currentUser.role,"editBrandIdentity");
+  const logoBrand = logoBrandId?brands.find(b=>b.id===logoBrandId):null;
+  // The updated client comes back from the PATCH, so the header re-renders with
+  // the new logo (and a fresh avatarUpdatedAt, which busts the image cache)
+  // without waiting for a refetch. refreshBrands keeps the shell's own copy —
+  // the top-bar filter, the Summary — in step.
+  const onLogoSaved = useCallback(updated=>{
+    setBrands(prev=>prev.map(b=>b.id===updated.id?{...b,...updated}:b));
+    refreshBrands?.();
+  },[refreshBrands]);
   const onCreateBrand = useCallback(async(name)=>{
     const id = name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
     const created = await ClientsAPI.create({ id, name });
@@ -3998,7 +4024,7 @@ export default function InternalCampaigns(){
           </AnimatePresence>
           {/* Grid */}
           <div style={{flex:1,minHeight:0,overflowY:"auto"}}>
-            <CampaignGrid campaigns={visible} role={role} onSelect={setSelId} brandName={brandName} brandLogoUrl={brandLogoUrl} brandFilter={brandFilter}/>
+            <CampaignGrid campaigns={visible} role={role} onSelect={setSelId} brandName={brandName} brandLogoUrl={brandLogoUrl} onEditLogo={canEditBrand?setLogoBrandId:undefined} brandFilter={brandFilter}/>
           </div>
         </motion.div>
       )}
@@ -4006,6 +4032,9 @@ export default function InternalCampaigns(){
     <AnimatePresence>
       {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand} role={role} brandFilter={brandFilter}/>}
     </AnimatePresence>
+    {logoBrand&&(
+      <BrandLogoModal brand={logoBrand} onClose={()=>setLogoBrandId(null)} onSaved={onLogoSaved}/>
+    )}
     <AnimatePresence>
       {pendingAction&&selected&&<ConfirmActionModal camp={selected} label={ACTION_MSGS[pendingAction.action]||pendingAction.action}
         onConfirm={()=>{onAction(pendingAction.action,pendingAction.data);setPendingAction(null);}}

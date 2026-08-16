@@ -10,7 +10,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";
 import { ClientRequestsAPI, ClientsAPI, BrandCredentialsAPI } from "../../lib/api";
 import { T } from "../../theme/tokens";
-import { thS, tdS, INP, Av, Fact, Chevron, Expandable, fmtWhen, Notice } from "./shared";
+import { thS, tdS, INP, Av, Fact, Chevron, Expandable, fmtWhen, Notice, ConfirmDialog } from "./shared";
 
 const Lbl = ({ children }) => (
   <label style={{
@@ -147,7 +147,7 @@ function GenerateCredentialsModal({ req, brands, onClose, onCreated, onCreateBra
 }
 
 // ── EXPANDED ROW — full goal text + contact recap ────────────────────────────
-function RequestDetail({ req, onGenerateCredentials }) {
+function RequestDetail({ req, onGenerateCredentials, onRemove }) {
   const card = {
     background: T.surface, border: `1px solid ${T.border}`,
     borderRadius: T.radiusSm, padding: "12px 14px",
@@ -170,13 +170,24 @@ function RequestDetail({ req, onGenerateCredentials }) {
           {/* Once credentials are generated the request is removed from the
               list entirely (see onCredentialsCreated), so this button never
               needs a "done" state — it's gone by the time that would show. */}
-          <button onClick={onGenerateCredentials} style={{
-            fontSize: 9.5, color: T.accent, background: "transparent",
-            border: `1px solid ${T.accent}30`, borderRadius: 4, padding: "3px 10px",
-            cursor: "pointer", fontFamily: "'Sora'",
-          }}>
-            Generate credentials
-          </button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={onGenerateCredentials} style={{
+              fontSize: 9.5, color: T.accent, background: "transparent",
+              border: `1px solid ${T.accent}30`, borderRadius: 4, padding: "3px 10px",
+              cursor: "pointer", fontFamily: "'Sora'",
+            }}>
+              Generate credentials
+            </button>
+            {/* The other ending: a lead that isn't going anywhere. Confirmed
+                before it runs — see ConfirmDialog in shared. */}
+            <button onClick={onRemove} style={{
+              fontSize: 9.5, color: T.red, background: "transparent",
+              border: `1px solid ${T.red}30`, borderRadius: 4, padding: "3px 10px",
+              cursor: "pointer", fontFamily: "'Sora'",
+            }}>
+              Remove
+            </button>
+          </div>
         </div>
         <Fact label="Name"         value={req.name} />
         <Fact label="Role"         value={req.role} />
@@ -196,7 +207,9 @@ export default function ClientRequestsPanel({ query, showToast, onCount }) {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
   const [expanded, setExpanded] = useState(null); // request id
-  const [credModal, setCredModal] = useState(null); // request pending credential generation
+  const [credModal, setCredModal] = useState(null);   // request pending credential generation
+  const [confirming, setConfirming] = useState(null); // request pending removal
+  const [removing, setRemoving]     = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -232,6 +245,21 @@ export default function ClientRequestsPanel({ query, showToast, onCount }) {
     ClientRequestsAPI.remove(req.id).catch(() => {});
     showToast(`Login created for ${credential?.name || req.name || req.organisation}`);
   }, [showToast]);
+
+  const onRemoveConfirmed = useCallback(async () => {
+    const req = confirming;
+    setRemoving(true);
+    try {
+      await ClientRequestsAPI.remove(req.id);
+      setRequests(prev => prev.filter(r => r.id !== req.id));
+      showToast(`Removed ${req.organisation || req.name || "request"}`);
+      setConfirming(null);
+    } catch (e) {
+      showToast(`Could not remove — ${e.message}`);
+    } finally {
+      setRemoving(false);
+    }
+  }, [confirming, showToast]);
 
   const visible = useMemo(() => {
     const q = (query || "").trim().toLowerCase();
@@ -297,7 +325,7 @@ export default function ClientRequestsPanel({ query, showToast, onCount }) {
                 <tr key={`${req.id}_detail`}>
                   <td colSpan={6} style={{ padding: 0, border: "none", borderBottom: open ? `1px solid ${T.border}` : "none" }}>
                     <Expandable open={open}>
-                      <RequestDetail req={req} onGenerateCredentials={() => setCredModal(req)} />
+                      <RequestDetail req={req} onGenerateCredentials={() => setCredModal(req)} onRemove={() => setConfirming(req)} />
                     </Expandable>
                   </td>
                 </tr>,
@@ -306,6 +334,16 @@ export default function ClientRequestsPanel({ query, showToast, onCount }) {
           </tbody>
         </table>
       </div>
+
+      {confirming && (
+        <ConfirmDialog
+          title={`Remove ${confirming.organisation || confirming.name || "this request"}?`}
+          body={<>This deletes the signup and everything on it — {confirming.contact || "their contact details"} and what they asked for included. It can't be undone, and they aren't notified.</>}
+          busy={removing}
+          onConfirm={onRemoveConfirmed}
+          onCancel={() => setConfirming(null)}
+        />
+      )}
 
       {credModal && (
         <GenerateCredentialsModal

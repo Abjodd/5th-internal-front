@@ -28,6 +28,10 @@ export default function AvatarPicker({
   onChange,         // (null | dataUri) => void
   size = 72,
   disabled = false,
+  // A brand logo is a rounded square, not a round portrait — squaring off a
+  // wordmark is the difference between a logo and a cropped fragment of one.
+  radius = "50%",
+  noun = "profile photo",
 }) {
   const inputRef = useRef(null);
   const [err, setErr] = useState("");
@@ -70,9 +74,9 @@ export default function AvatarPicker({
     <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
       <div
         onClick={() => !disabled && inputRef.current?.click()}
-        title={disabled ? undefined : "Upload a profile photo"}
+        title={disabled ? undefined : `Upload a ${noun}`}
         style={{
-          width: size, height: size, borderRadius: "50%", flexShrink: 0,
+          width: size, height: size, borderRadius: radius, flexShrink: 0,
           overflow: "hidden", position: "relative",
           background: showImg ? T.mute : T.accent,
           color: "#FFF", display: "flex", alignItems: "center", justifyContent: "center",
@@ -98,7 +102,7 @@ export default function AvatarPicker({
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <button type="button" style={btn} disabled={disabled || busy}
             onClick={() => inputRef.current?.click()}>
-            {preview ? "Change photo" : "Upload photo"}
+            {preview ? "Change" : "Upload"} {noun}
           </button>
           {preview && (
             <button type="button" disabled={disabled || busy}

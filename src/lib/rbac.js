@@ -39,6 +39,11 @@ export const PERMS = {
   removeCreator:      ["founder"],
   editCreator:        ["founder"],   // edit from the Creators directory
   assignUsers:        ["founder", "pcm", "cm", "am"],
+  // A brand's logo and website are its identity across the whole app — the
+  // masthead on its campaigns, the colour those cards are tinted with, the
+  // fallback picture for its portal members. Same roles that own the client
+  // relationship; CM/EA execute against a brand, they don't define it.
+  editBrandIdentity:  ["founder", "pcm", "am"],
 
   // ── Billing tab: which financial widgets to show ───────────────────────────
   // Founder: all. PCM: own-campaign scoped (filtered in component).
@@ -72,10 +77,11 @@ export const PERMS = {
   seeCreators:        ["founder"],  // Creators directory (all creators + invoices)
   manageAuth:         ["founder"],  // Auth page: view/add/edit/soft-delete credentials
   // Requests inbox — one permission per tab rather than one for the section,
-  // so the two inboxes can be opened to different roles later without
-  // reworking the page (it renders only the tabs the role can see).
+  // so the inboxes can be opened to different roles later without reworking the
+  // page (it renders only the tabs the role can see).
   seeClientRequests:  ["founder"],  // brand signups from "Start a project"
   seeCreatorRequests: ["founder"],  // creator applications from "Apply as a creator"
+  seeCareerRequests:  ["founder"],  // job applications from the Careers page
 };
 
 /**

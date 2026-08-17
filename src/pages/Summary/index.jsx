@@ -585,8 +585,7 @@ function Hero({ asOfLabel }) {
    * Fine for a prototype/internal dashboard.
    */
 
-  const GNEWS_API_KEY =
-    import.meta.env.VITE_GNEWS_API_KEY;
+
 
   /*
    * ============================================================
@@ -595,171 +594,97 @@ function Hero({ asOfLabel }) {
    */
 
   useEffect(() => {
-    let cancelled = false;
+  let cancelled = false;
 
-    async function fetchSocialNews() {
-  try {
-    setNewsLoading(true);
-    setNewsError(false);
+  async function fetchSocialNews() {
+    try {
+      setNewsLoading(true);
+      setNewsError(false);
 
-    // Keep this short — GNews has a query-length limit.
-    const query = encodeURIComponent(
-      '(Instagram OR TikTok OR YouTube OR "social media")'
-    );
+      // IMPORTANT:
+      // This calls YOUR Vercel serverless function.
+      // The GNews API key stays on the server.
+      const response = await fetch("/api/social-news");
 
-    const url =
-      `https://gnews.io/api/v4/search` +
-      `?q=${query}` +
-      `&lang=en` +
-      `&country=in` +
-      `&max=10` +
-      `&sortby=publishedAt` +
-      `&apikey=${GNEWS_API_KEY}`;
+      if (!response.ok) {
+        throw new Error(`Social news API returned ${response.status}`);
+      }
 
-    console.log("Fetching social news:", url);
+      const data = await response.json();
 
-    const response = await fetch(url);
-    const data = await response.json();
+      console.log("Social news response:", data);
 
-    console.log("GNews response:", data);
+      const articles = Array.isArray(data.articles)
+        ? data.articles
+        : Array.isArray(data)
+          ? data
+          : [];
 
-    if (!response.ok) {
-      throw new Error(
-        data?.errors?.join(", ") ||
-        data?.message ||
-        `GNews returned ${response.status}`
+      const filtered = articles
+        .filter((article) => article?.title && article?.url)
+        .map((article) => ({
+          id: article.url,
+          title: article.title,
+          description: article.description || "",
+          image: article.image || PHOTOS.close,
+          url: article.url,
+          source:
+            article.source?.name ||
+            article.source ||
+            "Social Media",
+          publishedAt: article.publishedAt,
+
+          platform: detectSocialPlatform(
+            [
+              article.title,
+              article.description,
+              article.content,
+            ]
+              .filter(Boolean)
+              .join(" ")
+          ),
+
+          timeAgo: formatNewsTime(article.publishedAt),
+        }));
+
+      const unique = Array.from(
+        new Map(
+          filtered.map((item) => [item.url, item])
+        ).values()
       );
-    }
 
-    const articles = Array.isArray(data.articles)
-      ? data.articles
-      : [];
+      console.log("Social news found:", unique);
 
-    const keywords = [
-      "instagram",
-      "tiktok",
-      "youtube",
-      "facebook",
-      "meta",
-      "linkedin",
-      "threads",
-      "snapchat",
-      "social media",
-      "social platform",
-      "social network",
-      "creator",
-      "influencer",
-      "reels",
-      "shorts",
-      "social commerce",
-      "social advertising",
-    ];
+      if (!cancelled) {
+        setSocialNews(unique.slice(0, 10));
+      }
+    } catch (error) {
+      console.error("SOCIAL NEWS ERROR:", error);
 
-    const filtered = articles
-      .filter((article) => {
-        const text = [
-          article.title,
-          article.description,
-          article.content,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-
-        return keywords.some((keyword) =>
-          text.includes(keyword)
-        );
-      })
-      .filter(
-        (article) =>
-          article.title &&
-          article.url
-      )
-      .map((article) => ({
-        id: article.url,
-        title: article.title,
-        description: article.description || "",
-        image: article.image || PHOTOS.close,
-        url: article.url,
-        source: article.source?.name || "Social Media",
-        publishedAt: article.publishedAt,
-
-        platform: detectSocialPlatform(
-          [
-            article.title,
-            article.description,
-            article.content,
-          ]
-            .filter(Boolean)
-            .join(" ")
-        ),
-
-        timeAgo: formatNewsTime(article.publishedAt),
-      }));
-
-    const unique = Array.from(
-      new Map(
-        filtered.map((item) => [
-          item.url,
-          item,
-        ])
-      ).values()
-    );
-
-    console.log("Social news found:", unique);
-
-    if (!cancelled) {
-      setSocialNews(unique.slice(0, 10));
-    }
-
-  } catch (error) {
-    console.error("SOCIAL NEWS ERROR:", error);
-
-    if (!cancelled) {
-      setNewsError(true);
-      setSocialNews([]);
-    }
-  } finally {
-    if (!cancelled) {
-      setNewsLoading(false);
+      if (!cancelled) {
+        setNewsError(true);
+        setSocialNews([]);
+      }
+    } finally {
+      if (!cancelled) {
+        setNewsLoading(false);
+      }
     }
   }
-}
 
-    /*
-     * Don't call the API if no key exists.
-     */
+  fetchSocialNews();
 
-    if (
-      !GNEWS_API_KEY ||
-      GNEWS_API_KEY ===
-        "YOUR_GNEWS_API_KEY"
-    ) {
-      console.warn(
-        "GNews API key is missing."
-      );
+  // Refresh every 10 minutes
+  const interval = setInterval(
+    fetchSocialNews,
+    10 * 60 * 1000
+  );
 
-      setNewsLoading(false);
-      return;
-    }
-
-    fetchSocialNews();
-
-    /*
-     * Refresh every 15 minutes.
-     */
-
-    const interval =
-      setInterval(
-        fetchSocialNews,
-        10 * 60 * 1000
-      );
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, []);
+  return () => {
+    cancelled = true;
+    clearInterval(interval);
+  };
+}, []);
 
   /*
    * ============================================================

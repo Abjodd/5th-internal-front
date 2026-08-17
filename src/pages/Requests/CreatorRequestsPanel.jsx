@@ -13,7 +13,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { CreatorRequestsAPI } from "../../lib/api";
 import { T } from "../../theme/tokens";
-import { STATUS, statusMeta, Av, Pill, Chevron, Expandable, fmtWhen, Notice } from "./shared";
+import { STATUS, statusMeta, Av, Pill, Chevron, Expandable, fmtWhen, Notice, ConfirmDialog } from "./shared";
 import CreatorHandle from "../../components/CreatorHandle";
 
 /**
@@ -113,6 +113,8 @@ export default function CreatorRequestsPanel({ query, showToast, onCount }) {
   const [promoting, setPromoting] = useState(null);
   const [check, setCheck]         = useState(null);
   const [busy, setBusy]           = useState(false);
+  const [confirming, setConfirming] = useState(null); // request pending removal
+  const [removing, setRemoving]     = useState(false);
 
   useEffect(() => {
     setLoad(true); setError(null);
@@ -152,6 +154,24 @@ export default function CreatorRequestsPanel({ query, showToast, onCount }) {
   useEffect(() => {
     onCount?.(reqs.filter(r => (r.status || "new") === "new").length);
   }, [reqs, onCount]);
+
+  // Dismissing an application that isn't going to be promoted. Confirmed
+  // first: this is a hard delete server-side, and the applicant's handle and
+  // contact details go with it. See ConfirmDialog in shared.
+  const remove = async () => {
+    const req = confirming;
+    setRemoving(true);
+    try {
+      await CreatorRequestsAPI.remove(req.id);
+      setReqs(prev => prev.filter(r => r.id !== req.id));
+      showToast(`Removed ${req.name || req.handle || "application"}`);
+      setConfirming(null);
+    } catch (e) {
+      showToast(`Could not remove — ${e.message}`);
+    } finally {
+      setRemoving(false);
+    }
+  };
 
   const setStatus = (id, status) => {
     setReqs(prev => prev.map(r => (r.id === id ? { ...r, status } : r)));
@@ -223,6 +243,11 @@ export default function CreatorRequestsPanel({ query, showToast, onCount }) {
 
                   <div style={{ flex: 1 }} />
 
+                  <button onClick={() => setConfirming(r)}
+                    style={{ padding: "5px 12px", borderRadius: 20, fontSize: 10.5, cursor: "pointer", fontFamily: "'Sora'", background: "transparent", color: T.red, border: `1px solid ${T.red}2E` }}>
+                    Remove
+                  </button>
+
                   {/* Promote into the creators directory. The request is
                       deleted server-side once promoted (see
                       routes/creatorRequests.js), so it disappears from this
@@ -241,6 +266,16 @@ export default function CreatorRequestsPanel({ query, showToast, onCount }) {
           </div>
         );
       })}
+
+      {confirming && (
+        <ConfirmDialog
+          title={`Remove ${confirming.name || confirming.handle || "this application"}?`}
+          body={<>This deletes the application and everything on it — handle, {confirming.email || confirming.phone || "contact details"} and niche included. It can't be undone, and they aren't notified.</>}
+          busy={removing}
+          onConfirm={remove}
+          onCancel={() => setConfirming(null)}
+        />
+      )}
 
       {promoting && (
         <PromoteModal

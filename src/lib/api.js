@@ -59,6 +59,14 @@ export const ClientsAPI = {
 
   // The brand's logo — same contract as the user/credential avatars.
   avatarUrl: avatarUrlFor("/api/clients"),
+
+  // The brand's own site icon, as a data URI to preview before committing.
+  // Suggestion only: accepting it is an ordinary update() with avatarImage, so
+  // there is one write path for a logo however it was chosen. The backend
+  // answers 422 with a readable message when a site has nothing storable, which
+  // request() surfaces as err.body.error. See faviconFetch.js.
+  suggestLogo: (website) =>
+    request(`/api/logo-suggestion?website=${encodeURIComponent(website)}`),
 };
 
 export const FindingsAPI = {
@@ -86,6 +94,9 @@ export const CreatorRequestsAPI = {
   create: (req) => request("/api/creator-requests", { method: "POST", body: JSON.stringify(req) }),
   update: (id, patch) =>
     request(`/api/creator-requests/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  // Dismissing an application that will never be promoted. Promotion removes
+  // the request too (see below) — this is the other ending.
+  remove: (id) => request(`/api/creator-requests/${id}`, { method: "DELETE" }),
 
   // Promotion into the creators directory is two calls on purpose: `checkPromote`
   // is a dry run that reports whether the handle already exists, so the confirm
@@ -97,6 +108,20 @@ export const CreatorRequestsAPI = {
       method: "POST",
       body: JSON.stringify({ overwrite }),
     }),
+};
+
+// ── Career Requests (Requests › Career Requests) ─────────────────────────────
+// The client portal's Careers page form POSTs; the founder inbox uses
+// list/update/remove. Backend fires the founder email on create (mailer.js).
+//
+// No promote step, unlike creator requests: hiring has no directory in the
+// platform to graduate an application into, so triage ends at a status and the
+// row is removed when it's done with.
+export const CareerRequestsAPI = {
+  list: (status) => request(`/api/career-requests${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  update: (id, patch) =>
+    request(`/api/career-requests/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  remove: (id) => request(`/api/career-requests/${id}`, { method: "DELETE" }),
 };
 
 // Generic CRUD client factory matching the backend's registerCrudRoutes shape.

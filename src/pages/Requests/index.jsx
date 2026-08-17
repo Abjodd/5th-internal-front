@@ -5,6 +5,7 @@
  *
  *   Client Requests   brand signups from "Start a project"      → /api/client-requests
  *   Creator Requests  applications from "Apply as a creator"    → /api/creator-requests
+ *   Career Requests   job applications from the Careers page    → /api/career-requests
  *
  * Creator applications used to sit as a second tab inside the Creators
  * directory, which put the same kind of work — triaging an inbound lead — in
@@ -21,7 +22,10 @@ import { T } from "../../theme/tokens";
 import { INP, Pill } from "./shared";
 import ClientRequestsPanel from "./ClientRequestsPanel";
 import CreatorRequestsPanel from "./CreatorRequestsPanel";
+import CareerRequestsPanel from "./CareerRequestsPanel";
 
+// Each tab carries its own panel component, so adding an inbox is one entry
+// here rather than another branch in the render below.
 const TABS = [
   {
     id: "client",
@@ -29,6 +33,7 @@ const TABS = [
     perm: "seeClientRequests",
     blurb: "Brand signups from the landing page — who they are and what they want from us.",
     placeholder: "Search brand, name, contact, goal…",
+    Panel: ClientRequestsPanel,
   },
   {
     id: "creator",
@@ -36,6 +41,15 @@ const TABS = [
     perm: "seeCreatorRequests",
     blurb: "Creator applications from the landing page — triage them, then add the ones we want to the directory.",
     placeholder: "Search name, handle, platform, state, niche…",
+    Panel: CreatorRequestsPanel,
+  },
+  {
+    id: "career",
+    label: "Career Requests",
+    perm: "seeCareerRequests",
+    blurb: "Job applications from the Careers page — triage them, then take hiring off-platform.",
+    placeholder: "Search name, email, role, note…",
+    Panel: CareerRequestsPanel,
   },
 ];
 
@@ -49,7 +63,7 @@ export default function Requests() {
   const [toast, setToast] = useState(null);
   // Each panel reports how many of its rows are still untriaged, so the badge
   // on the *other* tab tells the founder there's work there without switching.
-  const [counts, setCounts] = useState({ client: 0, creator: 0 });
+  const [counts, setCounts] = useState(() => Object.fromEntries(TABS.map(t => [t.id, 0])));
 
   const showToast = useCallback(msg => { setToast(msg); setTimeout(() => setToast(null), 2800); }, []);
   const countFor = useCallback((id) => (n) => setCounts(prev => (prev[id] === n ? prev : { ...prev, [id]: n })), []);
@@ -101,13 +115,13 @@ export default function Requests() {
         </div>
       )}
 
-      {/* Both panels stay mounted so switching tabs doesn't refetch and lose
-          triage state — only the inactive one is hidden. */}
-      {allowed.map(t => (
-        <div key={t.id} style={{ display: tab === t.id ? "block" : "none" }}>
-          {t.id === "client"
-            ? <ClientRequestsPanel  query={tab === "client"  ? query : ""} showToast={showToast} onCount={countFor("client")} />
-            : <CreatorRequestsPanel query={tab === "creator" ? query : ""} showToast={showToast} onCount={countFor("creator")} />}
+      {/* Every panel stays mounted so switching tabs doesn't refetch and lose
+          triage state — only the inactive ones are hidden. The query is passed
+          as "" to hidden panels so a search typed on one tab doesn't silently
+          filter the others' rows behind it. */}
+      {allowed.map(({ id, Panel }) => (
+        <div key={id} style={{ display: tab === id ? "block" : "none" }}>
+          <Panel query={tab === id ? query : ""} showToast={showToast} onCount={countFor(id)} />
         </div>
       ))}
 

@@ -8,6 +8,7 @@
  * it accent-blue and creator applications amber, with reviewed swapped. One
  * triage vocabulary, one palette.
  */
+import { useEffect } from "react";
 import { T } from "../../theme/tokens";
 
 // ── TABLE / INPUT STYLES ─────────────────────────────────────────────────────
@@ -104,6 +105,50 @@ export const fmtWhen = (iso) => {
   if (!iso) return "—";
   const d = new Date(iso);
   return isNaN(d) ? "—" : d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+};
+
+/**
+ * Confirm-before-removing, shared by all three inboxes.
+ *
+ * Removal here is a HARD delete on the backend — the row is gone from Mongo,
+ * not flagged — and the only copy of an inbound lead's contact details goes
+ * with it. That is not something a misplaced click should be able to do, and
+ * all three panels sit in a list where the click target is inches from an
+ * expand toggle.
+ *
+ * Escape closes it, and the destructive button is never the one under the
+ * cursor when the dialog opens.
+ */
+export const ConfirmDialog = ({ title, body, confirmLabel = "Remove", busy, onConfirm, onCancel }) => {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape" && !busy) onCancel(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, onCancel]);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div onClick={() => !busy && onCancel()} style={{ position: "absolute", inset: 0, background: "rgba(4,5,10,0.55)", backdropFilter: "blur(4px)" }} />
+      <div style={{ position: "relative", width: "min(400px,92vw)", background: T.surface, border: `1px solid ${T.borderMid}`, borderRadius: 10, overflow: "hidden", boxShadow: T.shadowLg }}>
+        <div style={{ padding: "18px 20px 14px" }}>
+          <div style={{ fontFamily: "'Newsreader',serif", fontSize: 17, fontStyle: "italic", color: T.text, marginBottom: 8 }}>{title}</div>
+          <div style={{ fontSize: 12, color: T.sub, lineHeight: 1.6 }}>{body}</div>
+        </div>
+        <div style={{ padding: "12px 20px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={onCancel} disabled={busy} style={{
+            padding: "8px 16px", borderRadius: 6, fontSize: 11.5, fontWeight: 500, fontFamily: "'Sora'",
+            background: "transparent", color: T.sub, border: `1px solid ${T.border}`,
+            cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.5 : 1,
+          }}>Cancel</button>
+          <button onClick={onConfirm} disabled={busy} style={{
+            padding: "8px 16px", borderRadius: 6, fontSize: 11.5, fontWeight: 500, fontFamily: "'Sora'",
+            background: T.red, color: "#FFF", border: `1px solid ${T.red}`,
+            cursor: busy ? "not-allowed" : "pointer", opacity: busy ? 0.5 : 1,
+          }}>{busy ? "Removing…" : confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
 };
 
 // Shared empty/loading/error chrome so both tabs read identically.

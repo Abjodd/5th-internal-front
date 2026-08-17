@@ -229,10 +229,25 @@ let TEAM_DIR = TEAM;
 const teamFromUsers = (users) => (users || [])
   .filter(u => u.teamId)
   .map(u => ({
+    // Campaigns store teamId in amId/cmId/eaId.
     id: u.teamId,
+
+    // Keep the real auth/user id because avatarUrl()
+    // uses the database user's id.
+    userId: u.id,
+
     name: u.name,
-    role: ["accounts_head","accounts_exec"].includes(u.role) ? "accounts" : u.role,
+
+    role: ["accounts_head", "accounts_exec"].includes(u.role)
+      ? "accounts"
+      : u.role,
+
     avatar: u.avatar || initials(u.name),
+
+    // IMPORTANT: preserve the avatar metadata.
+    hasAvatar: Boolean(u.hasAvatar),
+    avatarUpdatedAt: u.avatarUpdatedAt || null,
+
     jobTitle: u.title || u.role,
   }));
 
@@ -1395,80 +1410,616 @@ function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAge
 // the padding: it's the one element you compare ACROSS tiles, so it belongs on
 // a shared baseline. It carries the stage colour, which makes 90%-and-ended
 // (red) look nothing like 90%-and-live (amber) at a glance.
-const CampCard = forwardRef(function CampCard({camp,onClick,role,accent}, ref){
-  const col=viewCol(camp,role),pl=viewPl(camp,role);
-  const es=endStatus(camp.end,camp.stage);
-  const team=[{m:getM(camp.amId),l:"AM"},{m:getM(camp.cmId),l:"CM"},{m:getM(camp.eaId),l:"EA"}].filter(x=>x.m);
-  const pct=progressOf(camp), st=execStats(camp);
-  // A finished campaign is reference material, not work — it recedes until you
-  // point at it, so the eye lands on what still needs doing.
-  const done=hasEnded(camp)||normStage(camp.stage)==="payment_done";
-  return(
+const CampCard = forwardRef(function CampCard(
+  { camp, onClick, role, accent, logoUrl },
+  ref
+) {
+  const col = viewCol(camp, role);
+  const pl = viewPl(camp, role);
+  
+  const es = endStatus(camp.end, camp.stage);
+  const team = [
+    { m: getM(camp.amId), l: "AM" },
+    { m: getM(camp.cmId), l: "CM" },
+    { m: getM(camp.eaId), l: "EA" },
+  ].filter((x) => x.m);
+
+  const pct = progressOf(camp);
+  const st = execStats(camp);
+
+  const done =
+    hasEnded(camp) || normStage(camp.stage) === "payment_done";
+
+  return (
     <motion.div
       ref={ref}
-      initial={{opacity:0,y:10,scale:0.98}}
-      animate={{opacity:done?0.72:1,y:0,scale:1}}
-      exit={{opacity:0,scale:0.96,transition:{duration:0.12}}}
-      whileHover={{y:-3,opacity:1,boxShadow:"0 12px 30px -8px rgba(0,0,0,0.16)"}}
-      whileTap={{scale:0.985}}
-      transition={{type:"spring",stiffness:340,damping:30}}
+      initial={{ opacity: 0, y: 14, scale: 0.97 }}
+      animate={{
+        opacity: done ? 0.72 : 1,
+        y: 0,
+        scale: 1,
+      }}
+      exit={{
+        opacity: 0,
+        scale: 0.96,
+        transition: { duration: 0.12 },
+      }}
+      whileHover={{
+        y: -6,
+        opacity: 1,
+        boxShadow:
+          "0 24px 55px rgba(0,0,0,0.16), 0 4px 14px rgba(0,0,0,0.08)",
+      }}
+      whileTap={{ scale: 0.985 }}
+      transition={{
+        type: "spring",
+        stiffness: 340,
+        damping: 28,
+      }}
       onClick={onClick}
-      // When the brand has uploaded a logo, the card picks up a colour sampled
-      // from it — but only as a tinted border and a soft wash in the top
-      // corner, at single-digit alpha. Deliberately restrained: STAGE is the
-      // thing you act on, and it owns the loud colour (the status pill and the
-      // progress bar along the bottom). A brand tint strong enough to compete
-      // with those would make the board harder to read, not easier.
-      //
-      // `accent` is null for any brand with no logo — those cards stay plain
-      // white, so colour here always means "this brand's actual colour" rather
-      // than a hue assigned to it by an algorithm.
-      style={{display:"flex",flexDirection:"column",borderRadius:12,cursor:"pointer",background:"#FFFFFF",border:`1px solid ${accent?`${accent}30`:"rgba(0,0,0,0.07)"}`,boxShadow:"0 1px 2px rgba(0,0,0,0.04)",overflow:"hidden",position:"relative",transition:"border-color 0.5s ease"}}>
-      {/* Texture, not content — a whisper of the brand's colour bleeding in
-          from the top-left so the tile feels like it belongs to that brand
-          without any element on it actually being coloured. */}
-      {accent&&<div aria-hidden style={{position:"absolute",inset:0,background:`linear-gradient(135deg,${accent}12,transparent 62%)`,pointerEvents:"none"}}/>}
-      {/* position:relative so the content stacks ABOVE the wash — an absolutely
-          positioned sibling paints over static content, which would put the
-          tint on top of the text rather than behind it. */}
-      <div style={{position:"relative",padding:"15px 16px 13px",display:"flex",flexDirection:"column",gap:11,flex:1}}>
-        {/* Identity — name and the number it costs, on one line */}
-        <div style={{display:"flex",alignItems:"baseline",gap:10}}>
-          <span style={{fontSize:14.5,fontWeight:600,color:"#1D1D1F",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,letterSpacing:"-0.02em",fontFamily:SF}}>{camp.name}</span>
-          {canFin(role)&&<span style={{fontSize:12,color:"#1D1D1F",fontFamily:SF,fontWeight:600,flexShrink:0,letterSpacing:"-0.02em"}}>{fmtINR(camp.budget)}</span>}
+      style={{
+        position: "relative",
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 205,
+        borderRadius: 20,
+        overflow: "hidden",
+        cursor: "pointer",
+        isolation: "isolate",
+
+        background: "#111216",
+
+        border: `1px solid ${
+          accent
+            ? `${accent}55`
+            : "rgba(255,255,255,0.12)"
+        }`,
+
+        boxShadow:
+          "0 8px 25px rgba(0,0,0,0.07)",
+
+        transition:
+          "border-color .35s ease, box-shadow .35s ease",
+      }}
+    >
+
+      {/* =========================================================
+          BRAND IMAGE — ATMOSPHERIC BACKGROUND
+      ========================================================= */}
+
+      {logoUrl && (
+        <>
+          <motion.img
+            src={logoUrl}
+            alt=""
+            aria-hidden="true"
+            whileHover={{
+              scale: 1.17,
+            }}
+            transition={{
+              duration: 0.8,
+              ease: [0.22, 1, 0.36, 1],
+            }}
+            style={{
+              position: "absolute",
+              inset: -12,
+              width: "calc(100% + 24px)",
+              height: "calc(100% + 24px)",
+              objectFit: "cover",
+              objectPosition: "center",
+
+              opacity: 0.28,
+
+              filter:
+                "blur(3px) saturate(0.85) contrast(1.05)",
+
+              transform: "scale(1.10)",
+
+              pointerEvents: "none",
+              zIndex: 0,
+            }}
+          />
+
+          {/* LEFT → RIGHT CONTRAST */}
+          <div
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              inset: 0,
+              background:
+                "linear-gradient(105deg, rgba(10,11,14,0.97) 0%, rgba(10,11,14,0.88) 38%, rgba(10,11,14,0.52) 72%, rgba(10,11,14,0.30) 100%)",
+              pointerEvents: "none",
+              zIndex: 1,
+            }}
+          />
+
+          {/* BOTTOM FADE */}
+          <div
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: "58%",
+              background:
+                "linear-gradient(transparent, rgba(10,11,14,0.96))",
+              pointerEvents: "none",
+              zIndex: 1,
+            }}
+          />
+        </>
+      )}
+
+      {/* =========================================================
+          SUBTLE BRAND GLOW
+      ========================================================= */}
+
+      {accent && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            width: 180,
+            height: 180,
+            top: -100,
+            right: -70,
+            borderRadius: "50%",
+            background: accent,
+            opacity: 0.10,
+            filter: "blur(55px)",
+            pointerEvents: "none",
+            zIndex: 1,
+          }}
+        />
+      )}
+
+      {/* =========================================================
+          TOP BAR
+      ========================================================= */}
+
+      <div
+        style={{
+          position: "relative",
+          zIndex: 3,
+
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+
+          padding: "16px 17px 0",
+
+          gap: 12,
+        }}
+      >
+
+        {/* CAMPAIGN INDEX */}
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 7,
+
+            padding: "5px 8px",
+
+            borderRadius: 999,
+
+            background:
+              "rgba(255,255,255,0.08)",
+
+            border:
+              "1px solid rgba(255,255,255,0.12)",
+
+            backdropFilter: "blur(12px)",
+            WebkitBackdropFilter: "blur(12px)",
+          }}
+        >
+          <span
+            style={{
+              width: 5,
+              height: 5,
+              borderRadius: "50%",
+              background: col,
+              boxShadow: `0 0 0 3px ${col}22`,
+            }}
+          />
+
+          <span
+            style={{
+              fontFamily: SF,
+              fontSize: 8.5,
+              fontWeight: 800,
+              letterSpacing: "0.10em",
+              textTransform: "uppercase",
+              color: "rgba(255,255,255,0.72)",
+            }}
+          >
+            Campaign
+          </span>
         </div>
-        <div style={{fontSize:11,color:"#86868B",fontFamily:SF,marginTop:-7,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{camp.client}{camp.region?` · ${camp.region}`:""}</div>
-        {/* Delivery at a glance. The grid used to carry a stage name and a
-            percentage and nothing else, so "is this campaign in trouble" meant
-            opening it — the two numbers that answer it are the roster and the
-            posts. Spread edge to edge, so a tile that stretches to fill a row
-            stays composed instead of leaving a hole in the middle. */}
-        <div style={{display:"flex",justifyContent:"space-between",gap:12,padding:"9px 12px",borderRadius:9,background:"rgba(0,0,0,0.025)",border:"1px solid rgba(0,0,0,0.045)"}}>
-          {[{k:"Creators",v:`${st.locked} / ${st.target}`},
-            {k:"Posts live",v:st.expected?`${st.delivered} / ${st.expected}`:"—"},
-            {k:"Ends",v:prettyDate(camp.end)||"TBD"}].map(s=>
-            <Stat key={s.k} small label={s.k} value={s.v}/>
-          )}
+
+        {/* BUDGET */}
+        {canFin(role) && (
+          <div
+            style={{
+              fontFamily: SF,
+              fontSize: 13,
+              fontWeight: 750,
+              color: "#FFFFFF",
+              letterSpacing: "-0.02em",
+
+              padding: "6px 9px",
+              borderRadius: 8,
+
+              background:
+                "rgba(255,255,255,0.09)",
+
+              border:
+                "1px solid rgba(255,255,255,0.12)",
+
+              backdropFilter: "blur(10px)",
+              WebkitBackdropFilter: "blur(10px)",
+            }}
+          >
+            {fmtINR(camp.budget)}
+          </div>
+        )}
+      </div>
+
+      {/* =========================================================
+          MAIN CONTENT
+      ========================================================= */}
+
+      <div
+        style={{
+          position: "relative",
+          zIndex: 3,
+
+          display: "flex",
+          flexDirection: "column",
+
+          flex: 1,
+
+          padding:
+            "25px 17px 14px",
+        }}
+      >
+
+        {/* CLIENT */}
+        <div
+          style={{
+            fontFamily: SF,
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: "0.11em",
+            textTransform: "uppercase",
+            color: "rgba(255,255,255,0.52)",
+
+            marginBottom: 5,
+
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {camp.client}
+          {camp.region
+            ? ` · ${camp.region}`
+            : ""}
         </div>
-        {/* Status footer — pushed to the bottom so it sits on one line across
-            the row whatever the title above it wrapped to */}
-        <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginTop:"auto"}}>
-          <Pill tone={col}>{pl.label}</Pill>
-          <EndPill es={es}/>
-          <div style={{flex:1}}/>
-          <AvStack people={team}/>
-          <span style={{fontSize:11,color:"#86868B",fontFamily:SF,fontWeight:600,fontVariantNumeric:"tabular-nums"}}>{pct}%</span>
+
+        {/* CAMPAIGN NAME */}
+        <div
+          style={{
+            fontFamily:
+              "'Newsreader', serif",
+
+            fontStyle: "italic",
+
+            fontSize:
+              "clamp(20px, 2vw, 25px)",
+
+            fontWeight: 500,
+
+            lineHeight: 1.02,
+
+            letterSpacing: "-0.025em",
+
+            color: "#FFFFFF",
+
+            maxWidth: "90%",
+
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+
+            overflow: "hidden",
+
+            textShadow:
+              "0 2px 20px rgba(0,0,0,0.35)",
+          }}
+        >
+          {camp.name}
+        </div>
+
+        {/* =====================================================
+            INTELLIGENCE STRIP
+        ===================================================== */}
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns:
+              "1fr 1fr 1fr",
+
+            gap: 1,
+
+            marginTop: "auto",
+            marginBottom: 12,
+
+            borderRadius: 12,
+
+            overflow: "hidden",
+
+            background:
+              "rgba(255,255,255,0.10)",
+
+            border:
+              "1px solid rgba(255,255,255,0.13)",
+
+            backdropFilter: "blur(14px)",
+            WebkitBackdropFilter: "blur(14px)",
+          }}
+        >
+          {/* CREATORS */}
+          <div
+            style={{
+              padding: "9px 9px",
+              background:
+                "rgba(0,0,0,0.20)",
+            }}
+          >
+            <div
+              style={{
+                fontFamily: SF,
+                fontSize: 7.5,
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                color:
+                  "rgba(255,255,255,0.42)",
+              }}
+            >
+              Creators
+            </div>
+
+            <div
+              style={{
+                marginTop: 3,
+                fontFamily: SF,
+                fontSize: 11,
+                fontWeight: 750,
+                color: "#FFFFFF",
+                fontVariantNumeric:
+                  "tabular-nums",
+              }}
+            >
+              {st.locked} / {st.target}
+            </div>
+          </div>
+
+          {/* POSTS */}
+          <div
+            style={{
+              padding: "9px 9px",
+              background:
+                "rgba(0,0,0,0.20)",
+            }}
+          >
+            <div
+              style={{
+                fontFamily: SF,
+                fontSize: 7.5,
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                color:
+                  "rgba(255,255,255,0.42)",
+              }}
+            >
+              Posts
+            </div>
+
+            <div
+              style={{
+                marginTop: 3,
+                fontFamily: SF,
+                fontSize: 11,
+                fontWeight: 750,
+                color: "#FFFFFF",
+                fontVariantNumeric:
+                  "tabular-nums",
+              }}
+            >
+              {st.expected
+                ? `${st.delivered}/${st.expected}`
+                : "—"}
+            </div>
+          </div>
+
+          {/* END */}
+          <div
+            style={{
+              padding: "9px 9px",
+              background:
+                "rgba(0,0,0,0.20)",
+            }}
+          >
+            <div
+              style={{
+                fontFamily: SF,
+                fontSize: 7.5,
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                color:
+                  "rgba(255,255,255,0.42)",
+              }}
+            >
+              Ends
+            </div>
+
+            <div
+              style={{
+                marginTop: 3,
+                fontFamily: SF,
+                fontSize: 10,
+                fontWeight: 700,
+                color: "#FFFFFF",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {prettyDate(camp.end) ||
+                "TBD"}
+            </div>
+          </div>
+        </div>
+
+        {/* =====================================================
+            FOOTER
+        ===================================================== */}
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            minHeight: 25,
+          }}
+        >
+
+          {/* STAGE */}
+          <Pill tone={col}>
+            {pl.label}
+          </Pill>
+
+          {/* END WARNING */}
+          <EndPill es={es} />
+
+          <div style={{ flex: 1 }} />
+
+          {/* TEAM */}
+          <div
+  style={{
+    display: "flex",
+    alignItems: "center",
+    paddingLeft: 4,
+  }}
+>
+  {team.slice(0, 3).map((person, i) => {
+    const user = person.m;
+   const url = UsersAPI.avatarUrl({
+  id: user.userId,
+  hasAvatar: user.hasAvatar,
+  avatarUpdatedAt: user.avatarUpdatedAt,
+});
+
+    return (
+      <div
+        key={`${user.id || user._id || i}-${person.l}`}
+        title={`${user.name || person.l} · ${person.l}`}
+        style={{
+          width: 28,
+          height: 28,
+          borderRadius: "50%",
+          overflow: "hidden",
+          marginLeft: i === 0 ? 0 : -8,
+          background: "#FFFFFF",
+          border: "2px solid rgba(17,18,22,0.9)",
+          boxShadow: "0 3px 10px rgba(0,0,0,0.25)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          position: "relative",
+          zIndex: 10 - i,
+          fontFamily: SF,
+          fontSize: 8,
+          fontWeight: 800,
+          color: "#111216",
+        }}
+      >
+        {url ? (
+          <img
+            src={url}
+            alt=""
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+            }}
+          />
+        ) : (
+          initials(user.name)
+        )}
+      </div>
+    );
+  })}
+</div>
+
+          {/* PROGRESS */}
+          <span
+            style={{
+              fontFamily: SF,
+              fontSize: 10,
+              fontWeight: 800,
+              color:
+                "rgba(255,255,255,0.72)",
+              fontVariantNumeric:
+                "tabular-nums",
+            }}
+          >
+            {pct}%
+          </span>
         </div>
       </div>
-      {/* Also lifted above the brand wash — this bar is the stage colour, and
-          it is the one thing on the card that must never be tinted. */}
-      <div style={{position:"relative",height:3,background:"rgba(0,0,0,0.06)"}}>
-        <motion.div style={{height:3,background:col}} animate={{width:`${pct}%`}} transition={{type:"spring",stiffness:220,damping:26}}/>
+
+      {/* =========================================================
+          PROGRESS BAR
+      ========================================================= */}
+
+      <div
+        style={{
+          position: "relative",
+          zIndex: 4,
+
+          height: 4,
+
+          background:
+            "rgba(255,255,255,0.09)",
+        }}
+      >
+        <motion.div
+          style={{
+            height: "100%",
+            background: col,
+
+            boxShadow:
+              `0 0 14px ${col}88`,
+          }}
+          animate={{
+            width: `${pct}%`,
+          }}
+          transition={{
+            type: "spring",
+            stiffness: 220,
+            damping: 26,
+          }}
+        />
       </div>
+
     </motion.div>
   );
-  });
-
+});
 
 // ── BRAND IDENTITY ────────────────────────────────────────────────────────────
 // A brand is identified on the board by its logo and its name, not by a colour.
@@ -1576,8 +2127,15 @@ function BrandGroup({label,brandId,rows,role,onSelect,brandLogoUrl,onEditLogo,em
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))",gap:12,padding:rows.length?"14px":0}}>
         <AnimatePresence mode="popLayout">
           {rows.map(c=>(
-            <CampCard key={c.id} camp={c} role={role} accent={accent} onClick={()=>onSelect(c.id)}/>
-          ))}
+  <CampCard
+    key={c.id}
+    camp={c}
+    role={role}
+    accent={accent}
+    logoUrl={logoUrl}
+    onClick={()=>onSelect(c.id)}
+  />
+))}
         </AnimatePresence>
       </div>
     </div>

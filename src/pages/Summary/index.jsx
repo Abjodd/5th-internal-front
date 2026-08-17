@@ -91,12 +91,20 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
-import { motion, useReducedMotion, animate, useScroll, useTransform } from "motion/react";
+import {
+  motion,
+  AnimatePresence,
+  useReducedMotion,
+  animate,
+  useScroll,
+  useTransform,
+} from "motion/react";
 import {
   CampaignsAPI, ClientsAPI, InvoicesAPI, UsersAPI, CreatorsAPI,
   QuotesAPI, ClientRequestsAPI, CreatorRequestsAPI,
 } from "../../lib/api";
 import { buildSummary } from "../../lib/summaryMetrics";
+
 
 /* ────────────────────────────────────────────────────────────────
  * DESIGN TOKENS + PHOTOGRAPHY
@@ -543,88 +551,1384 @@ function SideTile({ src, caption, height = 320 }) {
 function Hero({ asOfLabel }) {
   const reduce = useReducedMotion();
   const ref = useRef(null);
-  const { scrollYProgress } = useScroll({ target: ref, offset: ["start start", "end start"] });
-  const imgY = useTransform(scrollYProgress, [0, 1], reduce ? [0, 0] : [0, 140]);
-  const textY = useTransform(scrollYProgress, [0, 1], reduce ? [0, 0] : [0, 60]);
-  const fade = useTransform(scrollYProgress, [0, 0.9], [1, 0]);
+
+  const [socialNews, setSocialNews] = useState([]);
+  const [newsLoading, setNewsLoading] = useState(true);
+  const [newsError, setNewsError] = useState(false);
+
+  const { scrollYProgress } = useScroll({
+    target: ref,
+    offset: ["start start", "end start"],
+  });
+
+  const titleY = useTransform(
+    scrollYProgress,
+    [0, 1],
+    reduce ? [0, 0] : [0, 55]
+  );
+
+  const fade = useTransform(
+    scrollYProgress,
+    [0, 0.9],
+    [1, 0]
+  );
+
+  /*
+   * ============================================================
+   * GNEWS CONFIG
+   * ============================================================
+   *
+   * Put your GNews API key here.
+   *
+   * IMPORTANT:
+   * This is frontend-only, so the key is visible to users.
+   * Fine for a prototype/internal dashboard.
+   */
+
+  const GNEWS_API_KEY =
+    import.meta.env.VITE_GNEWS_API_KEY;
+
+  /*
+   * ============================================================
+   * SOCIAL NEWS FETCH
+   * ============================================================
+   */
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchSocialNews() {
+  try {
+    setNewsLoading(true);
+    setNewsError(false);
+
+    // Keep this short — GNews has a query-length limit.
+    const query = encodeURIComponent(
+      '(Instagram OR TikTok OR YouTube OR "social media")'
+    );
+
+    const url =
+      `https://gnews.io/api/v4/search` +
+      `?q=${query}` +
+      `&lang=en` +
+      `&country=in` +
+      `&max=10` +
+      `&sortby=publishedAt` +
+      `&apikey=${GNEWS_API_KEY}`;
+
+    console.log("Fetching social news:", url);
+
+    const response = await fetch(url);
+    const data = await response.json();
+
+    console.log("GNews response:", data);
+
+    if (!response.ok) {
+      throw new Error(
+        data?.errors?.join(", ") ||
+        data?.message ||
+        `GNews returned ${response.status}`
+      );
+    }
+
+    const articles = Array.isArray(data.articles)
+      ? data.articles
+      : [];
+
+    const keywords = [
+      "instagram",
+      "tiktok",
+      "youtube",
+      "facebook",
+      "meta",
+      "linkedin",
+      "threads",
+      "snapchat",
+      "social media",
+      "social platform",
+      "social network",
+      "creator",
+      "influencer",
+      "reels",
+      "shorts",
+      "social commerce",
+      "social advertising",
+    ];
+
+    const filtered = articles
+      .filter((article) => {
+        const text = [
+          article.title,
+          article.description,
+          article.content,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+
+        return keywords.some((keyword) =>
+          text.includes(keyword)
+        );
+      })
+      .filter(
+        (article) =>
+          article.title &&
+          article.url
+      )
+      .map((article) => ({
+        id: article.url,
+        title: article.title,
+        description: article.description || "",
+        image: article.image || PHOTOS.close,
+        url: article.url,
+        source: article.source?.name || "Social Media",
+        publishedAt: article.publishedAt,
+
+        platform: detectSocialPlatform(
+          [
+            article.title,
+            article.description,
+            article.content,
+          ]
+            .filter(Boolean)
+            .join(" ")
+        ),
+
+        timeAgo: formatNewsTime(article.publishedAt),
+      }));
+
+    const unique = Array.from(
+      new Map(
+        filtered.map((item) => [
+          item.url,
+          item,
+        ])
+      ).values()
+    );
+
+    console.log("Social news found:", unique);
+
+    if (!cancelled) {
+      setSocialNews(unique.slice(0, 10));
+    }
+
+  } catch (error) {
+    console.error("SOCIAL NEWS ERROR:", error);
+
+    if (!cancelled) {
+      setNewsError(true);
+      setSocialNews([]);
+    }
+  } finally {
+    if (!cancelled) {
+      setNewsLoading(false);
+    }
+  }
+}
+
+    /*
+     * Don't call the API if no key exists.
+     */
+
+    if (
+      !GNEWS_API_KEY ||
+      GNEWS_API_KEY ===
+        "YOUR_GNEWS_API_KEY"
+    ) {
+      console.warn(
+        "GNews API key is missing."
+      );
+
+      setNewsLoading(false);
+      return;
+    }
+
+    fetchSocialNews();
+
+    /*
+     * Refresh every 15 minutes.
+     */
+
+    const interval =
+      setInterval(
+        fetchSocialNews,
+        10 * 60 * 1000
+      );
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  /*
+   * ============================================================
+   * PLATFORM DETECTION
+   * ============================================================
+   */
+
+  function detectSocialPlatform(text = "") {
+    const value =
+      text.toLowerCase();
+
+    if (
+      value.includes("instagram") ||
+      value.includes("reels")
+    ) {
+      return "Instagram";
+    }
+
+    if (
+      value.includes("tiktok")
+    ) {
+      return "TikTok";
+    }
+
+    if (
+      value.includes("youtube") ||
+      value.includes("shorts")
+    ) {
+      return "YouTube";
+    }
+
+    if (
+      value.includes("facebook") ||
+      value.includes("meta")
+    ) {
+      return "Meta";
+    }
+
+    if (
+      value.includes("linkedin")
+    ) {
+      return "LinkedIn";
+    }
+
+    if (
+      value.includes("threads")
+    ) {
+      return "Threads";
+    }
+
+    if (
+      value.includes("snapchat")
+    ) {
+      return "Snapchat";
+    }
+
+    if (
+      value.includes("creator") ||
+      value.includes("influencer")
+    ) {
+      return "Creator Economy";
+    }
+
+    return "Social Media";
+  }
+
+  /*
+   * ============================================================
+   * TIME FORMAT
+   * ============================================================
+   */
+
+  function formatNewsTime(date) {
+    if (!date) return "";
+
+    const time =
+      new Date(date).getTime();
+
+    if (Number.isNaN(time)) {
+      return "";
+    }
+
+    const difference =
+      Date.now() - time;
+
+    const minutes =
+      Math.floor(
+        difference / 60000
+      );
+
+    if (minutes < 1) {
+      return "Just now";
+    }
+
+    if (minutes < 60) {
+      return `${minutes}m ago`;
+    }
+
+    const hours =
+      Math.floor(minutes / 60);
+
+    if (hours < 24) {
+      return `${hours}h ago`;
+    }
+
+    const days =
+      Math.floor(hours / 24);
+
+    if (days < 7) {
+      return `${days}d ago`;
+    }
+
+    return new Date(date)
+      .toLocaleDateString(
+        "en-IN",
+        {
+          day: "numeric",
+          month: "short",
+        }
+      );
+  }
+
+  /*
+   * Duplicate the feed so the rail can loop continuously.
+   */
+
+  const newsRail =
+    socialNews.length >= 3
+      ? [
+          ...socialNews,
+          ...socialNews,
+        ]
+      : socialNews;
 
   return (
-    // `data-nav-merge` asks the shell's floating nav to drop its glass chrome
-    // while this section is behind it, so the pills read as sitting directly
-    // on the cover photograph rather than as a row of chips on top of it —
-    // the same photo the nav already darkens for its own copy, so white nav
-    // text stays exactly as legible as the "Founder Summary" label above it.
-    <section ref={ref} className="fs-hero" data-nav-merge data-nav-tone="dark"
-      style={{ position: "relative", height: "94vh", minHeight: 780, overflow: "hidden", background: F.ink }}>
-      <motion.div style={{ position: "absolute", inset: -60, y: imgY }}
-        animate={reduce ? undefined : { scale: [1, 1.06] }}
-        transition={{ duration: 26, repeat: Infinity, repeatType: "mirror", ease: "easeInOut" }}
-      >
-        <img src={PHOTOS.hero} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "grayscale(0.2) brightness(0.6) contrast(1.05)" }} />
-      </motion.div>
-      <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(20,21,26,0.28) 0%, rgba(20,21,26,0.3) 40%, rgba(20,21,26,0.68) 100%)" }} />
-      <div style={{ position: "absolute", inset: 0, background: "radial-gradient(120% 90% at 15% 15%, rgba(140,107,46,0.1), transparent 55%)" }} />
+    <section
+      ref={ref}
+      className="fs-hero"
+      data-nav-merge
+      data-nav-tone="light"
+      style={{
+        position: "relative",
+        minHeight: "94vh",
+        overflow: "hidden",
+        background: F.cream,
+        color: F.ink,
+        paddingTop: 105,
+      }}
+    >
 
-      {/* Critical above-the-fold copy: `animate` on mount, not a scroll
-          observer, so it is never caught mid-reveal on first paint. */}
-      <motion.div
-        className="fs-hero__content"
-        style={{ position: "relative", height: "100%", display: "flex", flexDirection: "column", justifyContent: "flex-end", padding: "0 44px 96px", y: textY, opacity: fade }}
-      >
-        <div style={{ maxWidth: 1280, margin: "0 auto", width: "100%" }}>
-          <motion.div
-            initial={reduce ? false : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.6 }}
-            style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}
-          >
-            <span style={{ width: 22, height: 1, background: F.cream, opacity: 0.5 }} />
-            <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.cream, textTransform: "uppercase", letterSpacing: "0.2em" }}>
-              Founder Summary
-            </span>
-          </motion.div>
+      {/* ======================================================
+          STYLES
+      ======================================================= */}
 
-          <motion.h1
-            className="fs-hero__title"
-            initial={reduce ? false : { opacity: 0, y: 26 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.9, ease: EASE, delay: 0.12 }}
+      <style>{`
+
+        @keyframes fsSocialRail {
+          from {
+            transform:
+              translate3d(0, 0, 0);
+          }
+
+          to {
+            transform:
+              translate3d(-50%, 0, 0);
+          }
+        }
+
+        @keyframes fsLivePulse {
+          0%,
+          100% {
+            opacity: .3;
+            transform: scale(.8);
+          }
+
+          50% {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
+
+        @keyframes fsSkeleton {
+          0% {
+            background-position:
+              200% 0;
+          }
+
+          100% {
+            background-position:
+              -200% 0;
+          }
+        }
+
+        .fs-social-news-rail {
+          animation:
+            fsSocialRail
+            55s
+            linear
+            infinite;
+
+          will-change:
+            transform;
+        }
+
+        .fs-social-news-rail:hover {
+          animation-play-state:
+            paused;
+        }
+
+        .fs-social-card {
+          transition:
+            transform
+              .4s
+              cubic-bezier(.2,.8,.2,1),
+            box-shadow
+              .4s ease;
+        }
+
+        .fs-social-card:hover {
+          transform:
+            translateY(-9px);
+
+          box-shadow:
+            0 28px 65px
+            rgba(20,21,26,.14)
+            !important;
+        }
+
+        .fs-social-image {
+          transition:
+            transform
+              .65s
+              cubic-bezier(.2,.8,.2,1);
+        }
+
+        .fs-social-card:hover
+        .fs-social-image {
+          transform:
+            scale(1.06);
+        }
+
+        @media (max-width: 760px) {
+
+          .fs-hero-title {
+            font-size:
+              clamp(
+                52px,
+                14vw,
+                82px
+              ) !important;
+          }
+
+          .fs-social-card {
+            width:
+              285px !important;
+          }
+
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+
+          .fs-social-news-rail {
+            animation:
+              none;
+          }
+
+        }
+
+      `}</style>
+
+      {/* ======================================================
+          DECORATIVE BACKGROUND
+      ======================================================= */}
+
+      <div
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          width: 650,
+          height: 650,
+          borderRadius: "50%",
+          top: -390,
+          right: -190,
+          background:
+            "radial-gradient(circle, rgba(169,145,94,.14), transparent 68%)",
+          pointerEvents: "none",
+        }}
+      />
+
+      <div
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          width: 500,
+          height: 500,
+          borderRadius: "50%",
+          left: -330,
+          top: 260,
+          background:
+            "radial-gradient(circle, rgba(90,105,130,.07), transparent 70%)",
+          pointerEvents: "none",
+        }}
+      />
+
+      {/* ======================================================
+          TOP BAR
+      ======================================================= */}
+
+      <div
+        style={{
+          position: "relative",
+          zIndex: 5,
+          maxWidth: 1280,
+          margin: "0 auto",
+          padding: "0 44px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 20,
+        }}
+      >
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 9,
+            fontFamily: T.ui,
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: ".18em",
+            textTransform: "uppercase",
+            color: F.muted,
+          }}
+        >
+
+          <span
             style={{
-              fontFamily: T.display, fontWeight: 500, fontStyle: "italic",
-              fontSize: "clamp(42px, 7vw, 96px)", lineHeight: 1.08,
-              color: "#FFFFFF", margin: "0 0 30px", letterSpacing: "-0.01em",
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: F.forest,
+              boxShadow:
+                `0 0 0 5px ${F.forestTint}`,
+              animation: reduce
+                ? undefined
+                : "fsLivePulse 2.2s ease-in-out infinite",
+            }}
+          />
+
+          Agency intelligence
+
+        </div>
+
+        <div
+          style={{
+            fontFamily: T.ui,
+            fontSize: 9.5,
+            letterSpacing: ".12em",
+            color: F.muted,
+          }}
+        >
+          {asOfLabel}
+        </div>
+
+      </div>
+
+      {/* ======================================================
+          MAIN TITLE
+      ======================================================= */}
+
+      <motion.div
+        style={{
+          position: "relative",
+          zIndex: 3,
+          maxWidth: 1180,
+          margin: "0 auto",
+          padding:
+            "82px 44px 0",
+          textAlign: "center",
+          y: titleY,
+          opacity: fade,
+        }}
+      >
+
+        {/* EYEBROW */}
+
+        <motion.div
+          initial={
+            reduce
+              ? false
+              : {
+                  opacity: 0,
+                  y: 12,
+                }
+          }
+          animate={{
+            opacity: 1,
+            y: 0,
+          }}
+          transition={{
+            duration: 0.7,
+          }}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 10,
+            fontFamily: T.ui,
+            fontSize: 9.5,
+            fontWeight: 700,
+            letterSpacing: ".18em",
+            textTransform: "uppercase",
+            color: F.muted,
+            marginBottom: 25,
+          }}
+        >
+
+          <span
+            style={{
+              width: 32,
+              height: 1,
+              background:
+                F.hairlineStrong,
+            }}
+          />
+
+          Founder Summary
+
+          <span
+            style={{
+              width: 32,
+              height: 1,
+              background:
+                F.hairlineStrong,
+            }}
+          />
+
+        </motion.div>
+
+        {/* TITLE */}
+
+        <motion.h1
+          className="fs-hero-title"
+          initial={
+            reduce
+              ? false
+              : {
+                  opacity: 0,
+                  y: 30,
+                }
+          }
+          animate={{
+            opacity: 1,
+            y: 0,
+          }}
+          transition={{
+            duration: 1,
+            ease: EASE,
+            delay: 0.1,
+          }}
+          style={{
+            fontFamily: T.display,
+            fontStyle: "italic",
+            fontWeight: 500,
+            fontSize:
+              "clamp(58px, 9vw, 126px)",
+            lineHeight: 0.88,
+            letterSpacing: "-.045em",
+            color: F.ink,
+            margin: 0,
+          }}
+        >
+          The state of
+          <br />
+
+          <span
+            style={{
+              marginLeft:
+                "clamp(20px, 8vw, 130px)",
             }}
           >
-            The state of<br />the agency.
-          </motion.h1>
+            the agency.
+          </span>
 
-          <motion.div
-            initial={reduce ? false : { opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, ease: EASE, delay: 0.4 }}
-            style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 20 }}
-          >
-            <div style={{ fontFamily: T.ui, fontSize: 15, color: "rgba(255,255,255,0.78)", maxWidth: 420, lineHeight: 1.7 }}>
-              A quiet view of every campaign, creator and client moving across the business.
-            </div>
-            <div style={{ fontFamily: T.ui, fontSize: 10.5, color: "rgba(255,255,255,0.55)", letterSpacing: "0.14em" }}>
-              {asOfLabel}
-            </div>
-          </motion.div>
-        </div>
+        </motion.h1>
+
+        {/* DESCRIPTION */}
+
+        <motion.p
+          initial={
+            reduce
+              ? false
+              : {
+                  opacity: 0,
+                  y: 15,
+                }
+          }
+          animate={{
+            opacity: 1,
+            y: 0,
+          }}
+          transition={{
+            duration: 0.8,
+            ease: EASE,
+            delay: 0.35,
+          }}
+          style={{
+            maxWidth: 480,
+            margin:
+              "36px auto 0",
+            fontFamily: T.ui,
+            fontSize: 14,
+            lineHeight: 1.7,
+            color: F.inkSoft,
+          }}
+        >
+          A living view of the work,
+          the people behind it,
+          and what is changing
+          across social media right now.
+        </motion.p>
+
       </motion.div>
+
+      {/* ======================================================
+          SOCIAL PULSE
+      ======================================================= */}
+
+      <section
+        style={{
+          position: "relative",
+          zIndex: 6,
+          marginTop: 82,
+          paddingBottom: 70,
+        }}
+      >
+
+        {/* HEADER */}
+
+        <div
+          style={{
+            maxWidth: 1280,
+            margin: "0 auto",
+            padding: "0 44px",
+          }}
+        >
+
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-end",
+              justifyContent:
+                "space-between",
+              gap: 20,
+              marginBottom: 28,
+            }}
+          >
+
+            <div>
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontFamily: T.ui,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  letterSpacing: ".16em",
+                  textTransform:
+                    "uppercase",
+                  color: F.muted,
+                }}
+              >
+
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius:
+                      "50%",
+                    background:
+                      F.forest,
+                    animation: reduce
+                      ? undefined
+                      : "fsLivePulse 2s ease-in-out infinite",
+                  }}
+                />
+
+                Social pulse
+
+              </div>
+
+              <h2
+                style={{
+                  margin:
+                    "9px 0 0",
+                  fontFamily:
+                    T.display,
+                  fontStyle:
+                    "italic",
+                  fontWeight: 500,
+                  fontSize:
+                    "clamp(34px, 4vw, 57px)",
+                  lineHeight: .95,
+                  letterSpacing:
+                    "-.035em",
+                  color: F.ink,
+                }}
+              >
+                What's happening
+                <br />
+
+                <span
+                  style={{
+                    marginLeft: 35,
+                  }}
+                >
+                  on social.
+                </span>
+              </h2>
+
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                paddingBottom: 5,
+                fontFamily: T.ui,
+                fontSize: 8.5,
+                fontWeight: 700,
+                letterSpacing: ".12em",
+                textTransform:
+                  "uppercase",
+                color: F.muted,
+                whiteSpace:
+                  "nowrap",
+              }}
+            >
+
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius:
+                    "50%",
+                  background:
+                    F.forest,
+                }}
+              />
+
+              Social media only
+
+            </div>
+
+          </div>
+
+        </div>
+
+        {/* ====================================================
+            LOADING
+        ===================================================== */}
+
+        {newsLoading && (
+
+          <div
+            style={{
+              display: "flex",
+              gap: 14,
+              overflow: "hidden",
+              paddingLeft: 44,
+            }}
+          >
+
+            {[1, 2, 3, 4].map(
+              (item) => (
+                <div
+                  key={item}
+                  style={{
+                    width: 330,
+                    height: 330,
+                    flexShrink: 0,
+                    borderRadius: 18,
+                    background:
+                      "linear-gradient(90deg, rgba(20,21,26,.035), rgba(20,21,26,.09), rgba(20,21,26,.035))",
+                    backgroundSize:
+                      "200% 100%",
+                    animation:
+                      "fsSkeleton 1.6s ease-in-out infinite",
+                  }}
+                />
+              )
+            )}
+
+          </div>
+
+        )}
+
+        {/* ====================================================
+            NEWS
+        ===================================================== */}
+
+        {!newsLoading &&
+          socialNews.length > 0 && (
+
+            <div
+              style={{
+                overflow:
+                  "hidden",
+                width: "100%",
+              }}
+            >
+
+              <div
+                className="fs-social-news-rail"
+                style={{
+                  display: "flex",
+                  gap: 14,
+                  width: "max-content",
+                  paddingLeft: 44,
+                }}
+              >
+
+                {newsRail.map(
+                  (article, index) => (
+
+                    <a
+                      key={
+                        `${article.id}-${index}`
+                      }
+                      href={
+                        article.url
+                      }
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        textDecoration:
+                          "none",
+                        color:
+                          "inherit",
+                      }}
+                    >
+
+                      <article
+                        className="fs-social-card"
+                        style={{
+                          width: 330,
+                          flexShrink: 0,
+                          borderRadius:
+                            18,
+                          overflow:
+                            "hidden",
+                          background:
+                            F.paper,
+                          border:
+                            `1px solid ${F.hairline}`,
+                          boxShadow:
+                            "0 16px 40px rgba(20,21,26,.07)",
+                        }}
+                      >
+
+                        {/* IMAGE */}
+
+                        <div
+                          style={{
+                            position:
+                              "relative",
+                            height:
+                              190,
+                            overflow:
+                              "hidden",
+                            background:
+                              F.hairline,
+                          }}
+                        >
+
+                          <img
+                            className="fs-social-image"
+                            src={
+                              article.image
+                            }
+                            alt=""
+                            loading="lazy"
+                            style={{
+                              width:
+                                "100%",
+                              height:
+                                "100%",
+                              objectFit:
+                                "cover",
+                              display:
+                                "block",
+                            }}
+                          />
+
+                          <div
+                            style={{
+                              position:
+                                "absolute",
+                              inset: 0,
+                              background:
+                                "linear-gradient(180deg, rgba(0,0,0,0) 35%, rgba(12,13,17,.75) 100%)",
+                            }}
+                          />
+
+                          {/* PLATFORM */}
+
+                          <span
+                            style={{
+                              position:
+                                "absolute",
+                              left: 14,
+                              bottom: 13,
+                              padding:
+                                "6px 10px",
+                              borderRadius:
+                                999,
+                              background:
+                                "rgba(255,255,255,.90)",
+                              backdropFilter:
+                                "blur(10px)",
+                              fontFamily:
+                                T.ui,
+                              fontSize:
+                                8,
+                              fontWeight:
+                                750,
+                              letterSpacing:
+                                ".11em",
+                              textTransform:
+                                "uppercase",
+                              color:
+                                F.ink,
+                            }}
+                          >
+                            {article.platform}
+                          </span>
+
+                        </div>
+
+                        {/* ARTICLE CONTENT */}
+
+                        <div
+                          style={{
+                            padding:
+                              "17px 17px 18px",
+                          }}
+                        >
+
+                          <div
+                            style={{
+                              display:
+                                "flex",
+                              justifyContent:
+                                "space-between",
+                              gap: 12,
+                              marginBottom:
+                                9,
+                            }}
+                          >
+
+                            <span
+                              style={{
+                                fontFamily:
+                                  T.ui,
+                                fontSize:
+                                  8.5,
+                                fontWeight:
+                                  700,
+                                letterSpacing:
+                                  ".1em",
+                                textTransform:
+                                  "uppercase",
+                                color:
+                                  F.muted,
+                              }}
+                            >
+                              {article.source}
+                            </span>
+
+                            <span
+                              style={{
+                                fontFamily:
+                                  T.ui,
+                                fontSize:
+                                  8.5,
+                                color:
+                                  F.muted,
+                                whiteSpace:
+                                  "nowrap",
+                              }}
+                            >
+                              {article.timeAgo}
+                            </span>
+
+                          </div>
+
+                          <div
+                            style={{
+                              fontFamily:
+                                T.ui,
+                              fontSize:
+                                14,
+                              lineHeight:
+                                1.38,
+                              fontWeight:
+                                650,
+                              letterSpacing:
+                                "-.015em",
+                              color:
+                                F.ink,
+                            }}
+                          >
+                            {article.title}
+                          </div>
+
+                          {article.description && (
+                            <div
+                              style={{
+                                marginTop:
+                                  8,
+                                fontFamily:
+                                  T.ui,
+                                fontSize:
+                                  10.5,
+                                lineHeight:
+                                  1.55,
+                                color:
+                                  F.muted,
+                                display:
+                                  "-webkit-box",
+                                WebkitLineClamp:
+                                  2,
+                                WebkitBoxOrient:
+                                  "vertical",
+                                overflow:
+                                  "hidden",
+                              }}
+                            >
+                              {article.description}
+                            </div>
+                          )}
+
+                          <div
+                            style={{
+                              display:
+                                "flex",
+                              alignItems:
+                                "center",
+                              justifyContent:
+                                "space-between",
+                              marginTop:
+                                14,
+                              paddingTop:
+                                11,
+                              borderTop:
+                                `1px solid ${F.hairline}`,
+                            }}
+                          >
+
+                            <span
+                              style={{
+                                fontFamily:
+                                  T.ui,
+                                fontSize:
+                                  8,
+                                fontWeight:
+                                  700,
+                                letterSpacing:
+                                  ".1em",
+                                textTransform:
+                                  "uppercase",
+                                color:
+                                  F.muted,
+                              }}
+                            >
+                              Read story
+                            </span>
+
+                            <span
+                              style={{
+                                fontSize:
+                                  13,
+                                color:
+                                  F.ink,
+                              }}
+                            >
+                              ↗
+                            </span>
+
+                          </div>
+
+                        </div>
+
+                      </article>
+
+                    </a>
+
+                  )
+                )}
+
+              </div>
+
+            </div>
+
+          )}
+
+        {/* ====================================================
+            ERROR / EMPTY
+        ===================================================== */}
+
+        {!newsLoading &&
+          socialNews.length === 0 && (
+
+            <div
+              style={{
+                maxWidth:
+                  1280,
+                margin:
+                  "0 auto",
+                padding:
+                  "0 44px",
+              }}
+            >
+
+              <div
+                style={{
+                  borderTop:
+                    `1px solid ${F.hairline}`,
+                  borderBottom:
+                    `1px solid ${F.hairline}`,
+                  padding:
+                    "28px 0",
+                  display:
+                    "flex",
+                  alignItems:
+                    "center",
+                  justifyContent:
+                    "space-between",
+                  gap: 20,
+                  fontFamily:
+                    T.ui,
+                }}
+              >
+
+                <div
+                  style={{
+                    fontSize:
+                      11,
+                    color:
+                      F.muted,
+                  }}
+                >
+                  {newsError
+                    ? "Unable to refresh the social feed right now."
+                    : "No social-media stories available right now."}
+                </div>
+
+                <div
+                  style={{
+                    fontSize:
+                      8.5,
+                    fontWeight:
+                      700,
+                    letterSpacing:
+                      ".1em",
+                    textTransform:
+                      "uppercase",
+                    color:
+                      F.muted,
+                  }}
+                >
+                  Instagram · TikTok · YouTube · Meta
+                </div>
+
+              </div>
+
+            </div>
+
+          )}
+
+        {/* FOOTER */}
+
+        {!newsLoading &&
+          socialNews.length > 0 && (
+
+            <div
+              style={{
+                maxWidth:
+                  1280,
+                margin:
+                  "27px auto 0",
+                padding:
+                  "0 44px",
+                display:
+                  "flex",
+                justifyContent:
+                  "space-between",
+                gap: 20,
+                fontFamily:
+                  T.ui,
+                fontSize:
+                  8.5,
+                letterSpacing:
+                  ".11em",
+                textTransform:
+                  "uppercase",
+                color:
+                  F.muted,
+              }}
+            >
+
+              <span>
+                Instagram · TikTok · YouTube · Meta · LinkedIn
+              </span>
+
+              <span>
+                Auto-refresh · 15 min
+              </span>
+
+            </div>
+
+          )}
+
+      </section>
+
+      {/* ======================================================
+          SCROLL INDICATOR
+      ======================================================= */}
 
       {!reduce && (
         <motion.div
-          style={{ position: "absolute", left: "50%", bottom: 24, width: 1, height: 34, background: "rgba(255,255,255,0.4)" }}
-          animate={{ scaleY: [0.3, 1, 0.3], opacity: [0.2, 0.8, 0.2] }}
-          transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
+          style={{
+            position:
+              "absolute",
+            left: "50%",
+            bottom: 20,
+            width: 1,
+            height: 28,
+            background:
+              F.hairlineStrong,
+            transformOrigin:
+              "top",
+          }}
+          animate={{
+            scaleY: [
+              0.25,
+              1,
+              0.25,
+            ],
+            opacity: [
+              0.25,
+              0.8,
+              0.25,
+            ],
+          }}
+          transition={{
+            duration: 2.2,
+            repeat: Infinity,
+            ease: "easeInOut",
+          }}
         />
       )}
+
     </section>
   );
 }
-
 /* ────────────────────────────────────────────────────────────────
  * 2 — EXECUTIVE STATEMENT
  * ──────────────────────────────────────────────────────────────── */
@@ -741,152 +2045,872 @@ const PANEL_H = 480;
 
 function AgencyHealth({ health = {} }) {
   const reduce = useReducedMotion();
-  // 440, down from 520: the ring lives inside a half-width column now, not the
-  // full page. At the old size the labels around its edge were the widest thing
-  // in the column and forced the whole spread taller than it needed to be.
-  const size = 440, cx = size / 2, cy = size / 2;
-  const items = [
-    { key: "revenue", label: "Revenue", angle: -90, color: "#8FBBA8", value: health.revenue },
-    { key: "delivery", label: "Delivery", angle: -18, color: "#9DB4D9", value: health.delivery },
-    { key: "clients", label: "Clients", angle: 54, color: "#E4C77B", value: health.clients },
-    { key: "team", label: "Team", angle: 126, color: "#D2A6C0", value: health.team },
-    { key: "growth", label: "Growth", angle: 198, color: "#E0A08F", value: health.growth },
+
+  const size = 440;
+  const cx = size / 2;
+  const cy = size / 2;
+
+  /*
+   * These are only LABELS.
+   * The values must come from `health`.
+   *
+   * Nothing is invented here.
+   */
+  const definitions = [
+    {
+      key: "revenue",
+      label: "Revenue",
+      color: "#8FBBA8",
+    },
+    {
+      key: "delivery",
+      label: "Delivery",
+      color: "#9DB4D9",
+    },
+    {
+      key: "clients",
+      label: "Clients",
+      color: "#E4C77B",
+    },
+    {
+      key: "team",
+      label: "Team",
+      color: "#D2A6C0",
+    },
+    {
+      key: "growth",
+      label: "Growth",
+      color: "#E0A08F",
+    },
   ];
-  // Orbit radius, kept in proportion to `size` above (was 190 at size 520) so
-  // the 64px nodes and their label pills still clear the panel's edge.
-  const R = 158;
-  // Only the signals the database can actually answer take part in the
-  // ranking and the average — and the cards below say how many that is, so
-  // "strongest of five" is never claimed when three of the five are blank.
-  const measured = items.filter((i) => i.value != null);
-  const strongest = [...measured].sort((a, b) => b.value - a.value)[0];
-  const weakest = [...measured].sort((a, b) => a.value - b.value)[0];
-  const avg = measured.length ? measured.reduce((s, i) => s + i.value, 0) / measured.length : null;
-  const measuredNote = `${measured.length} of ${items.length} signals are measured today`;
+
+  /*
+   * ONLY keep values that actually exist.
+   *
+   * This means:
+   * null       → hidden
+   * undefined  → hidden
+   * NaN        → hidden
+   *
+   * Zero IS kept because 0 is a real measurement.
+   */
+  const measured = definitions
+    .map((definition) => ({
+      ...definition,
+      value: Number(health?.[definition.key]),
+    }))
+    .filter(
+      (item) =>
+        health?.[item.key] !== null &&
+        health?.[item.key] !== undefined &&
+        Number.isFinite(item.value)
+    );
+
+  /*
+   * Dynamically position only the signals we actually have.
+   */
+  const positioned = measured.map((item, index) => {
+    const angle =
+      measured.length === 1
+        ? -90
+        : -90 + (360 / measured.length) * index;
+
+    return {
+      ...item,
+      angle,
+    };
+  });
+
+  const measuredCount = measured.length;
+
+  const average =
+    measuredCount > 0
+      ? measured.reduce((sum, item) => sum + item.value, 0) /
+        measuredCount
+      : null;
+
+  const strongest =
+    measuredCount > 0
+      ? [...measured].sort((a, b) => b.value - a.value)[0]
+      : null;
+
+  const weakest =
+    measuredCount > 0
+      ? [...measured].sort((a, b) => a.value - b.value)[0]
+      : null;
 
   const ref = useRef(null);
-  const { scrollYProgress } = useScroll({ target: ref, offset: ["start end", "end start"] });
-  const imgY = useTransform(scrollYProgress, [0, 1], reduce ? [0, 0] : [-30, 30]);
+
+  const { scrollYProgress } = useScroll({
+    target: ref,
+    offset: ["start end", "end start"],
+  });
+
+  const imgY = useTransform(
+    scrollYProgress,
+    [0, 1],
+    reduce ? [0, 0] : [-30, 30]
+  );
 
   return (
-    // ── LAYOUT ──────────────────────────────────────────────────────────────
-    // Three stacked bands, in reading order: the heading, then the diagram
-    // beside its photograph, then the takeaways across the bottom.
-    //
-    // The previous arrangement put the heading, the ring AND the cards all
-    // inside the left grid column, which made that column ~1260px tall against
-    // a 616px photo. With `align-items: center` the photo then floated in the
-    // vertical middle of a column it was supposed to sit beside, and the ring
-    // drifted in a very wide field of empty dark. Lifting the header and the
-    // cards OUT of the columns leaves the grid holding two things of similar
-    // height, which is the only way `stretch` can line them up.
-    <section ref={ref} style={{ padding: "104px 44px 96px", position: "relative", overflow: "hidden", background: F.ink }}>
-      <div style={{ position: "absolute", inset: 0, background: "radial-gradient(70% 60% at 30% 30%, rgba(30,42,68,0.45), transparent 70%)" }} />
+    <section
+      ref={ref}
+      style={{
+        padding: "110px 44px 100px",
+        position: "relative",
+        overflow: "hidden",
+        background: F.ink,
+      }}
+    >
+      {/* BACKGROUND ATMOSPHERE */}
 
-      <div style={{ maxWidth: 1240, margin: "0 auto", position: "relative" }}>
-        <SectionHeader eyebrow="Live view" eyebrowColor={F.cream} title="Agency Health" dark center={false}
-          sub="Five signals, one pulse — how revenue, delivery, clients, team and growth are tracking right now."
-          gap={40} />
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "radial-gradient(65% 70% at 20% 20%, rgba(49,65,95,0.45), transparent 70%)",
+          pointerEvents: "none",
+        }}
+      />
 
-        {/* Diagram + photograph. `stretch` (not `center`) so the tile is
-            exactly as tall as the ring panel next to it — the two now read as
-            one spread rather than two floating objects. */}
-        <div style={{
-          display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-          gap: 28, alignItems: "stretch",
-        }}>
-          <Reveal delay={0.1} style={{ height: "100%" }}>
-            <div style={{
-              position: "relative", height: "100%", minHeight: PANEL_H,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              padding: "18px 12px", borderRadius: 20,
+      <div
+        style={{
+          position: "absolute",
+          width: 500,
+          height: 500,
+          right: -220,
+          top: -220,
+          borderRadius: "50%",
+          background:
+            "radial-gradient(circle, rgba(143,187,168,0.12), transparent 68%)",
+          pointerEvents: "none",
+        }}
+      />
+
+      <div
+        style={{
+          maxWidth: 1240,
+          margin: "0 auto",
+          position: "relative",
+        }}
+      >
+        {/* =====================================================
+            HEADER
+        ===================================================== */}
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "space-between",
+            gap: 30,
+            marginBottom: 38,
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <div
+              style={{
+                fontFamily: T.ui,
+                fontSize: 9.5,
+                fontWeight: 700,
+                letterSpacing: "0.16em",
+                textTransform: "uppercase",
+                color: F.cream,
+                opacity: 0.75,
+                marginBottom: 10,
+              }}
+            >
+              Live measurement
+            </div>
+
+            <h2
+              style={{
+                margin: 0,
+                fontFamily: T.display,
+                fontStyle: "italic",
+                fontSize: "clamp(42px, 5vw, 66px)",
+                fontWeight: 400,
+                lineHeight: 0.95,
+                letterSpacing: "-0.035em",
+                color: "#FFFFFF",
+              }}
+            >
+              Agency health.
+            </h2>
+
+            <p
+              style={{
+                maxWidth: 590,
+                margin: "16px 0 0",
+                fontFamily: T.ui,
+                fontSize: 12.5,
+                lineHeight: 1.7,
+                color: "rgba(255,255,255,0.48)",
+              }}
+            >
+              A view of the signals the system can actually measure right
+              now. Unavailable metrics are deliberately omitted.
+            </p>
+          </div>
+
+          {/* MEASUREMENT COUNT */}
+
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "9px 13px",
+              borderRadius: 999,
+              background: "rgba(255,255,255,0.06)",
               border: "1px solid rgba(255,255,255,0.10)",
-              background: "rgba(255,255,255,0.03)",
-              backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
-              overflow: "hidden",
-            }}>
-              <DriftParticles color="#FFFFFF" area={size} count={12} />
-              {/* maxWidth caps the ring so it never inflates to fill a wide
-                  column; the panel around it is what holds the space. */}
-              <svg viewBox={`0 0 ${size} ${size}`} width="100%" style={{ maxWidth: size, position: "relative", overflow: "visible" }}>
-                <circle cx={cx} cy={cy} r={R} fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth={1} strokeDasharray="2 6" />
-                {items.map((it) => {
-                  const rad = (it.angle * Math.PI) / 180;
-                  const x = cx + Math.cos(rad) * R, y = cy + Math.sin(rad) * R;
-                  const d = `M ${cx} ${cy} Q ${(cx + x) / 2} ${(cy + y) / 2 - 30} ${x} ${y}`;
-                  return <path key={"c-" + it.key} d={d} fill="none" stroke={it.color} strokeOpacity={0.35} strokeWidth={1} />;
-                })}
-                {items.map((it) => {
-                  const rad = (it.angle * Math.PI) / 180;
-                  const x = cx + Math.cos(rad) * R, y = cy + Math.sin(rad) * R;
-                  const nodeSize = 64;
-                  return (
-                    <g key={it.key}>
-                      <motion.circle
-                        cx={x} cy={y} r={nodeSize / 2} fill="rgba(255,255,255,0.1)" stroke="rgba(255,255,255,0.28)" strokeWidth={1}
-                        animate={reduce ? undefined : { r: [nodeSize / 2, nodeSize / 2 + 2, nodeSize / 2] }}
-                        transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
-                      />
-                      <HealthOrbitArc pct={it.value} color={it.color} cx={x} cy={y} r={nodeSize / 2 - 6} stroke={3} />
-                      <foreignObject x={x - nodeSize / 2} y={y - nodeSize / 2} width={nodeSize} height={nodeSize}>
-                        <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: T.ui, fontWeight: 700, fontSize: 12.5, color: "#FFFFFF" }}>
-                          {it.value != null ? `${it.value}%` : <span style={{ color: "rgba(255,255,255,0.5)", fontSize: 15 }}>—</span>}
-                        </div>
-                      </foreignObject>
-                      <rect x={x - 34} y={y + nodeSize / 2 + 7} width={68} height={16} rx={8} fill="rgba(20,21,26,0.55)" />
-                      <text x={x} y={y + nodeSize / 2 + 18.5} textAnchor="middle" fontFamily={T.ui} fontSize={9.5} fontWeight={600} fill="#F1ECE1" letterSpacing="0.05em">
-                        {it.label.toUpperCase()}
-                      </text>
-                    </g>
-                  );
-                })}
-                <circle cx={cx} cy={cy} r={50} fill="rgba(255,255,255,0.1)" />
-                <circle cx={cx} cy={cy} r={50} fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth={1} />
-                <text x={cx} y={cy - 5} textAnchor="middle" fontFamily={T.ui} fontSize={9.5} fontWeight={700} fill="#FFFFFF" letterSpacing="0.08em">AGENCY</text>
-                <text x={cx} y={cy + 9} textAnchor="middle" fontFamily={T.ui} fontSize={9.5} fontWeight={700} fill="#FFFFFF" letterSpacing="0.08em">HEALTH</text>
-              </svg>
+              backdropFilter: "blur(12px)",
+              WebkitBackdropFilter: "blur(12px)",
+            }}
+          >
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background:
+                  measuredCount > 0
+                    ? "#8FBBA8"
+                    : "rgba(255,255,255,0.25)",
+                boxShadow:
+                  measuredCount > 0
+                    ? "0 0 0 4px rgba(143,187,168,0.12)"
+                    : "none",
+              }}
+            />
+
+            <span
+              style={{
+                fontFamily: T.ui,
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                color: "rgba(255,255,255,0.65)",
+              }}
+            >
+              {measuredCount} measured
+            </span>
+          </div>
+        </div>
+
+        {/* =====================================================
+            MAIN PANEL
+        ===================================================== */}
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns:
+              measuredCount > 0
+                ? "minmax(420px, 1.1fr) minmax(320px, 0.9fr)"
+                : "1fr",
+            gap: 18,
+          }}
+        >
+          {/* =================================================
+              LEFT — LIVE SIGNAL MAP
+          ================================================= */}
+
+          <Reveal delay={0.08}>
+            <div
+              style={{
+                position: "relative",
+                minHeight: 500,
+                borderRadius: 24,
+                overflow: "hidden",
+
+                background:
+                  "linear-gradient(145deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018))",
+
+                border:
+                  "1px solid rgba(255,255,255,0.10)",
+
+                boxShadow:
+                  "0 30px 70px rgba(0,0,0,0.25)",
+
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              {measuredCount > 0 ? (
+                <>
+                  {/* AMBIENT GLOW */}
+
+                  <div
+                    style={{
+                      position: "absolute",
+                      width: 250,
+                      height: 250,
+                      left: "50%",
+                      top: "50%",
+                      transform:
+                        "translate(-50%, -50%)",
+                      borderRadius: "50%",
+                      background:
+                        "radial-gradient(circle, rgba(255,255,255,0.06), transparent 68%)",
+                      filter: "blur(10px)",
+                    }}
+                  />
+
+                  <svg
+                    viewBox={`0 0 ${size} ${size}`}
+                    width="100%"
+                    style={{
+                      maxWidth: size,
+                      position: "relative",
+                      overflow: "visible",
+                    }}
+                  >
+                    {/* ORBIT */}
+
+                    <circle
+                      cx={cx}
+                      cy={cy}
+                      r={158}
+                      fill="none"
+                      stroke="rgba(255,255,255,0.10)"
+                      strokeWidth={1}
+                      strokeDasharray="2 7"
+                    />
+
+                    {/* CENTER */}
+
+                    <circle
+                      cx={cx}
+                      cy={cy}
+                      r={58}
+                      fill="rgba(255,255,255,0.055)"
+                      stroke="rgba(255,255,255,0.14)"
+                      strokeWidth={1}
+                    />
+
+                    <text
+                      x={cx}
+                      y={cy - 5}
+                      textAnchor="middle"
+                      fontFamily={T.ui}
+                      fontSize={9}
+                      fontWeight={700}
+                      fill="rgba(255,255,255,0.42)"
+                      letterSpacing="0.12em"
+                    >
+                      LIVE
+                    </text>
+
+                    <text
+                      x={cx}
+                      y={cy + 17}
+                      textAnchor="middle"
+                      fontFamily={T.display}
+                      fontStyle="italic"
+                      fontSize={22}
+                      fill="#FFFFFF"
+                    >
+                      {average != null
+                        ? `${Math.round(average)}%`
+                        : "—"}
+                    </text>
+
+                    {/* CONNECTIONS */}
+
+                    {positioned.map((item) => {
+                      const rad =
+                        (item.angle * Math.PI) / 180;
+
+                      const x =
+                        cx + Math.cos(rad) * 158;
+
+                      const y =
+                        cy + Math.sin(rad) * 158;
+
+                      const d = `
+                        M ${cx} ${cy}
+                        Q ${(cx + x) / 2}
+                          ${(cy + y) / 2}
+                          ${x} ${y}
+                      `;
+
+                      return (
+                        <path
+                          key={`line-${item.key}`}
+                          d={d}
+                          fill="none"
+                          stroke={item.color}
+                          strokeOpacity={0.22}
+                          strokeWidth={1}
+                        />
+                      );
+                    })}
+
+                    {/* MEASURED SIGNALS */}
+
+                    {positioned.map((item) => {
+                      const rad =
+                        (item.angle * Math.PI) / 180;
+
+                      const x =
+                        cx + Math.cos(rad) * 158;
+
+                      const y =
+                        cy + Math.sin(rad) * 158;
+
+                      const nodeSize = 70;
+
+                      return (
+                        <g key={item.key}>
+                          {/* halo */}
+
+                          <circle
+                            cx={x}
+                            cy={y}
+                            r={nodeSize / 2 + 8}
+                            fill={item.color}
+                            opacity={0.045}
+                          />
+
+                          {/* node */}
+
+                          <circle
+                            cx={x}
+                            cy={y}
+                            r={nodeSize / 2}
+                            fill="rgba(255,255,255,0.055)"
+                            stroke="rgba(255,255,255,0.20)"
+                            strokeWidth={1}
+                          />
+
+                          {/* REAL VALUE ARC */}
+
+                          <HealthOrbitArc
+                            pct={item.value}
+                            color={item.color}
+                            cx={x}
+                            cy={y}
+                            r={nodeSize / 2 - 7}
+                            stroke={4}
+                          />
+
+                          {/* VALUE */}
+
+                          <foreignObject
+                            x={
+                              x - nodeSize / 2
+                            }
+                            y={
+                              y - nodeSize / 2
+                            }
+                            width={nodeSize}
+                            height={nodeSize}
+                          >
+                            <div
+                              style={{
+                                width: "100%",
+                                height: "100%",
+                                display: "flex",
+                                alignItems:
+                                  "center",
+                                justifyContent:
+                                  "center",
+                                fontFamily: T.ui,
+                                fontSize: 13,
+                                fontWeight: 750,
+                                color: "#FFFFFF",
+                              }}
+                            >
+                              {Math.round(
+                                item.value
+                              )}
+                              %
+                            </div>
+                          </foreignObject>
+
+                          {/* LABEL */}
+
+                          <text
+                            x={x}
+                            y={
+                              y +
+                              nodeSize / 2 +
+                              22
+                            }
+                            textAnchor="middle"
+                            fontFamily={T.ui}
+                            fontSize={9}
+                            fontWeight={700}
+                            fill="rgba(255,255,255,0.68)"
+                            letterSpacing="0.09em"
+                          >
+                            {item.label.toUpperCase()}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </>
+              ) : (
+                /* =================================================
+                   EMPTY STATE
+                ================================================= */
+
+                <div
+                  style={{
+                    textAlign: "center",
+                    maxWidth: 330,
+                    padding: 30,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 64,
+                      height: 64,
+                      margin: "0 auto 18px",
+                      borderRadius: "50%",
+                      border:
+                        "1px solid rgba(255,255,255,0.12)",
+                      background:
+                        "rgba(255,255,255,0.04)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontFamily: T.display,
+                      fontStyle: "italic",
+                      fontSize: 24,
+                      color: "rgba(255,255,255,0.45)",
+                    }}
+                  >
+                    —
+                  </div>
+
+                  <div
+                    style={{
+                      fontFamily: T.display,
+                      fontStyle: "italic",
+                      fontSize: 25,
+                      color: "#FFFFFF",
+                    }}
+                  >
+                    No live measurements yet.
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: 8,
+                      fontFamily: T.ui,
+                      fontSize: 11.5,
+                      lineHeight: 1.6,
+                      color:
+                        "rgba(255,255,255,0.42)",
+                    }}
+                  >
+                    Once the system receives measurable
+                    agency data, the signals will appear
+                    here automatically.
+                  </div>
+                </div>
+              )}
             </div>
           </Reveal>
 
-          {/* The photograph that used to be a full-bleed backdrop behind this
-              whole section. As a tile it does a job — anchoring the right
-              column — instead of being a texture the copy had to fight for
-              contrast against. */}
-          <Reveal delay={0.18} style={{ height: "100%" }}>
-            <div style={{
-              position: "relative", height: "100%", minHeight: PANEL_H,
-              borderRadius: 20, overflow: "hidden",
-              border: "1px solid rgba(255,255,255,0.12)",
-              boxShadow: "0 30px 70px rgba(0,0,0,0.45)",
-            }}>
-              <motion.img src={PHOTOS.health} alt="" loading="lazy" style={{
-                position: "absolute", inset: -40, width: "calc(100% + 80px)", height: "calc(100% + 80px)",
-                objectFit: "cover", filter: "grayscale(0.3) brightness(0.6) contrast(1.05)", y: imgY,
-              }} />
-              <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(20,21,26,0.12) 0%, rgba(20,21,26,0.78) 100%)" }} />
-              <div style={{ position: "absolute", left: 26, right: 26, bottom: 24 }}>
-                <div style={{ fontFamily: T.ui, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.16em", color: F.cream, opacity: 0.85, marginBottom: 8 }}>
-                  ON THE FLOOR
+          {/* =================================================
+              RIGHT — MEASURED DATA
+          ================================================= */}
+
+          {measuredCount > 0 && (
+            <Reveal delay={0.15}>
+              <div
+                style={{
+                  minHeight: 500,
+                  borderRadius: 24,
+                  overflow: "hidden",
+                  background: "#F7F4EE",
+                  border:
+                    "1px solid rgba(255,255,255,0.12)",
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                {/* HEADER */}
+
+                <div
+                  style={{
+                    padding: "25px 25px 20px",
+                    borderBottom:
+                      "1px solid rgba(20,21,26,0.08)",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: T.ui,
+                      fontSize: 9,
+                      fontWeight: 700,
+                      letterSpacing: "0.14em",
+                      textTransform: "uppercase",
+                      color: "#77736C",
+                    }}
+                  >
+                    Measured signals
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: 6,
+                      fontFamily: T.display,
+                      fontStyle: "italic",
+                      fontSize: 28,
+                      lineHeight: 1,
+                      color: "#15161A",
+                    }}
+                  >
+                    What the system knows.
+                  </div>
                 </div>
-                <div style={{ fontFamily: T.display, fontStyle: "italic", fontSize: 22, color: "#FFFFFF", lineHeight: 1.3 }}>
-                  Every signal beside this is a room like it, mid-shoot.
+
+                {/* SIGNAL LIST */}
+
+                <div
+                  style={{
+                    flex: 1,
+                    padding: "8px 22px",
+                  }}
+                >
+                  {measured.map((item, index) => (
+                    <div
+                      key={item.key}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 13,
+                        padding: "17px 2px",
+                        borderBottom:
+                          index <
+                          measured.length - 1
+                            ? "1px solid rgba(20,21,26,0.07)"
+                            : "none",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 10,
+                          height: 10,
+                          borderRadius: "50%",
+                          background:
+                            item.color,
+                          boxShadow:
+                            `0 0 0 5px ${item.color}18`,
+                          flexShrink: 0,
+                        }}
+                      />
+
+                      <div
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontFamily: T.ui,
+                            fontSize: 11,
+                            fontWeight: 650,
+                            color: "#24252A",
+                          }}
+                        >
+                          {item.label}
+                        </div>
+
+                        <div
+                          style={{
+                            marginTop: 5,
+                            height: 4,
+                            borderRadius: 999,
+                            background:
+                              "rgba(20,21,26,0.07)",
+                            overflow: "hidden",
+                          }}
+                        >
+                          <motion.div
+                            initial={
+                              reduce
+                                ? false
+                                : { width: 0 }
+                            }
+                            whileInView={{
+                              width: `${Math.min(
+                                Math.max(
+                                  item.value,
+                                  0
+                                ),
+                                100
+                              )}%`,
+                            }}
+                            viewport={{
+                              once: true,
+                            }}
+                            transition={{
+                              duration: 1,
+                              ease: EASE,
+                            }}
+                            style={{
+                              height: "100%",
+                              borderRadius: 999,
+                              background:
+                                item.color,
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          fontFamily: T.ui,
+                          fontSize: 19,
+                          fontWeight: 700,
+                          color: "#15161A",
+                          fontVariantNumeric:
+                            "tabular-nums",
+                        }}
+                      >
+                        {Math.round(
+                          item.value
+                        )}
+                        %
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* BOTTOM SUMMARY */}
+
+                <div
+                  style={{
+                    margin: "0 22px 22px",
+                    padding: "16px 17px",
+                    borderRadius: 14,
+                    background: "#EDE8DE",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent:
+                        "space-between",
+                      gap: 15,
+                    }}
+                  >
+                    <div>
+                      <div
+                        style={{
+                          fontFamily: T.ui,
+                          fontSize: 8.5,
+                          fontWeight: 700,
+                          textTransform:
+                            "uppercase",
+                          letterSpacing:
+                            "0.1em",
+                          color: "#858078",
+                        }}
+                      >
+                        Highest measured
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 4,
+                          fontFamily: T.display,
+                          fontStyle: "italic",
+                          fontSize: 18,
+                          color: "#17181C",
+                        }}
+                      >
+                        {strongest.label}
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        textAlign: "right",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontFamily: T.ui,
+                          fontSize: 8.5,
+                          fontWeight: 700,
+                          textTransform:
+                            "uppercase",
+                          letterSpacing:
+                            "0.1em",
+                          color: "#858078",
+                        }}
+                      >
+                        Current reading
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 4,
+                          fontFamily: T.ui,
+                          fontSize: 18,
+                          fontWeight: 750,
+                          color: "#17181C",
+                        }}
+                      >
+                        {Math.round(
+                          strongest.value
+                        )}
+                        %
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          </Reveal>
+            </Reveal>
+          )}
         </div>
 
-        {/* Takeaways, full width under both columns — three equal cards on one
-            row instead of stacking three-deep inside a narrow column. */}
-        <div style={{
-          display: "grid", gap: 16, marginTop: 28,
-          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-          textAlign: "left",
-        }}>
-          <InsightCard dark label="Strongest signal" value={strongest ? strongest.label : "—"} note={strongest ? `Sitting at ${strongest.value}%, the highest of those we can measure` : "No signal is measurable yet"} color="#8FBBA8" delay={0.05} />
-          <InsightCard dark label="Needs attention" value={measured.length > 1 ? weakest.label : "—"} note={measured.length > 1 ? `Sitting at ${weakest.value}%, the softest of those we can measure` : "Needs at least two measured signals to compare"} color="#E0A08F" delay={0.12} />
-          <InsightCard dark label="Overall average" value={avg != null ? `${Math.round(avg)}` : "—"} note={measuredNote} color="#9DB4D9" delay={0.19} />
-        </div>
+        {/* =====================================================
+            DATA NOTE
+        ===================================================== */}
+
+        {measuredCount > 0 && (
+          <div
+            style={{
+              marginTop: 15,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontFamily: T.ui,
+              fontSize: 9.5,
+              color:
+                "rgba(255,255,255,0.30)",
+            }}
+          >
+            <span
+              style={{
+                width: 5,
+                height: 5,
+                borderRadius: "50%",
+                background: "#8FBBA8",
+              }}
+            />
+
+            Showing {measuredCount} live{" "}
+            {measuredCount === 1
+              ? "signal"
+              : "signals"}{" "}
+            supplied by the system. Unavailable
+            measurements are hidden.
+          </div>
+        )}
       </div>
     </section>
   );
@@ -897,72 +2921,1132 @@ function AgencyHealth({ health = {} }) {
  * ──────────────────────────────────────────────────────────────── */
 
 function RevenueSection({ data = {} }) {
-  const rows = [
-    { label: "Collected", value: data.collected },
-    { label: "Outstanding", value: data.outstanding },
-    { label: "Overdue", value: data.overdue },
-    { label: "Renewals", value: data.renewalsDue, isCount: true },
-  ];
-  const hasTrend = data.trend && data.trend.length >= 2;
+  const reduce = useReducedMotion();
+  const [hover, setHover] = useState(null);
+
+  /*
+   * ============================================================
+   * REAL REVENUE DATA
+   * ============================================================
+   *
+   * We NEVER manufacture a value here.
+   * Everything comes directly from `data`.
+   */
+
+  const total =
+    Number.isFinite(Number(data.total))
+      ? Number(data.total)
+      : null;
+
+  const collected =
+    Number.isFinite(Number(data.collected))
+      ? Number(data.collected)
+      : null;
+
+  const outstanding =
+    Number.isFinite(Number(data.outstanding))
+      ? Number(data.outstanding)
+      : null;
+
+  const overdue =
+    Number.isFinite(Number(data.overdue))
+      ? Number(data.overdue)
+      : null;
+
+  const renewals =
+    Number.isFinite(Number(data.renewalsDue))
+      ? Number(data.renewalsDue)
+      : null;
+
+  /*
+   * Collection percentage is DERIVED ONLY from real
+   * collected + total values.
+   *
+   * If either doesn't exist, we don't show it.
+   */
+  const collectionPct =
+    total != null &&
+    total > 0 &&
+    collected != null
+      ? Math.min(
+          100,
+          Math.max(0, (collected / total) * 100)
+        )
+      : null;
+
+  /*
+   * ============================================================
+   * NORMALISE THE TREND
+   * ============================================================
+   *
+   * Supports:
+   *
+   * [{ date:"2026-08-01", value:120 }]
+   *
+   * [{ date:"2026-08-01", total:120 }]
+   *
+   * [{ date:"2026-08-01", amount:120 }]
+   *
+   * [[date, value]]
+   *
+   * [100, 120, 140]
+   *
+   * We only keep REAL numeric points.
+   */
+
+  const rawTrend = Array.isArray(data.trend)
+    ? data.trend
+    : [];
+
+  const trend = rawTrend
+    .map((point, index) => {
+      if (typeof point === "number") {
+        return {
+          value: point,
+          date: null,
+          index,
+        };
+      }
+
+      if (Array.isArray(point)) {
+        const possibleDate = point[0];
+        const possibleValue = Number(point[1]);
+
+        if (Number.isFinite(possibleValue)) {
+          return {
+            value: possibleValue,
+            date: possibleDate || null,
+            index,
+          };
+        }
+
+        return null;
+      }
+
+      if (point && typeof point === "object") {
+        const possibleValue =
+          point.value ??
+          point.amount ??
+          point.total ??
+          point.revenue ??
+          point.collected;
+
+        const numericValue =
+          Number(possibleValue);
+
+        if (Number.isFinite(numericValue)) {
+          return {
+            value: numericValue,
+            date:
+              point.date ??
+              point.period ??
+              point.label ??
+              null,
+            index,
+          };
+        }
+      }
+
+      return null;
+    })
+    .filter(Boolean);
+
+  const hasTrend = trend.length >= 2;
+
+  /*
+   * ============================================================
+   * CHART HELPERS
+   * ============================================================
+   */
+
+  const W = 900;
+  const H = 280;
+
+  const left = 58;
+  const right = 22;
+  const top = 24;
+  const bottom = 42;
+
+  const chartW = W - left - right;
+  const chartH = H - top - bottom;
+
+  const trendMax = hasTrend
+    ? Math.max(
+        ...trend.map((p) => p.value),
+        1
+      )
+    : 1;
+
+  const trendPoints = trend.map(
+    (point, index) => ({
+      ...point,
+      x:
+        left +
+        (index /
+          Math.max(trend.length - 1, 1)) *
+          chartW,
+      y:
+        top +
+        chartH -
+        (point.value / trendMax) *
+          chartH,
+    })
+  );
+
+  /*
+   * Smooth cubic curve.
+   */
+  const buildPath = (points) => {
+    if (!points.length) return "";
+
+    if (points.length === 1) {
+      return `M ${points[0].x} ${points[0].y}`;
+    }
+
+    let path =
+      `M ${points[0].x} ${points[0].y}`;
+
+    for (
+      let i = 0;
+      i < points.length - 1;
+      i++
+    ) {
+      const current = points[i];
+      const next = points[i + 1];
+
+      const midX =
+        (current.x + next.x) / 2;
+
+      path += `
+        C
+        ${midX} ${current.y},
+        ${midX} ${next.y},
+        ${next.x} ${next.y}
+      `;
+    }
+
+    return path;
+  };
+
+  const trendPath =
+    hasTrend
+      ? buildPath(trendPoints)
+      : "";
+
+  const areaPath =
+    hasTrend
+      ? `${trendPath}
+         L ${trendPoints[trendPoints.length - 1].x}
+           ${top + chartH}
+         L ${trendPoints[0].x}
+           ${top + chartH}
+         Z`
+      : "";
+
+  /*
+   * Date formatter.
+   */
+  const formatTrendDate = (value) => {
+    if (!value) return "";
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return String(value);
+    }
+
+    return date.toLocaleDateString(
+      "en-IN",
+      {
+        day: "numeric",
+        month: "short",
+      }
+    );
+  };
+
+  /*
+   * ============================================================
+   * ACTUAL CURRENT METRICS
+   * ============================================================
+   */
+
+  const metrics = [
+    {
+      label: "Collected",
+      value: collected,
+      color: F.forest,
+    },
+    {
+      label: "Outstanding",
+      value: outstanding,
+      color: F.navy,
+    },
+    {
+      label: "Overdue",
+      value: overdue,
+      color: "#C97867",
+    },
+    {
+      label: "Renewals",
+      value: renewals,
+      isCount: true,
+      color: F.plum,
+    },
+  ].filter(
+    (item) => item.value != null
+  );
+
+  /*
+   * Only show the section if there is actually
+   * something measurable.
+   */
+  const hasRevenueData =
+    total != null ||
+    metrics.length > 0;
 
   return (
-    <section style={{ padding: "140px 44px", background: F.surface }}>
-      <div style={{ maxWidth: 1180, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 56, alignItems: "stretch" }}>
-        <div>
-          <SectionHeader eyebrow="Financial" eyebrowColor={F.forest} title="Revenue" center={false} />
-          <Reveal delay={0.16}>
-            <BigNumber value={fmtINR(data.total)} prefix="₹" suffix={data.total != null ? "L" : ""} decimals={1} size={60} />
-          </Reveal>
-          <Reveal delay={0.22}>
-            <div style={{ marginTop: 30, display: "flex", flexDirection: "column", gap: 14 }}>
-              {rows.map((r) => (
-                <div key={r.label} style={{ display: "flex", justifyContent: "space-between", borderBottom: `1px solid ${F.hairline}`, paddingBottom: 10 }}>
-                  <span style={{ fontFamily: T.ui, fontSize: 11, fontWeight: 600, color: F.muted, letterSpacing: "0.08em", textTransform: "uppercase" }}>{r.label}</span>
-                  <span style={{ fontFamily: T.ui, fontSize: 14, fontWeight: 600, color: F.ink }}>
-                    {r.value == null ? "—" : r.isCount ? r.value : `₹${fmtINR(r.value)}L`}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </Reveal>
-        </div>
+    <section
+      style={{
+        padding: "140px 44px",
+        background: F.surface,
+      }}
+    >
+      <div
+        style={{
+          maxWidth: 1180,
+          margin: "0 auto",
+        }}
+      >
 
-        {/* One bordered card, not two floating pieces: the photo, the trend
-            line (or its empty-state note) now share a single frame that is
-            always the same shape, matched to the numbers column beside it
-            instead of hanging a bare dashed line in open space. */}
-        <Reveal delay={0.24} style={{ height: "100%" }}>
-          <div style={{
-            height: "100%", minHeight: 460, display: "flex", flexDirection: "column",
-            borderRadius: 20, overflow: "hidden", border: `1px solid ${F.hairline}`,
-            background: F.surface, boxShadow: "0 20px 44px rgba(20,21,26,0.05)",
-          }}>
-            <div style={{ position: "relative", height: 200, flexShrink: 0 }}>
-              <img src={PHOTOS.revenue} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "grayscale(0.2) brightness(0.85)" }} />
-              <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, transparent 45%, rgba(20,21,26,0.72) 100%)" }} />
-              <div style={{ position: "absolute", left: 20, right: 20, bottom: 16, fontFamily: T.ui, fontSize: 11, fontWeight: 600, color: "#FFFFFF", letterSpacing: "0.04em" }}>
-                Every invoice, traced to the work behind it
-              </div>
-            </div>
-            <div style={{ flex: 1, padding: "26px 26px 22px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-              {hasTrend ? (
-                <>
-                  <div style={{ fontFamily: T.ui, fontSize: 10, fontWeight: 700, color: F.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}>
-                    Trend
+        {/* ======================================================
+            HEADER
+        ====================================================== */}
+
+        <SectionHeader
+          eyebrow="Financial"
+          eyebrowColor={F.forest}
+          title="Revenue."
+          center={false}
+          sub={
+            hasRevenueData
+              ? "A live view of what has been collected, what remains outstanding, and where billing stands."
+              : "Revenue data will appear here once billing records are available."
+          }
+        />
+
+        {/* ======================================================
+            MAIN REVENUE PANEL
+        ====================================================== */}
+
+        {hasRevenueData ? (
+          <Reveal delay={0.12}>
+            <div
+              style={{
+                marginTop: 42,
+                borderRadius: 26,
+                overflow: "hidden",
+
+                background: "#111216",
+
+                border:
+                  "1px solid rgba(255,255,255,0.08)",
+
+                boxShadow:
+                  "0 30px 75px rgba(20,21,26,0.13)",
+              }}
+            >
+
+              {/* ==================================================
+                  TOP — HERO NUMBER
+              ================================================== */}
+
+              <div
+                style={{
+                  padding:
+                    "30px 32px 28px",
+
+                  display: "flex",
+                  justifyContent:
+                    "space-between",
+                  alignItems: "flex-end",
+                  gap: 30,
+                  flexWrap: "wrap",
+
+                  borderBottom:
+                    "1px solid rgba(255,255,255,0.07)",
+                }}
+              >
+
+                <div>
+                  <div
+                    style={{
+                      fontFamily: T.ui,
+                      fontSize: 9.5,
+                      fontWeight: 700,
+                      letterSpacing: "0.14em",
+                      textTransform:
+                        "uppercase",
+                      color:
+                        "rgba(255,255,255,0.42)",
+                    }}
+                  >
+                    Total revenue
                   </div>
-                  <EditorialLine data={data.trend} color={F.forest} height={140} />
-                </>
-              ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", border: `1px dashed ${F.hairlineStrong}`, borderRadius: 12 }}>
-                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: F.muted, flexShrink: 0 }} />
-                  <span style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, lineHeight: 1.5 }}>
-                    A trend line appears once there's a second period of billing to compare against.
-                  </span>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems:
+                        "baseline",
+                      gap: 10,
+                      marginTop: 6,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontFamily: T.display,
+                        fontStyle: "italic",
+                        fontSize: 56,
+                        lineHeight: 1,
+                        letterSpacing:
+                          "-0.035em",
+                        color: "#FFFFFF",
+                      }}
+                    >
+                      {total != null
+                        ? `₹${fmtINR(total)}L`
+                        : "—"}
+                    </div>
+                  </div>
+                </div>
+
+                {/* COLLECTION RATE */}
+
+                {collectionPct != null && (
+                  <div
+                    style={{
+                      minWidth: 170,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent:
+                          "space-between",
+                        alignItems:
+                          "center",
+                        marginBottom: 7,
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontFamily: T.ui,
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing:
+                            "0.10em",
+                          textTransform:
+                            "uppercase",
+                          color:
+                            "rgba(255,255,255,0.40)",
+                        }}
+                      >
+                        Collected
+                      </span>
+
+                      <span
+                        style={{
+                          fontFamily: T.ui,
+                          fontSize: 12,
+                          fontWeight: 750,
+                          color: "#FFFFFF",
+                        }}
+                      >
+                        {Math.round(
+                          collectionPct
+                        )}
+                        %
+                      </span>
+                    </div>
+
+                    <div
+                      style={{
+                        height: 6,
+                        borderRadius: 999,
+                        background:
+                          "rgba(255,255,255,0.10)",
+                        overflow: "hidden",
+                      }}
+                    >
+                      <motion.div
+                        initial={
+                          reduce
+                            ? false
+                            : { width: 0 }
+                        }
+                        whileInView={{
+                          width: `${collectionPct}%`,
+                        }}
+                        viewport={{
+                          once: true,
+                        }}
+                        transition={{
+                          duration: 1,
+                          ease: EASE,
+                        }}
+                        style={{
+                          height: "100%",
+                          borderRadius: 999,
+                          background:
+                            F.forest,
+                          boxShadow:
+                            `0 0 14px ${F.forest}66`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ==================================================
+                  REAL CURRENT BREAKDOWN
+              ================================================== */}
+
+              {metrics.length > 0 && (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns:
+                      "repeat(auto-fit, minmax(170px, 1fr))",
+
+                    borderBottom:
+                      "1px solid rgba(255,255,255,0.07)",
+                  }}
+                >
+                  {metrics.map(
+                    (metric, index) => (
+                      <div
+                        key={metric.label}
+                        style={{
+                          padding:
+                            "20px 24px",
+
+                          borderRight:
+                            index <
+                            metrics.length - 1
+                              ? "1px solid rgba(255,255,255,0.07)"
+                              : "none",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems:
+                              "center",
+                            gap: 7,
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: 6,
+                              height: 6,
+                              borderRadius:
+                                "50%",
+                              background:
+                                metric.color,
+                              boxShadow:
+                                `0 0 0 4px ${metric.color}18`,
+                            }}
+                          />
+
+                          <span
+                            style={{
+                              fontFamily:
+                                T.ui,
+                              fontSize: 8.5,
+                              fontWeight: 700,
+                              letterSpacing:
+                                "0.10em",
+                              textTransform:
+                                "uppercase",
+                              color:
+                                "rgba(255,255,255,0.40)",
+                            }}
+                          >
+                            {metric.label}
+                          </span>
+                        </div>
+
+                        <div
+                          style={{
+                            marginTop: 8,
+                            fontFamily:
+                              T.ui,
+                            fontSize: 21,
+                            fontWeight: 700,
+                            letterSpacing:
+                              "-0.025em",
+                            color:
+                              "#FFFFFF",
+                          }}
+                        >
+                          {metric.isCount
+                            ? metric.value
+                            : `₹${fmtINR(
+                                metric.value
+                              )}L`}
+                        </div>
+                      </div>
+                    )
+                  )}
                 </div>
               )}
+
+              {/* ==================================================
+                  TREND
+              ================================================== */}
+
+              <div
+                style={{
+                  padding:
+                    "26px 24px 22px",
+                }}
+              >
+
+                {hasTrend ? (
+                  <>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems:
+                          "flex-end",
+                        justifyContent:
+                          "space-between",
+                        gap: 15,
+                        marginBottom: 12,
+                      }}
+                    >
+                      <div>
+                        <div
+                          style={{
+                            fontFamily:
+                              T.ui,
+                            fontSize: 9,
+                            fontWeight: 700,
+                            letterSpacing:
+                              "0.12em",
+                            textTransform:
+                              "uppercase",
+                            color:
+                              "rgba(255,255,255,0.40)",
+                          }}
+                        >
+                          Billing trend
+                        </div>
+
+                        <div
+                          style={{
+                            marginTop: 4,
+                            fontFamily:
+                              T.display,
+                            fontStyle:
+                              "italic",
+                            fontSize: 22,
+                            color:
+                              "#FFFFFF",
+                          }}
+                        >
+                          Recorded revenue
+                          over time.
+                        </div>
+                      </div>
+
+                      {hover != null && (
+                        <div
+                          style={{
+                            textAlign:
+                              "right",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontFamily:
+                                T.ui,
+                              fontSize: 9,
+                              color:
+                                "rgba(255,255,255,0.38)",
+                            }}
+                          >
+                            {formatTrendDate(
+                              trend[
+                                hover
+                              ]?.date
+                            )}
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: 2,
+                              fontFamily:
+                                T.ui,
+                              fontSize: 15,
+                              fontWeight: 700,
+                              color:
+                                "#FFFFFF",
+                            }}
+                          >
+                            ₹
+                            {fmtINR(
+                              trend[
+                                hover
+                              ]?.value
+                            )}
+                            L
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <svg
+                      viewBox={`0 0 ${W} ${H}`}
+                      width="100%"
+                      height={300}
+                      preserveAspectRatio="none"
+                      style={{
+                        display: "block",
+                        overflow:
+                          "visible",
+                        cursor:
+                          "crosshair",
+                      }}
+                      onMouseMove={(e) => {
+                        const rect =
+                          e.currentTarget.getBoundingClientRect();
+
+                        const mouseX =
+                          ((e.clientX -
+                            rect.left) /
+                            rect.width) *
+                          W;
+
+                        let closest = 0;
+                        let distance =
+                          Infinity;
+
+                        trendPoints.forEach(
+                          (point, i) => {
+                            const d =
+                              Math.abs(
+                                point.x -
+                                  mouseX
+                              );
+
+                            if (
+                              d <
+                              distance
+                            ) {
+                              distance = d;
+                              closest = i;
+                            }
+                          }
+                        );
+
+                        setHover(
+                          closest
+                        );
+                      }}
+                      onMouseLeave={() =>
+                        setHover(null)
+                      }
+                    >
+
+                      <defs>
+                        <linearGradient
+                          id="revenue-area-gradient"
+                          x1="0"
+                          y1="0"
+                          x2="0"
+                          y2="1"
+                        >
+                          <stop
+                            offset="0%"
+                            stopColor={
+                              F.forest
+                            }
+                            stopOpacity="0.30"
+                          />
+
+                          <stop
+                            offset="100%"
+                            stopColor={
+                              F.forest
+                            }
+                            stopOpacity="0"
+                          />
+                        </linearGradient>
+                      </defs>
+
+                      {/* GRID */}
+
+                      {[0, 0.25, 0.5, 0.75, 1].map(
+                        (f) => {
+                          const y =
+                            top +
+                            chartH -
+                            f * chartH;
+
+                          return (
+                            <line
+                              key={f}
+                              x1={left}
+                              y1={y}
+                              x2={W - right}
+                              y2={y}
+                              stroke="rgba(255,255,255,0.07)"
+                              strokeDasharray={
+                                f === 0
+                                  ? "0"
+                                  : "3 7"
+                              }
+                            />
+                          );
+                        }
+                      )}
+
+                      {/* AREA */}
+
+                      <motion.path
+                        d={areaPath}
+                        fill="url(#revenue-area-gradient)"
+                        initial={
+                          reduce
+                            ? false
+                            : {
+                                opacity: 0,
+                              }
+                        }
+                        whileInView={{
+                          opacity: 1,
+                        }}
+                        viewport={{
+                          once: true,
+                        }}
+                        transition={{
+                          duration: 0.9,
+                        }}
+                      />
+
+                      {/* LINE */}
+
+                      <motion.path
+                        d={trendPath}
+                        fill="none"
+                        stroke={F.forest}
+                        strokeWidth={3}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        initial={
+                          reduce
+                            ? false
+                            : {
+                                pathLength: 0,
+                              }
+                        }
+                        whileInView={{
+                          pathLength: 1,
+                        }}
+                        viewport={{
+                          once: true,
+                        }}
+                        transition={{
+                          duration: 1.5,
+                          ease: EASE,
+                        }}
+                      />
+
+                      {/* DATA POINTS */}
+
+                      {trendPoints.map(
+                        (point, i) => (
+                          <circle
+                            key={i}
+                            cx={point.x}
+                            cy={point.y}
+                            r={
+                              hover === i
+                                ? 6
+                                : 2.5
+                            }
+                            fill={F.forest}
+                            stroke="#111216"
+                            strokeWidth={2}
+                          />
+                        )
+                      )}
+
+                      {/* HOVER GUIDE */}
+
+                      {hover != null &&
+                        trendPoints[
+                          hover
+                        ] && (
+                          <>
+                            <line
+                              x1={
+                                trendPoints[
+                                  hover
+                                ].x
+                              }
+                              y1={top}
+                              x2={
+                                trendPoints[
+                                  hover
+                                ].x
+                              }
+                              y2={
+                                top +
+                                chartH
+                              }
+                              stroke="rgba(255,255,255,0.20)"
+                              strokeDasharray="4 6"
+                            />
+
+                            <circle
+                              cx={
+                                trendPoints[
+                                  hover
+                                ].x
+                              }
+                              cy={
+                                trendPoints[
+                                  hover
+                                ].y
+                              }
+                              r={7}
+                              fill="none"
+                              stroke="#FFFFFF"
+                              strokeWidth={2}
+                            />
+                          </>
+                        )}
+
+                      {/* X LABELS */}
+
+                      {trend[0]?.date && (
+                        <text
+                          x={left}
+                          y={H - 10}
+                          fontFamily={T.ui}
+                          fontSize={10}
+                          fill="rgba(255,255,255,0.32)"
+                        >
+                          {formatTrendDate(
+                            trend[0].date
+                          )}
+                        </text>
+                      )}
+
+                      {trend[
+                        trend.length - 1
+                      ]?.date && (
+                        <text
+                          x={W - right}
+                          y={H - 10}
+                          textAnchor="end"
+                          fontFamily={T.ui}
+                          fontSize={10}
+                          fill="rgba(255,255,255,0.32)"
+                        >
+                          {formatTrendDate(
+                            trend[
+                              trend.length - 1
+                            ].date
+                          )}
+                        </text>
+                      )}
+                    </svg>
+                  </>
+                ) : (
+                  /*
+                   * NO REAL TREND DATA
+                   *
+                   * Don't draw a fake graph.
+                   * Instead, show the actual current
+                   * billing state.
+                   */
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns:
+                        "1fr auto",
+                      alignItems:
+                        "center",
+                      gap: 30,
+                      padding:
+                        "22px 4px",
+                    }}
+                  >
+                    <div>
+                      <div
+                        style={{
+                          fontFamily:
+                            T.ui,
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing:
+                            "0.12em",
+                          textTransform:
+                            "uppercase",
+                          color:
+                            "rgba(255,255,255,0.38)",
+                        }}
+                      >
+                        Current billing state
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontFamily:
+                            T.display,
+                          fontStyle:
+                            "italic",
+                          fontSize: 25,
+                          color:
+                            "#FFFFFF",
+                        }}
+                      >
+                        {collected !=
+                          null &&
+                        outstanding !=
+                          null
+                          ? "Collection in progress."
+                          : "Billing data available."}
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 7,
+                          maxWidth: 520,
+                          fontFamily:
+                            T.ui,
+                          fontSize: 11,
+                          lineHeight: 1.6,
+                          color:
+                            "rgba(255,255,255,0.40)",
+                        }}
+                      >
+                        A historical trend is not
+                        shown because the system does
+                        not currently have enough real
+                        billing periods to draw one.
+                      </div>
+                    </div>
+
+                    {collectionPct !=
+                      null && (
+                      <div
+                        style={{
+                          width: 92,
+                          height: 92,
+                          borderRadius:
+                            "50%",
+                          background:
+                            `conic-gradient(${F.forest} ${collectionPct}%, rgba(255,255,255,0.08) ${collectionPct}% 100%)`,
+                          display: "flex",
+                          alignItems:
+                            "center",
+                          justifyContent:
+                            "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 76,
+                            height: 76,
+                            borderRadius:
+                              "50%",
+                            background:
+                              "#111216",
+                            display: "flex",
+                            alignItems:
+                              "center",
+                            justifyContent:
+                              "center",
+                            fontFamily:
+                              T.ui,
+                            fontSize: 15,
+                            fontWeight: 750,
+                            color:
+                              "#FFFFFF",
+                          }}
+                        >
+                          {Math.round(
+                            collectionPct
+                          )}
+                          %
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        </Reveal>
+          </Reveal>
+        ) : (
+          /* ======================================================
+             TRUE EMPTY STATE
+          ====================================================== */
+
+          <Reveal delay={0.12}>
+            <div
+              style={{
+                marginTop: 42,
+                minHeight: 300,
+                borderRadius: 24,
+                border:
+                  `1px solid ${F.hairline}`,
+                background: F.paper,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  maxWidth: 360,
+                  padding: 30,
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily: T.display,
+                    fontStyle: "italic",
+                    fontSize: 30,
+                    color: F.ink,
+                  }}
+                >
+                  No billing data yet.
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 8,
+                    fontFamily: T.ui,
+                    fontSize: 11.5,
+                    lineHeight: 1.6,
+                    color: F.muted,
+                  }}
+                >
+                  Revenue metrics will appear here once
+                  billing records are available.
+                </div>
+              </div>
+            </div>
+          </Reveal>
+        )}
       </div>
     </section>
   );
@@ -1958,155 +5042,1586 @@ function DecisionsHorizon({ items = [] }) {
 
 function PerformanceGraph({ lines = [] }) {
   const reduce = useReducedMotion();
-  const W = 900, H = 340, pad = 20;
-  // Two different bars: `hasChips` is "is there at least one real number to
-  // show" (one invoiced month is a real number); `hasTrend` is "is there a
-  // shape worth drawing a line through" (needs two). A line with exactly one
-  // point used to be discarded entirely by lib/summaryMetrics before it ever
-  // reached this component, which is why this section was always either a
-  // full chart or a giant empty box — there was no state in between for the
-  // very common case of "we have this month's number, just not last
-  // month's". It now renders that case as a labelled bar read (still a real
-  // chart, just not a line) and reserves the fully-empty dashed frame for
-  // when there is truly no figure at all on any line.
-  const hasChips = lines.some((l) => l.data && l.data.length >= 1);
-  const hasTrend = lines.some((l) => l.data && l.data.length >= 2);
-  const barMax = hasChips ? Math.max(1, ...lines.map((l) => (l.data && l.data.length ? l.data[l.data.length - 1] : 0))) : 1;
+  const [hover, setHover] = useState(null);
+
+  /*
+   * ============================================================
+   * REAL DATA ONLY
+   * ============================================================
+   */
+
+  const cleanLines = lines
+    .map((line) => ({
+      ...line,
+      data: Array.isArray(line.data)
+        ? line.data
+            .map((v) => Number(v))
+            .filter((v) => Number.isFinite(v))
+        : [],
+    }))
+    .filter((line) => line.data.length > 0);
+
+  const hasData = cleanLines.length > 0;
+
+  const hasTrend = cleanLines.some(
+    (line) => line.data.length >= 2
+  );
+
+  const totalPoints = cleanLines.reduce(
+    (sum, line) => sum + line.data.length,
+    0
+  );
+
+  /*
+   * ============================================================
+   * GLOBAL SCALE
+   *
+   * All lines use the SAME scale.
+   * This makes comparisons honest.
+   * ============================================================
+   */
+
+  const allValues = cleanLines.flatMap(
+    (line) => line.data
+  );
+
+  const globalMax = Math.max(
+    1,
+    ...allValues
+  );
+
+  const globalMin = Math.min(
+    0,
+    ...allValues
+  );
+
+  const globalSpan =
+    globalMax - globalMin || 1;
+
+  /*
+   * ============================================================
+   * HERO INSIGHTS
+   * ============================================================
+   */
+
+  const latestLines = cleanLines.map(
+    (line) => {
+      const latest =
+        line.data[line.data.length - 1];
+
+      const previous =
+        line.data.length > 1
+          ? line.data[line.data.length - 2]
+          : null;
+
+      const delta =
+        previous != null
+          ? latest - previous
+          : null;
+
+      const pct =
+        previous != null &&
+        previous !== 0
+          ? (delta / Math.abs(previous)) *
+            100
+          : null;
+
+      return {
+        ...line,
+        latest,
+        previous,
+        delta,
+        pct,
+      };
+    }
+  );
+
+  const strongest = [...latestLines].sort(
+    (a, b) => b.latest - a.latest
+  )[0];
+
+  const rising = latestLines
+    .filter((x) => x.delta != null)
+    .sort((a, b) => b.delta - a.delta)[0];
+
+  /*
+   * ============================================================
+   * CHART
+   * ============================================================
+   */
+
+  const W = 1000;
+  const H = 390;
+
+  const left = 52;
+  const right = 34;
+  const top = 28;
+  const bottom = 58;
+
+  const chartW = W - left - right;
+  const chartH = H - top - bottom;
+
+  const buildPoints = (line) => {
+    if (line.data.length < 2) return [];
+
+    return line.data.map((value, i) => ({
+      x:
+        left +
+        (i /
+          Math.max(
+            line.data.length - 1,
+            1
+          )) *
+          chartW,
+
+      y:
+        top +
+        chartH -
+        ((value - globalMin) /
+          globalSpan) *
+          chartH,
+
+      value,
+    }));
+  };
+
+  const buildSmoothPath = (points) => {
+    if (!points.length) return "";
+
+    if (points.length === 1) {
+      return `M ${points[0].x} ${points[0].y}`;
+    }
+
+    let path =
+      `M ${points[0].x} ${points[0].y}`;
+
+    for (
+      let i = 0;
+      i < points.length - 1;
+      i++
+    ) {
+      const a = points[i];
+      const b = points[i + 1];
+
+      const mid =
+        (a.x + b.x) / 2;
+
+      path += `
+        C
+        ${mid} ${a.y},
+        ${mid} ${b.y},
+        ${b.x} ${b.y}
+      `;
+    }
+
+    return path;
+  };
+
+  /*
+   * ============================================================
+   * HOVER
+   * ============================================================
+   */
+
+  const hoverIndex =
+    hover == null ? null : hover;
 
   return (
-    <section style={{ padding: "140px 44px", background: F.cream }}>
-      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <SectionHeader eyebrow="Trajectory" eyebrowColor={F.forest} title="Performance." center={false}
-          sub={hasTrend
-            ? "Month by month, from what has actually been invoiced and delivered."
-            : hasChips
-              ? "What's on the books right now — a full trend line needs a second month to compare against."
-              : "The chart below fills in as billing and delivery history accumulates."} />
+    <section
+      style={{
+        padding: "130px 44px 150px",
+        background: F.cream,
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
 
-        {/* The panel itself is now always a chart frame — axis baseline and
-            gridlines are drawn at every data state, so "no data yet" reads
-            as an empty graph waiting to fill in, not a broken placeholder. */}
-        <Reveal delay={0.18}>
-          <div style={{ background: F.surface, border: `1px solid ${F.hairline}`, borderRadius: 20, padding: "36px 32px 28px", boxShadow: "0 20px 44px rgba(20,21,26,0.05)" }}>
-            {hasChips && (
-              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 28 }}>
-                {lines.map((line, i) => {
-                  const d = line.data || [];
-                  const latest = d[d.length - 1];
-                  const prev = d[d.length - 2];
-                  const delta = latest != null && prev != null ? latest - prev : null;
-                  return (
-                    <Reveal key={line.key} delay={i * 0.05}>
-                      <motion.div whileHover={{ y: -2 }} transition={{ duration: 0.25 }} style={{
-                        display: "flex", alignItems: "center", gap: 10, background: F.paper,
-                        border: `1px solid ${F.hairline}`, borderRadius: 12, padding: "10px 16px",
-                      }}>
-                        <span style={{ width: 8, height: 8, borderRadius: "50%", background: line.color }} />
-                        <span style={{ fontFamily: T.ui, fontSize: 11, fontWeight: 600, color: F.inkSoft }}>{line.label}</span>
-                        <span style={{ fontFamily: T.display, fontStyle: "italic", fontSize: 17, color: F.ink }}>{latest ?? "—"}</span>
-                        {delta != null && (
-                          <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, color: delta >= 0 ? F.forest : F.rust }}>
-                            {delta >= 0 ? "▲" : "▼"} {Math.abs(delta)}
-                          </span>
+      {/* ========================================================
+          BACKGROUND DETAIL
+      ======================================================== */}
+
+      <div
+        style={{
+          position: "absolute",
+          width: 520,
+          height: 520,
+          borderRadius: "50%",
+          background:
+            `radial-gradient(circle, ${F.forest}12 0%, transparent 70%)`,
+          top: -180,
+          right: -120,
+          pointerEvents: "none",
+        }}
+      />
+
+      <div
+        style={{
+          position: "absolute",
+          width: 420,
+          height: 420,
+          borderRadius: "50%",
+          background:
+            `radial-gradient(circle, ${F.navy}10 0%, transparent 70%)`,
+          bottom: -220,
+          left: -140,
+          pointerEvents: "none",
+        }}
+      />
+
+      <div
+        style={{
+          maxWidth: 1180,
+          margin: "0 auto",
+          position: "relative",
+        }}
+      >
+
+        {/* ======================================================
+            HEADER
+        ====================================================== */}
+
+        <SectionHeader
+          eyebrow="Trajectory"
+          eyebrowColor={F.forest}
+          title="Performance."
+          center={false}
+          sub={
+            hasTrend
+              ? "The operating curve — measured from the history actually recorded."
+              : hasData
+                ? "A live snapshot of the numbers currently on the books."
+                : "Performance intelligence appears as operating history accumulates."
+          }
+        />
+
+        {/* ======================================================
+            COMMAND PANEL
+        ====================================================== */}
+
+        <Reveal delay={0.12}>
+          <div
+            style={{
+              marginTop: 42,
+              borderRadius: 28,
+              overflow: "hidden",
+              background: "#111216",
+              border:
+                "1px solid rgba(255,255,255,0.08)",
+              boxShadow:
+                "0 35px 90px rgba(20,21,26,0.18)",
+              position: "relative",
+            }}
+          >
+
+            {/* ==================================================
+                TOP BAR
+            ================================================== */}
+
+            <div
+              style={{
+                padding:
+                  "22px 28px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent:
+                  "space-between",
+                gap: 20,
+                flexWrap: "wrap",
+                borderBottom:
+                  "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                }}
+              >
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background:
+                      hasData
+                        ? F.forest
+                        : "rgba(255,255,255,0.25)",
+                    boxShadow:
+                      hasData
+                        ? `0 0 14px ${F.forest}`
+                        : "none",
+                  }}
+                />
+
+                <span
+                  style={{
+                    fontFamily: T.ui,
+                    fontSize: 9.5,
+                    fontWeight: 700,
+                    letterSpacing:
+                      "0.13em",
+                    textTransform:
+                      "uppercase",
+                    color:
+                      "rgba(255,255,255,0.48)",
+                  }}
+                >
+                  {hasTrend
+                    ? "Live performance history"
+                    : hasData
+                      ? "Current performance"
+                      : "Awaiting measurements"}
+                </span>
+              </div>
+
+              <div
+                style={{
+                  fontFamily: T.ui,
+                  fontSize: 9,
+                  color:
+                    "rgba(255,255,255,0.28)",
+                  letterSpacing:
+                    "0.06em",
+                }}
+              >
+                {totalPoints} DATA POINT
+                {totalPoints === 1
+                  ? ""
+                  : "S"}
+              </div>
+            </div>
+
+            {/* ==================================================
+                HERO INSIGHTS
+            ================================================== */}
+
+            {hasData && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns:
+                    "minmax(220px, 1.4fr) repeat(2, minmax(160px, 1fr))",
+                  borderBottom:
+                    "1px solid rgba(255,255,255,0.07)",
+                }}
+              >
+
+                {/* MAIN */}
+
+                <div
+                  style={{
+                    padding:
+                      "28px 30px",
+                    borderRight:
+                      "1px solid rgba(255,255,255,0.07)",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: T.ui,
+                      fontSize: 9,
+                      fontWeight: 700,
+                      letterSpacing:
+                        "0.12em",
+                      textTransform:
+                        "uppercase",
+                      color:
+                        "rgba(255,255,255,0.36)",
+                    }}
+                  >
+                    Latest reading
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: 6,
+                      display: "flex",
+                      alignItems:
+                        "baseline",
+                      gap: 10,
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontFamily:
+                          T.display,
+                        fontStyle:
+                          "italic",
+                        fontSize: 38,
+                        color:
+                          "#FFFFFF",
+                        lineHeight: 1,
+                      }}
+                    >
+                      {strongest?.latest ?? "—"}
+                    </span>
+
+                    <span
+                      style={{
+                        fontFamily: T.ui,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color:
+                          "rgba(255,255,255,0.38)",
+                      }}
+                    >
+                      {strongest?.label}
+                    </span>
+                  </div>
+                </div>
+
+                {/* CHANGE */}
+
+                <div
+                  style={{
+                    padding:
+                      "28px 24px",
+                    borderRight:
+                      "1px solid rgba(255,255,255,0.07)",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: T.ui,
+                      fontSize: 9,
+                      fontWeight: 700,
+                      letterSpacing:
+                        "0.12em",
+                      textTransform:
+                        "uppercase",
+                      color:
+                        "rgba(255,255,255,0.36)",
+                    }}
+                  >
+                    Momentum
+                  </div>
+
+                  {rising?.pct != null ? (
+                    <>
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontFamily:
+                            T.display,
+                          fontStyle:
+                            "italic",
+                          fontSize: 29,
+                          color:
+                            rising.pct >= 0
+                              ? F.forest
+                              : F.rust,
+                        }}
+                      >
+                        {rising.pct >= 0
+                          ? "+"
+                          : ""}
+                        {rising.pct.toFixed(
+                          1
                         )}
-                      </motion.div>
-                    </Reveal>
-                  );
-                })}
+                        %
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 3,
+                          fontFamily:
+                            T.ui,
+                          fontSize: 9.5,
+                          color:
+                            "rgba(255,255,255,0.34)",
+                        }}
+                      >
+                        {rising.label}
+                      </div>
+                    </>
+                  ) : (
+                    <div
+                      style={{
+                        marginTop: 10,
+                        fontFamily:
+                          T.ui,
+                        fontSize: 11,
+                        color:
+                          "rgba(255,255,255,0.32)",
+                      }}
+                    >
+                      Need another
+                      period
+                    </div>
+                  )}
+                </div>
+
+                {/* SERIES */}
+
+                <div
+                  style={{
+                    padding:
+                      "28px 24px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: T.ui,
+                      fontSize: 9,
+                      fontWeight: 700,
+                      letterSpacing:
+                        "0.12em",
+                      textTransform:
+                        "uppercase",
+                      color:
+                        "rgba(255,255,255,0.36)",
+                    }}
+                  >
+                    Tracked
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: 8,
+                      fontFamily:
+                        T.display,
+                      fontStyle:
+                        "italic",
+                      fontSize: 29,
+                      color:
+                        "#FFFFFF",
+                    }}
+                  >
+                    {cleanLines.length}
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: 3,
+                      fontFamily:
+                        T.ui,
+                      fontSize: 9.5,
+                      color:
+                        "rgba(255,255,255,0.34)",
+                    }}
+                  >
+                    metric
+                    {cleanLines.length ===
+                    1
+                      ? ""
+                      : "s"}
+                  </div>
+                </div>
               </div>
             )}
 
+            {/* ==================================================
+                LEGEND
+            ================================================== */}
+
+            {hasData && (
+              <div
+                style={{
+                  padding:
+                    "18px 28px 4px",
+                  display: "flex",
+                  gap: 18,
+                  flexWrap: "wrap",
+                }}
+              >
+                {cleanLines.map(
+                  (line) => (
+                    <div
+                      key={line.key}
+                      style={{
+                        display:
+                          "flex",
+                        alignItems:
+                          "center",
+                        gap: 7,
+                        fontFamily:
+                          T.ui,
+                        fontSize: 9.5,
+                        fontWeight: 600,
+                        color:
+                          "rgba(255,255,255,0.52)",
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 7,
+                          height: 7,
+                          borderRadius:
+                            "50%",
+                          background:
+                            line.color,
+                          boxShadow:
+                            `0 0 10px ${line.color}66`,
+                        }}
+                      />
+                      {line.label}
+                    </div>
+                  )
+                )}
+              </div>
+            )}
+
+            {/* ==================================================
+                CHART
+            ================================================== */}
+
             {hasTrend ? (
-              <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ overflow: "visible" }}>
-                <defs>
-                  {lines.map((line) => (
-                    <linearGradient key={line.key} id={`perf-grad-${line.key}`} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={line.color} stopOpacity="0.16" />
-                      <stop offset="100%" stopColor={line.color} stopOpacity="0" />
-                    </linearGradient>
-                  ))}
-                </defs>
-                {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={0} y1={H * f} x2={W} y2={H * f} stroke={F.hairline} strokeDasharray="2 6" />)}
-                {lines.map((line, li) => {
-                  const d = line.data || [];
-                  if (d.length < 2) return null;
-                  const min = Math.min(...d), max = Math.max(...d), span = max - min || 1;
-                  const pts = d.map((v, i) => [
-                    (i / (d.length - 1)) * W,
-                    H - pad - ((v - min) / span) * (H - pad * 2),
-                  ]);
-                  const path = pts.map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-                  const area = path + ` L${W} ${H} L0 ${H} Z`;
-                  const last = pts[pts.length - 1];
-                  return (
-                    <g key={line.key}>
-                      <motion.path
-                        d={area} fill={`url(#perf-grad-${line.key})`}
-                        initial={reduce ? false : { opacity: 0 }}
-                        whileInView={{ opacity: 1 }}
-                        viewport={{ once: true, amount: 0.4 }}
-                        transition={{ duration: 1, delay: li * 0.1 }}
+              <div
+                style={{
+                  padding:
+                    "8px 20px 20px",
+                  position:
+                    "relative",
+                }}
+              >
+
+                <svg
+                  viewBox={`0 0 ${W} ${H}`}
+                  width="100%"
+                  height={390}
+                  preserveAspectRatio="none"
+                  style={{
+                    display: "block",
+                    overflow:
+                      "visible",
+                    cursor:
+                      "crosshair",
+                  }}
+
+                  onMouseMove={(e) => {
+                    const rect =
+                      e.currentTarget.getBoundingClientRect();
+
+                    const x =
+                      ((e.clientX -
+                        rect.left) /
+                        rect.width) *
+                      W;
+
+                    /*
+                     * Find the closest
+                     * timeline index.
+                     */
+                    const maxLength =
+                      Math.max(
+                        ...cleanLines.map(
+                          (l) =>
+                            l.data.length
+                        )
+                      );
+
+                    let closest = 0;
+                    let distance =
+                      Infinity;
+
+                    for (
+                      let i = 0;
+                      i <
+                      maxLength;
+                      i++
+                    ) {
+                      const px =
+                        left +
+                        (i /
+                          Math.max(
+                            maxLength -
+                              1,
+                            1
+                          )) *
+                          chartW;
+
+                      const d =
+                        Math.abs(
+                          px - x
+                        );
+
+                      if (
+                        d < distance
+                      ) {
+                        distance = d;
+                        closest = i;
+                      }
+                    }
+
+                    setHover(
+                      closest
+                    );
+                  }}
+
+                  onMouseLeave={() =>
+                    setHover(null)
+                  }
+                >
+
+                  <defs>
+
+                    {cleanLines.map(
+                      (line) => (
+                        <linearGradient
+                          key={line.key}
+                          id={`performance-gradient-${line.key}`}
+                          x1="0"
+                          y1="0"
+                          x2="0"
+                          y2="1"
+                        >
+                          <stop
+                            offset="0%"
+                            stopColor={
+                              line.color
+                            }
+                            stopOpacity={
+                              0.28
+                            }
+                          />
+
+                          <stop
+                            offset="65%"
+                            stopColor={
+                              line.color
+                            }
+                            stopOpacity={
+                              0.06
+                            }
+                          />
+
+                          <stop
+                            offset="100%"
+                            stopColor={
+                              line.color
+                            }
+                            stopOpacity={
+                              0
+                            }
+                          />
+                        </linearGradient>
+                      )
+                    )}
+
+                    <filter
+                      id="performance-glow"
+                      x="-50%"
+                      y="-50%"
+                      width="200%"
+                      height="200%"
+                    >
+                      <feGaussianBlur
+                        stdDeviation="4"
+                        result="blur"
                       />
-                      <motion.path
-                        d={path} fill="none" stroke={line.color} strokeWidth={2.25} strokeLinecap="round"
-                        initial={reduce ? false : { pathLength: 0 }}
-                        whileInView={{ pathLength: 1 }}
-                        viewport={{ once: true, amount: 0.4 }}
-                        transition={{ duration: 1.6, ease: EASE, delay: li * 0.1 }}
-                      />
-                      <motion.circle
-                        cx={last[0]} cy={last[1]} r={4} fill={line.color}
-                        animate={reduce ? undefined : { r: [4, 6, 4] }}
-                        transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
-                      />
-                      <rect x={last[0] + 8} y={last[1] - 10} width={line.label.length * 6.4 + 12} height={16} rx={8} fill={F.surface} opacity={0.95} />
-                      <text x={last[0] + 14} y={last[1] + 4} fontFamily={T.ui} fontSize={11} fontWeight={600} fill={line.color}>{line.label}</text>
-                    </g>
-                  );
-                })}
-              </svg>
-            ) : hasChips ? (
-              // Exactly one point per line so far: a comparative bar read is
-              // an honest chart for this shape of data — a line chart with
-              // one point per series is just a row of dots, which is what
-              // this page used to fall back to silently.
-              <svg viewBox={`0 0 ${W} 200`} width="100%" height={200} style={{ overflow: "visible" }}>
-                {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={0} y1={180 * f} x2={W} y2={180 * f} stroke={F.hairline} strokeDasharray="2 6" />)}
-                <line x1={0} y1={180} x2={W} y2={180} stroke={F.hairlineStrong} strokeWidth={1} />
-                {lines.map((line, i) => {
-                  const d = line.data || [];
-                  const v = d.length ? d[d.length - 1] : 0;
-                  const bw = Math.min(120, (W - 40) / lines.length - 24);
-                  const gap = (W - lines.length * bw) / (lines.length + 1);
-                  const bx = gap + i * (bw + gap);
-                  const bh = 180 * (v / barMax);
-                  return (
-                    <g key={line.key}>
-                      <motion.rect
-                        x={bx} y={180 - bh} width={bw} height={bh} rx={6} fill={line.color} fillOpacity={0.85}
-                        initial={reduce ? false : { scaleY: 0 }}
-                        whileInView={{ scaleY: 1 }}
-                        viewport={{ once: true, amount: 0.5 }}
-                        style={{ transformOrigin: `${bx + bw / 2}px 180px` }}
-                        transition={{ duration: 0.9, ease: EASE, delay: i * 0.08 }}
-                      />
-                      <text x={bx + bw / 2} y={172 - bh} textAnchor="middle" fontFamily={T.display} fontStyle="italic" fontSize={16} fill={F.ink}>{v || "—"}</text>
-                      <text x={bx + bw / 2} y={198} textAnchor="middle" fontFamily={T.ui} fontSize={10.5} fontWeight={600} fill={F.inkSoft} letterSpacing="0.04em">{line.label.toUpperCase()}</text>
-                    </g>
-                  );
-                })}
-              </svg>
+
+                      <feMerge>
+                        <feMergeNode
+                          in="blur"
+                        />
+                        <feMergeNode
+                          in="SourceGraphic"
+                        />
+                      </feMerge>
+                    </filter>
+                  </defs>
+
+                  {/* ==================================================
+                      GRID
+                  ================================================== */}
+
+                  {[0, 0.25, 0.5, 0.75, 1].map(
+                    (f) => {
+                      const y =
+                        top +
+                        chartH -
+                        f * chartH;
+
+                      return (
+                        <line
+                          key={f}
+                          x1={left}
+                          y1={y}
+                          x2={W - right}
+                          y2={y}
+                          stroke="rgba(255,255,255,0.065)"
+                          strokeDasharray={
+                            f === 0
+                              ? "0"
+                              : "3 8"
+                          }
+                        />
+                      );
+                    }
+                  )}
+
+                  {/* ==================================================
+                      Y LABELS
+                  ================================================== */}
+
+                  {[0, 0.5, 1].map(
+                    (f) => {
+                      const value =
+                        globalMin +
+                        globalSpan * f;
+
+                      const y =
+                        top +
+                        chartH -
+                        f * chartH;
+
+                      return (
+                        <text
+                          key={f}
+                          x={0}
+                          y={y + 4}
+                          fontFamily={
+                            T.ui
+                          }
+                          fontSize={9}
+                          fill="rgba(255,255,255,0.24)"
+                        >
+                          {Math.round(
+                            value
+                          )}
+                        </text>
+                      );
+                    }
+                  )}
+
+                  {/* ==================================================
+                      SERIES
+                  ================================================== */}
+
+                  {cleanLines.map(
+                    (line, li) => {
+                      const points =
+                        buildPoints(
+                          line
+                        );
+
+                      if (
+                        points.length <
+                        2
+                      ) {
+                        return null;
+                      }
+
+                      const path =
+                        buildSmoothPath(
+                          points
+                        );
+
+                      const area =
+                        `${path}
+                         L ${points[points.length - 1].x} ${top + chartH}
+                         L ${points[0].x} ${top + chartH}
+                         Z`;
+
+                      const latest =
+                        points[
+                          points.length -
+                            1
+                        ];
+
+                      return (
+                        <g
+                          key={line.key}
+                        >
+
+                          {/* AREA */}
+
+                          <motion.path
+                            d={area}
+                            fill={`url(#performance-gradient-${line.key})`}
+                            initial={
+                              reduce
+                                ? false
+                                : {
+                                    opacity: 0,
+                                  }
+                            }
+                            whileInView={{
+                              opacity: 1,
+                            }}
+                            viewport={{
+                              once: true,
+                            }}
+                            transition={{
+                              duration: 1,
+                              delay:
+                                li *
+                                0.1,
+                            }}
+                          />
+
+                          {/* GLOW */}
+
+                          <motion.path
+                            d={path}
+                            fill="none"
+                            stroke={
+                              line.color
+                            }
+                            strokeWidth={7}
+                            strokeOpacity={
+                              0.08
+                            }
+                            filter="url(#performance-glow)"
+                            initial={
+                              reduce
+                                ? false
+                                : {
+                                    pathLength: 0,
+                                  }
+                            }
+                            whileInView={{
+                              pathLength: 1,
+                            }}
+                            viewport={{
+                              once: true,
+                            }}
+                            transition={{
+                              duration: 1.5,
+                              ease: EASE,
+                              delay:
+                                li *
+                                0.1,
+                            }}
+                          />
+
+                          {/* MAIN LINE */}
+
+                          <motion.path
+                            d={path}
+                            fill="none"
+                            stroke={
+                              line.color
+                            }
+                            strokeWidth={2.8}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            initial={
+                              reduce
+                                ? false
+                                : {
+                                    pathLength: 0,
+                                  }
+                            }
+                            whileInView={{
+                              pathLength: 1,
+                            }}
+                            viewport={{
+                              once: true,
+                            }}
+                            transition={{
+                              duration: 1.5,
+                              ease: EASE,
+                              delay:
+                                li *
+                                0.1,
+                            }}
+                          />
+
+                          {/* DATA POINTS */}
+
+                          {points.map(
+                            (
+                              point,
+                              i
+                            ) => {
+                              const active =
+                                hoverIndex ===
+                                i;
+
+                              return (
+                                <g
+                                  key={i}
+                                >
+                                  <circle
+                                    cx={
+                                      point.x
+                                    }
+                                    cy={
+                                      point.y
+                                    }
+                                    r={
+                                      active
+                                        ? 7
+                                        : 3
+                                    }
+                                    fill={
+                                      line.color
+                                    }
+                                    stroke="#111216"
+                                    strokeWidth={
+                                      2
+                                    }
+                                  />
+
+                                  {active && (
+                                    <circle
+                                      cx={
+                                        point.x
+                                      }
+                                      cy={
+                                        point.y
+                                      }
+                                      r={12}
+                                      fill="none"
+                                      stroke={
+                                        line.color
+                                      }
+                                      strokeOpacity={
+                                        0.35
+                                      }
+                                      strokeWidth={
+                                        1
+                                      }
+                                    />
+                                  )}
+                                </g>
+                              );
+                            }
+                          )}
+
+                          {/* LAST VALUE */}
+
+                          <g>
+                            <rect
+                              x={
+                                Math.min(
+                                  latest.x +
+                                    10,
+                                  W -
+                                    120
+                                )
+                              }
+                              y={
+                                latest.y -
+                                12
+                              }
+                              width={105}
+                              height={24}
+                              rx={12}
+                              fill="#191A1F"
+                              stroke={
+                                line.color
+                              }
+                              strokeOpacity={
+                                0.45
+                              }
+                            />
+
+                            <text
+                              x={
+                                Math.min(
+                                  latest.x +
+                                    22,
+                                  W -
+                                    108
+                                )
+                              }
+                              y={
+                                latest.y +
+                                4
+                              }
+                              fontFamily={
+                                T.ui
+                              }
+                              fontSize={10}
+                              fontWeight={700}
+                              fill="#FFFFFF"
+                            >
+                              {line.label} ·{" "}
+                              {
+                                line.data[
+                                  line.data
+                                    .length -
+                                    1
+                                ]
+                              }
+                            </text>
+                          </g>
+                        </g>
+                      );
+                    }
+                  )}
+
+                  {/* ==================================================
+                      HOVER SCAN LINE
+                  ================================================== */}
+
+                  {hoverIndex != null && (
+                    <line
+                      x1={
+                        left +
+                        (hoverIndex /
+                          Math.max(
+                            ...cleanLines.map(
+                              (l) =>
+                                l.data
+                                  .length
+                            )
+                          ) -
+                          1) *
+                          chartW
+                      }
+                      x2={
+                        left +
+                        (hoverIndex /
+                          Math.max(
+                            ...cleanLines.map(
+                              (l) =>
+                                l.data
+                                  .length
+                            )
+                          ) -
+                          1) *
+                          chartW
+                      }
+                      y1={top}
+                      y2={
+                        top + chartH
+                      }
+                      stroke="rgba(255,255,255,0.25)"
+                      strokeDasharray="4 7"
+                    />
+                  )}
+
+                  {/* ==================================================
+                      BOTTOM AXIS
+                  ================================================== */}
+
+                  <line
+                    x1={left}
+                    y1={
+                      top + chartH
+                    }
+                    x2={W - right}
+                    y2={
+                      top + chartH
+                    }
+                    stroke="rgba(255,255,255,0.14)"
+                  />
+                </svg>
+
+                {/* ==================================================
+                    HOVER DETAIL
+                ================================================== */}
+
+                {hoverIndex != null && (
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 18,
+                      flexWrap: "wrap",
+                      padding:
+                        "10px 14px",
+                      margin:
+                        "0 30px 4px",
+                      borderRadius: 12,
+                      background:
+                        "rgba(255,255,255,0.045)",
+                      border:
+                        "1px solid rgba(255,255,255,0.07)",
+                    }}
+                  >
+                    {cleanLines.map(
+                      (line) => {
+                        const value =
+                          line.data[
+                            hoverIndex
+                          ];
+
+                        if (
+                          value ==
+                          null
+                        )
+                          return null;
+
+                        return (
+                          <div
+                            key={
+                              line.key
+                            }
+                            style={{
+                              display:
+                                "flex",
+                              alignItems:
+                                "center",
+                              gap: 7,
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: 6,
+                                height: 6,
+                                borderRadius:
+                                  "50%",
+                                background:
+                                  line.color,
+                              }}
+                            />
+
+                            <span
+                              style={{
+                                fontFamily:
+                                  T.ui,
+                                fontSize: 9,
+                                color:
+                                  "rgba(255,255,255,0.38)",
+                              }}
+                            >
+                              {line.label}
+                            </span>
+
+                            <span
+                              style={{
+                                fontFamily:
+                                  T.ui,
+                                fontSize: 11,
+                                fontWeight: 700,
+                                color:
+                                  "#FFFFFF",
+                              }}
+                            >
+                              {value}
+                            </span>
+                          </div>
+                        );
+                      }
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : hasData ? (
+
+              /* ==================================================
+                 ONE DATA POINT STATE
+              ================================================== */
+
+              <div
+                style={{
+                  padding:
+                    "40px 32px 46px",
+                }}
+              >
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns:
+                      "repeat(auto-fit, minmax(190px, 1fr))",
+                    gap: 14,
+                  }}
+                >
+                  {latestLines.map(
+                    (line, i) => {
+                      const pct =
+                        line.latest /
+                        globalMax;
+
+                      return (
+                        <motion.div
+                          key={line.key}
+                          whileHover={{
+                            y: -3,
+                          }}
+                          style={{
+                            padding:
+                              "20px",
+                            borderRadius:
+                              18,
+                            background:
+                              "rgba(255,255,255,0.035)",
+                            border:
+                              "1px solid rgba(255,255,255,0.08)",
+                          }}
+                        >
+
+                          <div
+                            style={{
+                              display:
+                                "flex",
+                              alignItems:
+                                "center",
+                              justifyContent:
+                                "space-between",
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontFamily:
+                                  T.ui,
+                                fontSize: 9,
+                                fontWeight:
+                                  700,
+                                letterSpacing:
+                                  "0.1em",
+                                textTransform:
+                                  "uppercase",
+                                color:
+                                  "rgba(255,255,255,0.40)",
+                              }}
+                            >
+                              {
+                                line.label
+                              }
+                            </span>
+
+                            <span
+                              style={{
+                                width: 7,
+                                height: 7,
+                                borderRadius:
+                                  "50%",
+                                background:
+                                  line.color,
+                              }}
+                            />
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: 15,
+                              fontFamily:
+                                T.display,
+                              fontStyle:
+                                "italic",
+                              fontSize: 32,
+                              color:
+                                "#FFFFFF",
+                            }}
+                          >
+                            {
+                              line.latest
+                            }
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: 14,
+                              height: 4,
+                              borderRadius:
+                                999,
+                              background:
+                                "rgba(255,255,255,0.08)",
+                              overflow:
+                                "hidden",
+                            }}
+                          >
+                            <motion.div
+                              initial={
+                                reduce
+                                  ? false
+                                  : {
+                                      width: 0,
+                                    }
+                              }
+                              whileInView={{
+                                width: `${Math.max(
+                                  4,
+                                  pct *
+                                    100
+                                )}%`,
+                              }}
+                              viewport={{
+                                once: true,
+                              }}
+                              transition={{
+                                duration: 1,
+                                delay:
+                                  i *
+                                  0.08,
+                                ease: EASE,
+                              }}
+                              style={{
+                                height:
+                                  "100%",
+                                borderRadius:
+                                  999,
+                                background:
+                                  line.color,
+                                boxShadow:
+                                  `0 0 12px ${line.color}66`,
+                              }}
+                            />
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: 8,
+                              fontFamily:
+                                T.ui,
+                              fontSize: 9,
+                              color:
+                                "rgba(255,255,255,0.28)",
+                            }}
+                          >
+                            First recorded
+                            reading
+                          </div>
+                        </motion.div>
+                      );
+                    }
+                  )}
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 22,
+                    padding:
+                      "13px 16px",
+                    borderRadius: 12,
+                    background:
+                      "rgba(255,255,255,0.025)",
+                    border:
+                      "1px dashed rgba(255,255,255,0.10)",
+                    fontFamily: T.ui,
+                    fontSize: 10.5,
+                    color:
+                      "rgba(255,255,255,0.34)",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Historical movement will appear
+                  after a second measurement period.
+                  Nothing is being estimated here.
+                </div>
+              </div>
+
             ) : (
-              // Truly nothing yet — still a chart frame (baseline + faint
-              // gridlines), just with no shape drawn on it, rather than a
-              // dashed rectangle with a sentence floating inside it.
-              <svg viewBox={`0 0 ${W} 180`} width="100%" height={180} style={{ overflow: "visible" }}>
-                {[0.25, 0.5, 0.75, 1].map((f) => <line key={f} x1={0} y1={160 * f} x2={W} y2={160 * f} stroke={F.hairline} strokeDasharray="2 6" />)}
-                <line x1={0} y1={160} x2={W} y2={160} stroke={F.hairlineStrong} strokeWidth={1} />
-                <text x={W / 2} y={86} textAnchor="middle" fontFamily={T.ui} fontSize={12} fill={F.muted}>
-                  Performance trend will appear once operating history accumulates
-                </text>
-              </svg>
+
+              /* ==================================================
+                 TRUE EMPTY STATE
+              ================================================== */
+
+              <div
+                style={{
+                  minHeight: 330,
+                  display: "flex",
+                  alignItems:
+                    "center",
+                  justifyContent:
+                    "center",
+                  textAlign:
+                    "center",
+                  padding: 40,
+                }}
+              >
+                <div
+                  style={{
+                    maxWidth: 390,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 56,
+                      height: 56,
+                      margin:
+                        "0 auto 18px",
+                      borderRadius:
+                        18,
+                      border:
+                        "1px solid rgba(255,255,255,0.10)",
+                      background:
+                        "rgba(255,255,255,0.035)",
+                      display:
+                        "flex",
+                      alignItems:
+                        "center",
+                      justifyContent:
+                        "center",
+                      fontFamily:
+                        T.ui,
+                      fontSize: 18,
+                      color:
+                        "rgba(255,255,255,0.32)",
+                    }}
+                  >
+                    ↗
+                  </div>
+
+                  <div
+                    style={{
+                      fontFamily:
+                        T.display,
+                      fontStyle:
+                        "italic",
+                      fontSize: 28,
+                      color:
+                        "#FFFFFF",
+                    }}
+                  >
+                    The curve hasn't
+                    started yet.
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: 9,
+                      fontFamily:
+                        T.ui,
+                      fontSize: 11,
+                      lineHeight: 1.6,
+                      color:
+                        "rgba(255,255,255,0.34)",
+                    }}
+                  >
+                    Performance will appear here
+                    when actual billing or delivery
+                    measurements are recorded.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ==================================================
+                FOOTER
+            ================================================== */}
+
+            {hasData && (
+              <div
+                style={{
+                  padding:
+                    "13px 28px",
+                  borderTop:
+                    "1px solid rgba(255,255,255,0.07)",
+                  display: "flex",
+                  justifyContent:
+                    "space-between",
+                  alignItems:
+                    "center",
+                  gap: 15,
+                  flexWrap: "wrap",
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: T.ui,
+                    fontSize: 8.5,
+                    letterSpacing:
+                      "0.10em",
+                    textTransform:
+                      "uppercase",
+                    color:
+                      "rgba(255,255,255,0.25)",
+                  }}
+                >
+                  Actual recorded values
+                </span>
+
+                <span
+                  style={{
+                    fontFamily: T.ui,
+                    fontSize: 8.5,
+                    color:
+                      "rgba(255,255,255,0.25)",
+                  }}
+                >
+                  {hasTrend
+                    ? "Historical comparison enabled"
+                    : "Historical comparison pending"}
+                </span>
+              </div>
             )}
           </div>
         </Reveal>
@@ -2135,114 +6650,724 @@ function PerformanceGraph({ lines = [] }) {
 function LivePostGrowth({ growth }) {
   const reduce = useReducedMotion();
   const [metric, setMetric] = useState("views");
-  const points = growth?.points || [];
-  const W = 900, H = 300, pad = 24;
+  const [hover, setHover] = useState(null);
 
-  const series = points.map((p) => p[metric]);
+  const points = growth?.points || [];
+  const W = 1000;
+  const H = 360;
+  const left = 68;
+  const right = 24;
+  const top = 28;
+  const bottom = 46;
+
+  const chartW = W - left - right;
+  const chartH = H - top - bottom;
+
+  const series = points.map((p) => Number(p[metric] || 0));
   const has = series.length >= 2;
+
   const latest = series[series.length - 1] ?? 0;
-  const gained = has ? latest - series[0] : 0;
+  const first = series[0] ?? 0;
+  const gained = latest - first;
+
+  const peak = series.length ? Math.max(...series) : 0;
   const color = metric === "views" ? F.navy : F.plum;
+
+  const growthPct =
+    first > 0
+      ? ((gained / first) * 100)
+      : 0;
 
   const label = (d) => {
     const [, m, day] = String(d).split("-");
-    const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const MONTHS = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    ];
+
     return `${MONTHS[Number(m) - 1]} ${Number(day)}`;
   };
 
-  // Baseline at zero rather than at the series minimum. This is cumulative
-  // reach, so the honest read is how far it has climbed from nothing — a
-  // min-anchored axis would turn a steady build into a dramatic-looking ramp.
-  const max = has ? Math.max(...series, 1) : 1;
-  const pts = series.map((v, i) => [
-    (i / (series.length - 1 || 1)) * W,
-    H - pad - (v / max) * (H - pad * 2),
-  ]);
-  const path = pts.map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-  const area = has ? path + ` L${W} ${H} L0 ${H} Z` : "";
+  const fmtAxis = (value) => {
+    if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+    if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
+    return Math.round(value);
+  };
+
+  /*
+   * Keep the baseline at zero.
+   * This is important because the graph represents cumulative
+   * campaign performance.
+   */
+  const max = has
+    ? Math.max(...series, 1)
+    : 1;
+
+  /*
+   * Convert real data into SVG coordinates.
+   */
+  const pts = series.map((value, i) => ({
+    x:
+      left +
+      (i / Math.max(series.length - 1, 1)) * chartW,
+
+    y:
+      top +
+      chartH -
+      (value / max) * chartH,
+
+    value,
+    date: points[i]?.date,
+  }));
+
+  /*
+   * Create a smooth cubic Bézier curve instead of
+   * connecting the points with straight lines.
+   */
+  const buildSmoothPath = (data) => {
+    if (!data.length) return "";
+
+    if (data.length === 1) {
+      return `M ${data[0].x} ${data[0].y}`;
+    }
+
+    let d = `M ${data[0].x} ${data[0].y}`;
+
+    for (let i = 0; i < data.length - 1; i++) {
+      const current = data[i];
+      const next = data[i + 1];
+
+      const midX = (current.x + next.x) / 2;
+
+      d += `
+        C
+        ${midX} ${current.y},
+        ${midX} ${next.y},
+        ${next.x} ${next.y}
+      `;
+    }
+
+    return d;
+  };
+
+  const path = buildSmoothPath(pts);
+
+  const area = has
+    ? `${path}
+       L ${pts[pts.length - 1].x} ${top + chartH}
+       L ${pts[0].x} ${top + chartH}
+       Z`
+    : "";
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1];
+
+  const handleMove = (e) => {
+    if (!has) return;
+
+    const svg = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+
+    const mouseX =
+      ((e.clientX - rect.left) / rect.width) * W;
+
+    let closest = 0;
+    let distance = Infinity;
+
+    pts.forEach((p, i) => {
+      const d = Math.abs(p.x - mouseX);
+
+      if (d < distance) {
+        distance = d;
+        closest = i;
+      }
+    });
+
+    setHover(closest);
+  };
+
+  const hoverPoint =
+    hover !== null ? pts[hover] : null;
 
   return (
-    <section style={{ padding: "140px 44px", background: F.surface }}>
-      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-        <SectionHeader eyebrow="Audience" eyebrowColor={F.plum} title="What the work did once it was live." center={false}
-          sub={has
-            ? `Cumulative ${metric === "views" ? "views" : "engagements"} across ${growth.creators} tracked post${growth.creators === 1 ? "" : "s"} on ${growth.campaigns} campaign${growth.campaigns === 1 ? "" : "s"}, recorded at every metrics refresh.`
-            : "This curve fills in as live posts are refreshed — two readings are needed before there is a shape to draw."} />
+    <section
+      style={{
+        padding: "150px 44px",
+        background: F.surface,
+      }}
+    >
+      <div
+        style={{
+          maxWidth: 1180,
+          margin: "0 auto",
+        }}
+      >
+        <SectionHeader
+          eyebrow="Audience intelligence"
+          eyebrowColor={F.plum}
+          title="What the work did once it was live."
+          center={false}
+          sub={
+            has
+              ? `Live performance tracked across ${growth.creators} creator ${
+                  growth.creators === 1 ? "post" : "posts"
+                } and ${growth.campaigns} ${
+                  growth.campaigns === 1 ? "campaign" : "campaigns"
+                }.`
+              : "This curve fills in as live posts are refreshed."
+          }
+        />
 
         <Reveal delay={0.18}>
-          <div style={{ background: F.paper, border: `1px solid ${F.hairline}`, borderRadius: 20, padding: "32px 32px 26px", boxShadow: "0 20px 44px rgba(20,21,26,0.05)" }}>
-            <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 16, marginBottom: 26 }}>
+          <div
+            style={{
+              marginTop: 42,
+              borderRadius: 28,
+              overflow: "hidden",
+              background: "#111216",
+              boxShadow:
+                "0 30px 80px rgba(20,21,26,0.14)",
+              border:
+                "1px solid rgba(255,255,255,0.08)",
+            }}
+          >
+            {/* ───────── TOP INFORMATION ───────── */}
+
+            <div
+              style={{
+                padding: "30px 32px 26px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-end",
+                gap: 24,
+                flexWrap: "wrap",
+                borderBottom:
+                  "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
               <div>
-                <div style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: F.muted }}>
-                  Total {metric}
+                <div
+                  style={{
+                    fontFamily: T.ui,
+                    fontSize: 10,
+                    fontWeight: 600,
+                    letterSpacing: "0.14em",
+                    textTransform: "uppercase",
+                    color: "rgba(255,255,255,0.42)",
+                  }}
+                >
+                  Live performance
                 </div>
-                <div style={{ fontFamily: T.display, fontStyle: "italic", fontSize: 40, lineHeight: 1.05, color: F.ink, marginTop: 4 }}>
-                  {has ? fmtCompact(latest) : "—"}
-                </div>
-                {has && (
-                  <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.inkSoft, marginTop: 6 }}>
-                    +{fmtCompact(gained)} since {label(points[0].date)} · {points.length} readings
+
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 12,
+                    marginTop: 7,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: T.display,
+                      fontStyle: "italic",
+                      fontSize: 52,
+                      lineHeight: 1,
+                      letterSpacing: "-0.03em",
+                      color: "#FFFFFF",
+                    }}
+                  >
+                    {has ? fmtCompact(latest) : "—"}
                   </div>
-                )}
+
+                  {has && gained > 0 && (
+                    <span
+                      style={{
+                        fontFamily: T.ui,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "#9FD6B5",
+                      }}
+                    >
+                      +{growthPct.toFixed(1)}%
+                    </span>
+                  )}
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 8,
+                    fontFamily: T.ui,
+                    fontSize: 11,
+                    color: "rgba(255,255,255,0.45)",
+                  }}
+                >
+                  cumulative {metric}
+                </div>
               </div>
-              <div style={{ display: "flex", gap: 4, background: F.cream, border: `1px solid ${F.hairline}`, borderRadius: 999, padding: 4 }}>
-                {[["views", "Views"], ["engagements", "Engagements"]].map(([id, l]) => (
-                  <button key={id} onClick={() => setMetric(id)} style={{
-                    border: "none", cursor: "pointer", borderRadius: 999, padding: "6px 14px",
-                    fontFamily: T.ui, fontSize: 11.5, fontWeight: 600,
-                    background: metric === id ? F.surface : "transparent",
-                    color: metric === id ? F.ink : F.muted,
-                    boxShadow: metric === id ? "0 1px 3px rgba(20,21,26,0.10)" : "none",
-                    transition: "background 0.2s, color 0.2s",
-                  }}>{l}</button>
+
+              {/* METRIC SWITCHER */}
+
+              <div
+                style={{
+                  display: "flex",
+                  gap: 4,
+                  padding: 4,
+                  borderRadius: 999,
+                  background:
+                    "rgba(255,255,255,0.07)",
+                  border:
+                    "1px solid rgba(255,255,255,0.08)",
+                }}
+              >
+                {[
+                  ["views", "Views"],
+                  ["engagements", "Engagements"],
+                ].map(([id, text]) => (
+                  <button
+                    key={id}
+                    onClick={() => {
+                      setMetric(id);
+                      setHover(null);
+                    }}
+                    style={{
+                      border: "none",
+                      cursor: "pointer",
+                      borderRadius: 999,
+                      padding: "8px 15px",
+                      fontFamily: T.ui,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      background:
+                        metric === id
+                          ? "#FFFFFF"
+                          : "transparent",
+                      color:
+                        metric === id
+                          ? "#111216"
+                          : "rgba(255,255,255,0.48)",
+                      transition:
+                        "all 0.25s ease",
+                    }}
+                  >
+                    {text}
+                  </button>
                 ))}
               </div>
             </div>
 
-            {/* Always a chart frame — baseline and gridlines are drawn at every
-                data state, so "nothing measured yet" reads as an empty graph
-                waiting to fill in rather than as a broken placeholder. */}
-            <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ overflow: "visible" }}>
-              <defs>
-                <linearGradient id="growth-grad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={color} stopOpacity="0.18" />
-                  <stop offset="100%" stopColor={color} stopOpacity="0" />
-                </linearGradient>
-              </defs>
-              {[0.25, 0.5, 0.75].map((f) => (
-                <line key={f} x1={0} y1={H * f} x2={W} y2={H * f} stroke={F.hairline} strokeDasharray="2 6" />
+            {/* ───────── MINI STATS ───────── */}
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns:
+                  "repeat(3, 1fr)",
+                borderBottom:
+                  "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
+              {[
+                [
+                  "Growth",
+                  has ? `+${fmtCompact(gained)}` : "—",
+                ],
+                [
+                  "Peak",
+                  has ? fmtCompact(peak) : "—",
+                ],
+                [
+                  "Readings",
+                  has ? points.length : "—",
+                ],
+              ].map(([labelText, value], i) => (
+                <div
+                  key={labelText}
+                  style={{
+                    padding: "18px 26px",
+                    borderRight:
+                      i < 2
+                        ? "1px solid rgba(255,255,255,0.07)"
+                        : "none",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontFamily: T.ui,
+                      fontSize: 9.5,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.12em",
+                      color:
+                        "rgba(255,255,255,0.34)",
+                    }}
+                  >
+                    {labelText}
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: 5,
+                      fontFamily: T.ui,
+                      fontSize: 15,
+                      fontWeight: 600,
+                      color: "#FFFFFF",
+                    }}
+                  >
+                    {value}
+                  </div>
+                </div>
               ))}
-              <line x1={0} y1={H} x2={W} y2={H} stroke={F.hairlineStrong} strokeWidth={1} />
+            </div>
 
-              {has ? (
-                <g key={metric}>
-                  <motion.path d={area} fill="url(#growth-grad)"
-                    initial={reduce ? false : { opacity: 0 }}
-                    whileInView={{ opacity: 1 }}
-                    viewport={{ once: true, amount: 0.4 }}
-                    transition={{ duration: 1 }} />
-                  <motion.path d={path} fill="none" stroke={color} strokeWidth={2.25} strokeLinecap="round"
-                    initial={reduce ? false : { pathLength: 0 }}
-                    whileInView={{ pathLength: 1 }}
-                    viewport={{ once: true, amount: 0.4 }}
-                    transition={{ duration: 1.6, ease: EASE }} />
-                  <motion.circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r={4} fill={color}
-                    animate={reduce ? undefined : { r: [4, 6, 4] }}
-                    transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }} />
-                </g>
-              ) : (
-                <text x={W / 2} y={H / 2} textAnchor="middle" fontFamily={T.ui} fontSize={12} fill={F.muted}>
-                  Live-post growth appears here after posts have been refreshed twice
-                </text>
-              )}
-            </svg>
+            {/* ───────── CHART ───────── */}
 
-            {has && (
-              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10 }}>
-                <span style={{ fontFamily: T.ui, fontSize: 10.5, color: F.muted }}>{label(points[0].date)}</span>
-                <span style={{ fontFamily: T.ui, fontSize: 10.5, color: F.muted }}>{label(points[points.length - 1].date)}</span>
-              </div>
-            )}
+            <div
+              style={{
+                position: "relative",
+                padding: "28px 22px 20px",
+              }}
+            >
+              <svg
+                viewBox={`0 0 ${W} ${H}`}
+                width="100%"
+                height="360"
+                preserveAspectRatio="none"
+                style={{
+                  display: "block",
+                  overflow: "visible",
+                  cursor: has
+                    ? "crosshair"
+                    : "default",
+                }}
+                onMouseMove={handleMove}
+                onMouseLeave={() => setHover(null)}
+              >
+                <defs>
+                  <linearGradient
+                    id={`growth-area-${metric}`}
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
+                    <stop
+                      offset="0%"
+                      stopColor={color}
+                      stopOpacity="0.32"
+                    />
+
+                    <stop
+                      offset="75%"
+                      stopColor={color}
+                      stopOpacity="0.06"
+                    />
+
+                    <stop
+                      offset="100%"
+                      stopColor={color}
+                      stopOpacity="0"
+                    />
+                  </linearGradient>
+
+                  <filter
+                    id={`glow-${metric}`}
+                    x="-50%"
+                    y="-50%"
+                    width="200%"
+                    height="200%"
+                  >
+                    <feGaussianBlur
+                      stdDeviation="5"
+                      result="blur"
+                    />
+
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                </defs>
+
+                {/* Y AXIS */}
+
+                {yTicks.map((f) => {
+                  const y =
+                    top + chartH - f * chartH;
+
+                  const value = max * f;
+
+                  return (
+                    <g key={f}>
+                      <line
+                        x1={left}
+                        y1={y}
+                        x2={W - right}
+                        y2={y}
+                        stroke="rgba(255,255,255,0.075)"
+                        strokeDasharray={
+                          f === 0
+                            ? "0"
+                            : "3 7"
+                        }
+                      />
+
+                      <text
+                        x={left - 14}
+                        y={y + 4}
+                        textAnchor="end"
+                        fontFamily={T.ui}
+                        fontSize="10"
+                        fill="rgba(255,255,255,0.30)"
+                      >
+                        {fmtAxis(value)}
+                      </text>
+                    </g>
+                  );
+                })}
+
+                {has ? (
+                  <g>
+                    {/* AREA */}
+
+                    <motion.path
+                      key={`area-${metric}`}
+                      d={area}
+                      fill={`url(#growth-area-${metric})`}
+                      initial={
+                        reduce
+                          ? false
+                          : { opacity: 0 }
+                      }
+                      whileInView={{ opacity: 1 }}
+                      viewport={{
+                        once: true,
+                        amount: 0.35,
+                      }}
+                      transition={{
+                        duration: 1,
+                      }}
+                    />
+
+                    {/* CURVE */}
+
+                    <motion.path
+                      key={`line-${metric}`}
+                      d={path}
+                      fill="none"
+                      stroke={color}
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      initial={
+                        reduce
+                          ? false
+                          : { pathLength: 0 }
+                      }
+                      whileInView={{
+                        pathLength: 1,
+                      }}
+                      viewport={{
+                        once: true,
+                        amount: 0.35,
+                      }}
+                      transition={{
+                        duration: 1.7,
+                        ease: EASE,
+                      }}
+                    />
+
+                    {/* DATA POINTS */}
+
+                    {pts.map((p, i) => (
+                      <circle
+                        key={i}
+                        cx={p.x}
+                        cy={p.y}
+                        r={
+                          hover === i
+                            ? 6
+                            : 2.5
+                        }
+                        fill={color}
+                        stroke="#111216"
+                        strokeWidth="2"
+                        style={{
+                          transition:
+                            "r 0.15s ease",
+                        }}
+                      />
+                    ))}
+
+                    {/* HOVER */}
+
+                    {hoverPoint && (
+                      <g
+                        pointerEvents="none"
+                      >
+                        <line
+                          x1={hoverPoint.x}
+                          y1={top}
+                          x2={hoverPoint.x}
+                          y2={top + chartH}
+                          stroke="rgba(255,255,255,0.20)"
+                          strokeDasharray="4 6"
+                        />
+
+                        <circle
+                          cx={hoverPoint.x}
+                          cy={hoverPoint.y}
+                          r="8"
+                          fill={color}
+                          opacity="0.20"
+                          filter={`url(#glow-${metric})`}
+                        />
+
+                        <circle
+                          cx={hoverPoint.x}
+                          cy={hoverPoint.y}
+                          r="5"
+                          fill={color}
+                          stroke="#FFFFFF"
+                          strokeWidth="2"
+                        />
+
+                        <g
+                          transform={`
+                            translate(
+                              ${Math.min(
+                                Math.max(
+                                  hoverPoint.x - 65,
+                                  left
+                                ),
+                                W - right - 130
+                              )},
+                              ${Math.max(
+                                hoverPoint.y - 72,
+                                8
+                              )}
+                            )
+                          `}
+                        >
+                          <rect
+                            width="130"
+                            height="58"
+                            rx="10"
+                            fill="#FFFFFF"
+                          />
+
+                          <text
+                            x="12"
+                            y="20"
+                            fontFamily={T.ui}
+                            fontSize="9"
+                            fill="#777"
+                          >
+                            {label(
+                              hoverPoint.date
+                            )}
+                          </text>
+
+                          <text
+                            x="12"
+                            y="42"
+                            fontFamily={T.ui}
+                            fontSize="15"
+                            fontWeight="700"
+                            fill="#111216"
+                          >
+                            {fmtCompact(
+                              hoverPoint.value
+                            )}
+                          </text>
+                        </g>
+                      </g>
+                    )}
+                  </g>
+                ) : (
+                  <text
+                    x={W / 2}
+                    y={H / 2}
+                    textAnchor="middle"
+                    fontFamily={T.ui}
+                    fontSize="12"
+                    fill="rgba(255,255,255,0.35)"
+                  >
+                    Live-post growth appears here after
+                    posts have been refreshed twice
+                  </text>
+                )}
+
+                {/* X AXIS */}
+
+                {has && (
+                  <>
+                    <text
+                      x={left}
+                      y={H - 12}
+                      fontFamily={T.ui}
+                      fontSize="10"
+                      fill="rgba(255,255,255,0.30)"
+                    >
+                      {label(points[0].date)}
+                    </text>
+
+                    <text
+                      x={W - right}
+                      y={H - 12}
+                      textAnchor="end"
+                      fontFamily={T.ui}
+                      fontSize="10"
+                      fill="rgba(255,255,255,0.30)"
+                    >
+                      {label(
+                        points[points.length - 1]
+                          .date
+                      )}
+                    </text>
+                  </>
+                )}
+              </svg>
+            </div>
+
+            {/* ───────── FOOTER ───────── */}
+
+            <div
+              style={{
+                padding:
+                  "15px 28px 18px",
+                borderTop:
+                  "1px solid rgba(255,255,255,0.07)",
+                display: "flex",
+                justifyContent:
+                  "space-between",
+                alignItems: "center",
+                gap: 12,
+                flexWrap: "wrap",
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: T.ui,
+                  fontSize: 10,
+                  color:
+                    "rgba(255,255,255,0.35)",
+                }}
+              >
+                LIVE POST METRICS
+              </span>
+
+              <span
+                style={{
+                  fontFamily: T.ui,
+                  fontSize: 10,
+                  color:
+                    "rgba(255,255,255,0.35)",
+                }}
+              >
+                {has
+                  ? `${points.length} metric refreshes recorded`
+                  : "Awaiting metric refresh"}
+              </span>
+            </div>
           </div>
         </Reveal>
       </div>
@@ -2561,7 +7686,10 @@ export default function FounderSummary() {
           existed only to separate the studio interlude from Agency Health, and
           with the interlude gone it was a 72px gap before a section that now
           follows the Big Numbers directly. */}
-      <Hero asOfLabel={asOfLabel} />
+     <Hero
+  asOfLabel={asOfLabel}
+
+/>
       <ExecutiveStatement />
       <BigNumbers revenue={data.revenue} bigNumbers={data.bigNumbers} />
       <AgencyHealth health={data.health} />

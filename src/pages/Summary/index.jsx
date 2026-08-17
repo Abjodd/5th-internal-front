@@ -76,6 +76,17 @@
  *    tile floating above or below the timeline's true midpoint.
  *    Switched to grid alignment so the tile is always centred
  *    against whatever height the timeline actually renders at.
+ *
+ * CHANGELOG (this pass #3 — client cards use real brand logos)
+ * ──────────────────────────────────────────────
+ * 10. CLIENT PORTFOLIO CARDS: the front face of each client card
+ *     showed a deterministic colour-coded initials badge instead of
+ *     the brand's actual uploaded logo — the same logo the nav's
+ *     brand-filter pill already renders via ClientsAPI.avatarUrl().
+ *     Client cards now render that logo when the client record has
+ *     one (hasAvatar/avatarUpdatedAt coming through on clients.names
+ *     from lib/summaryMetrics), and fall back to the initials badge
+ *     only when there is no logo or the image fails to load.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -1033,13 +1044,22 @@ function CampaignFlow({ stages = [] }) {
  * so the box cannot size to its content — it would collapse to whichever face
  * is currently laid out and jump on every flip. The back scrolls internally
  * when a brand has more campaigns than fit.
+ *
+ * ── Front-face identity ─────────────────────────────────────────────────────
+ * Uses the brand's real uploaded logo (same source the nav's brand-filter
+ * pill already renders, ClientsAPI.avatarUrl) rather than a colour-coded
+ * initials badge. Falls back to the initials badge when the client has no
+ * logo on file, or if the image URL 404s/fails to decode.
  */
 function ClientCard({ client, delay = 0 }) {
   const [flipped, setFlipped] = useState(false);
+  const [logoBroken, setLogoBroken] = useState(false);
   const reduce = useReducedMotion();
   const [fg, bg] = badgeTone(client.name || "?");
   const live = client.status === "active";
   const campaigns = client.campaigns || [];
+  const logoUrl = ClientsAPI.avatarUrl(client);
+  const showLogo = Boolean(logoUrl) && !logoBroken;
 
   const face = {
     position: "absolute", inset: 0, backfaceVisibility: "hidden", WebkitBackfaceVisibility: "hidden",
@@ -1066,11 +1086,16 @@ function ClientCard({ client, delay = 0 }) {
           <div style={{ ...face, padding: "18px 18px 16px", justifyContent: "space-between" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
               <div style={{
-                width: 38, height: 38, borderRadius: 11, background: bg, color: fg,
+                width: 38, height: 38, borderRadius: 11, flexShrink: 0, overflow: "hidden",
+                background: showLogo ? "#FFFFFF" : bg,
+                border: showLogo ? `1px solid ${F.hairline}` : "none",
                 display: "flex", alignItems: "center", justifyContent: "center",
-                fontFamily: T.ui, fontWeight: 700, fontSize: 13, flexShrink: 0,
+                fontFamily: T.ui, fontWeight: 700, fontSize: 13, color: fg,
               }}>
-                {initials(client.name)}
+                {showLogo
+                  ? <img src={logoUrl} alt="" onError={() => setLogoBroken(true)}
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  : initials(client.name)}
               </div>
               <div style={{ minWidth: 0, textAlign: "left" }}>
                 <div style={{

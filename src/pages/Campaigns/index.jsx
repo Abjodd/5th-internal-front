@@ -2662,6 +2662,8 @@ function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
   // Matching the sets makes it a true cost-per-view of the measured portion, and
   // the "Based on N of M creators with live data" line below already states the
   // scope that qualifies it.
+  //Overall CPV → Creator Cost / Views
+//External CPV → Campaign Budget / Views
   const totCost=wd.reduce((s,c)=>s+costOf(c),0);
   // Cost per view runs to five decimals. At agency scale the numerator is
   // lakhs and the denominator is millions, so two decimals rounded almost
@@ -2675,11 +2677,16 @@ function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
   // them in double-counted reach and made Instagram creators (the only ones
   // with a forward count — YouTube returns null) look systematically more
   // engaged than YouTube ones for the same real performance.
+  const campaignBudget = Number(camp?.budget) || 0;
+const externalCpv = totV > 0 && campaignBudget > 0
+  ? campaignBudget / totV
+  : null;
   const er=totV>0?(((totL+totC)/totV)*100):null;
   const agg=[
     {l:"Total Views",v:fmtNum(totV||null),show:true},
     {l:"Total Likes",v:fmtNum(totL||null),show:true},
-    {l:"Overall CPV",v:cpv!=null?`₹${cpv.toFixed(5)}`:"—",show:canCrFin(role)},  // campaign-wide creator fees ÷ views, over the same set of creators
+    {l:"Overall CPV",v:cpv!=null?`₹${cpv.toFixed(5)}`:"—",show:canCrFin(role)},
+    {l:"External CPV",v:externalCpv!=null?`₹${externalCpv.toFixed(5)}`:"—",show:canFin(role)},  // campaign-wide creator fees ÷ views, over the same set of creators
     {l:"Avg ER",v:er!=null?`${er.toFixed(1)}%`:"—",show:true},
     {l:"Avg Forwards",v:avgF!=null?fmtNum(Math.round(avgF)):"—",show:true},
   ].filter(s=>s.show);

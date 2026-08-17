@@ -1,6 +1,6 @@
 export default async function handler(req, res) {
   try {
-    const apiKey = process.env.GNEWS_API_KEY;
+    const apiKey = process.env.VITE_GNEWS_API_KEY;
 
     if (!apiKey) {
       return res.status(500).json({

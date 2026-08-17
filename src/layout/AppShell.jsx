@@ -113,23 +113,35 @@ const GLASS_DARK = {
 const NavCtx = createContext({ scrolled: false, merged: false, glass: GLASS_LIGHT });
 function useNavSurface() { return useContext(NavCtx); }
 
+// Close an open popover on an outside click or Escape
+function useDismissOnOutside(ref, open, onClose) {
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (e) => {
+      if (!ref.current?.contains(e.target)) onClose();
+    };
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [ref, open, onClose]);
+}
+
 const TOPBAR_H = 84;
 
 // ── Backdrop tone detection ───────────────────────────────────────
-// Which material the pills wear is decided by what is actually passing
-// beneath them. The cost of knowing that is kept off the scroll path:
-// the dark blocks' positions are MEASURED ONCE (per route, per resize,
-// per content-height change) into a list of [top, bottom] offsets, and
-// the only thing scrolling does is compare `scrollTop` against those
-// cached numbers. No getBoundingClientRect, no getComputedStyle and no
-// forced layout while the user is scrolling — just a few numeric
-// comparisons inside the scroll listener the nav already had.
+// Which material the pills wear depends on what is passing beneath them, and
+// the cost of knowing that is kept off the scroll path: dark blocks are
+// MEASURED ONCE (per route/resize/content-height change) into [top, bottom]
+// offsets, and scrolling only compares `scrollTop` against those. No
+// getBoundingClientRect or forced layout while scrolling.
 //
-// Blocks classify themselves. `data-nav-tone="dark|light"` is an
-// explicit override; otherwise the block's own computed background is
-// measured, so the full-bleed #14151A editorial spreads register as
-// dark with no annotation, and every other page — all of which are
-// paper-coloured — keeps the light material by default.
+// Blocks classify themselves: `data-nav-tone="dark|light"` overrides, otherwise
+// the computed background is measured — so full-bleed dark spreads register
+// with no annotation and paper-coloured pages keep the light material.
 const LUMA_DARK_MAX = 0.35;
 
 function relativeLuminance(cssColor) {
@@ -348,6 +360,10 @@ function UserMenu({ user, onLogout }) {
   const navigate = useNavigate();
   const { glass } = useNavSurface();
   const roleLabel = getRole(user.role)?.label || user.role;
+  const ref = useRef(null);
+
+  const close = useCallback(() => setOpen(false), []);
+  useDismissOnOutside(ref, open, close);
 
   // Close the menu whenever the route changes, so it can never be left
   // open (or appear "stuck") when navigating between pages.
@@ -357,6 +373,7 @@ function UserMenu({ user, onLogout }) {
 
   return (
     <div
+      ref={ref}
       style={{
         position: "relative", display: "flex", alignItems: "center",
         height: 44, borderRadius: 999,
@@ -406,53 +423,50 @@ function UserMenu({ user, onLogout }) {
       </button>
 
       {open && (
-        <>
-          <div style={{ position: "fixed", inset: 0, zIndex: 899 }} onClick={() => setOpen(false)} />
-          <div style={{
-            position: "absolute", top: "calc(100% + 10px)", right: 0, zIndex: 900,
-            background: F.surface, border: `1px solid ${F.hairline}`,
-            borderRadius: 12, overflow: "hidden", minWidth: 210,
-            boxShadow: F.shadowLg,
-          }}>
-            <div style={{ padding: "14px 16px", borderBottom: `1px solid ${F.hairline}` }}>
-              <div style={{ fontFamily: "'Newsreader', serif", fontStyle: "italic", fontWeight: 600, fontSize: 14, color: F.ink }}>
-                {user.name}
-              </div>
-              <div style={{ fontSize: 10.5, color: F.inkSoft, marginTop: 3 }}>{user.email}</div>
-              <div style={{
-                display: "inline-block", marginTop: 8,
-                padding: "3px 9px", background: F.navyTint,
-                borderRadius: 6, fontSize: 9.5, color: F.navy, fontWeight: 600,
-              }}>
-                {user.title}
-              </div>
+        <div style={{
+          position: "absolute", top: "calc(100% + 10px)", right: 0, zIndex: 900,
+          background: F.surface, border: `1px solid ${F.hairline}`,
+          borderRadius: 12, overflow: "hidden", minWidth: 210,
+          boxShadow: F.shadowLg,
+        }}>
+          <div style={{ padding: "14px 16px", borderBottom: `1px solid ${F.hairline}` }}>
+            <div style={{ fontFamily: "'Newsreader', serif", fontStyle: "italic", fontWeight: 600, fontSize: 14, color: F.ink }}>
+              {user.name}
             </div>
-            <div
-              onClick={() => { setOpen(false); navigate("/profile"); }}
-              style={{
-                padding: "11px 16px", cursor: "pointer",
-                fontSize: 11.5, color: F.ink, fontWeight: 500,
-                borderBottom: `1px solid ${F.hairline}`, transition: "background 0.1s",
-              }}
-              onMouseOver={e => e.currentTarget.style.background = F.navyTint}
-              onMouseOut={e => e.currentTarget.style.background = "transparent"}
-            >
-              Your profile
-            </div>
-            <div
-              onClick={() => { setOpen(false); onLogout(); }}
-              style={{
-                padding: "11px 16px", cursor: "pointer",
-                fontSize: 11.5, color: F.rust, fontWeight: 500,
-                transition: "background 0.1s",
-              }}
-              onMouseOver={e => e.currentTarget.style.background = F.rustTint}
-              onMouseOut={e => e.currentTarget.style.background = "transparent"}
-            >
-              Sign out
+            <div style={{ fontSize: 10.5, color: F.inkSoft, marginTop: 3 }}>{user.email}</div>
+            <div style={{
+              display: "inline-block", marginTop: 8,
+              padding: "3px 9px", background: F.navyTint,
+              borderRadius: 6, fontSize: 9.5, color: F.navy, fontWeight: 600,
+            }}>
+              {user.title}
             </div>
           </div>
-        </>
+          <div
+            onClick={() => { setOpen(false); navigate("/profile"); }}
+            style={{
+              padding: "11px 16px", cursor: "pointer",
+              fontSize: 11.5, color: F.ink, fontWeight: 500,
+              borderBottom: `1px solid ${F.hairline}`, transition: "background 0.1s",
+            }}
+            onMouseOver={e => e.currentTarget.style.background = F.navyTint}
+            onMouseOut={e => e.currentTarget.style.background = "transparent"}
+          >
+            Your profile
+          </div>
+          <div
+            onClick={() => { setOpen(false); onLogout(); }}
+            style={{
+              padding: "11px 16px", cursor: "pointer",
+              fontSize: 11.5, color: F.rust, fontWeight: 500,
+              transition: "background 0.1s",
+            }}
+            onMouseOver={e => e.currentTarget.style.background = F.rustTint}
+            onMouseOut={e => e.currentTarget.style.background = "transparent"}
+          >
+            Sign out
+          </div>
+        </div>
       )}
     </div>
   );
@@ -508,12 +522,8 @@ function BrandSelect({ brands, value, onChange }) {
   const location = useLocation();
   const { glass } = useNavSurface();
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e) => e.key === "Escape" && setOpen(false);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
+  useDismissOnOutside(ref, open, close);
 
   useEffect(() => { if (!open) setQ(""); }, [open]);
 
@@ -604,48 +614,45 @@ function BrandSelect({ brands, value, onChange }) {
 
       <AnimatePresence>
         {open && (
-          <>
-            <div style={{ position: "fixed", inset: 0, zIndex: 899 }} onClick={() => setOpen(false)} />
-            <motion.div
-              initial={{ opacity: 0, y: -6, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -4, scale: 0.99 }}
-              transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-              style={{
-                position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 900,
-                minWidth: 250, maxHeight: 340, overflowY: "auto",
-                background: F.surface, border: `1px solid ${F.hairline}`,
-                borderRadius: 12, boxShadow: F.shadowLg, padding: "6px 0",
-              }}
-            >
-              {brands.length > 7 && (
-                <div style={{ padding: "4px 10px 8px" }}>
-                  <input
-                    autoFocus
-                    value={q}
-                    onChange={e => setQ(e.target.value)}
-                    placeholder="Find a brand"
-                    style={{
-                      width: "100%", padding: "7px 10px",
-                      border: `1px solid ${F.hairline}`, borderRadius: 7,
-                      fontFamily: "'Sora', sans-serif", fontSize: 12,
-                      color: F.ink, outline: "none", background: F.paper,
-                    }}
-                  />
-                </div>
-              )}
-              {row(!value, "All brands", "AB", () => { onChange(null); setOpen(false); }, "__all")}
-              {shown.length > 0 && (
-                <div style={{ height: 1, background: F.hairline, margin: "6px 0" }} />
-              )}
-              {shown.map(b =>
-                row(b.id === value, b.name, initials(b.name), () => { onChange(b.id); setOpen(false); }, b.id)
-              )}
-              {shown.length === 0 && (
-                <div style={{ padding: "10px 12px", fontSize: 12, color: F.label }}>No brand matches.</div>
-              )}
-            </motion.div>
-          </>
+          <motion.div
+            initial={{ opacity: 0, y: -6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.99 }}
+            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+            style={{
+              position: "absolute", top: "calc(100% + 8px)", left: 0, zIndex: 900,
+              minWidth: 250, maxHeight: 340, overflowY: "auto",
+              background: F.surface, border: `1px solid ${F.hairline}`,
+              borderRadius: 12, boxShadow: F.shadowLg, padding: "6px 0",
+            }}
+          >
+            {brands.length > 7 && (
+              <div style={{ padding: "4px 10px 8px" }}>
+                <input
+                  autoFocus
+                  value={q}
+                  onChange={e => setQ(e.target.value)}
+                  placeholder="Find a brand"
+                  style={{
+                    width: "100%", padding: "7px 10px",
+                    border: `1px solid ${F.hairline}`, borderRadius: 7,
+                    fontFamily: "'Sora', sans-serif", fontSize: 12,
+                    color: F.ink, outline: "none", background: F.paper,
+                  }}
+                />
+              </div>
+            )}
+            {row(!value, "All brands", "AB", () => { onChange(null); setOpen(false); }, "__all")}
+            {shown.length > 0 && (
+              <div style={{ height: 1, background: F.hairline, margin: "6px 0" }} />
+            )}
+            {shown.map(b =>
+              row(b.id === value, b.name, initials(b.name), () => { onChange(b.id); setOpen(false); }, b.id)
+            )}
+            {shown.length === 0 && (
+              <div style={{ padding: "10px 12px", fontSize: 12, color: F.label }}>No brand matches.</div>
+            )}
+          </motion.div>
         )}
       </AnimatePresence>
     </div>
@@ -911,12 +918,15 @@ export default function AppShell() {
           pointerEvents: "none",
           display: "flex", alignItems: "center", gap: 14,
           padding: "14px 18px 0", flexWrap: "wrap",
-          // Merged into a photograph, the labels have no pane behind them —
-          // a soft shadow is what keeps them off the image's own highlights.
-          // drop-shadow covers the SVG icons, which text-shadow does not.
-          textShadow: merged ? "0 1px 14px rgba(0,0,0,0.55)" : "none",
-          filter: merged ? "drop-shadow(0 1px 10px rgba(0,0,0,0.45))" : "none",
-          transition: "filter 0.4s ease",
+          // Lift the labels off a photo, but only over a DARK one. `merged`
+          // alone was wrong: the Summary cover is data-nav-tone="light", so the
+          // pills wear dark ink and a black halo just smudged it.
+          //
+          // No `filter: drop-shadow` — a filtered element becomes the
+          // containing block for fixed-position children, which silently broke
+          // the nav popovers. See useDismissOnOutside.
+          textShadow: merged && onDark ? "0 1px 4px rgba(0,0,0,0.30)" : "none",
+          transition: "text-shadow 0.4s ease",
         }}>
           <Pill style={{ padding: "0 20px" }}>
             <span style={{

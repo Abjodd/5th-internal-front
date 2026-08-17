@@ -104,6 +104,7 @@ import {
   QuotesAPI, ClientRequestsAPI, CreatorRequestsAPI,
 } from "../../lib/api";
 import { buildSummary } from "../../lib/summaryMetrics";
+import { DARK_SURFACE } from "../../theme/tokens";
 
 
 /* ────────────────────────────────────────────────────────────────
@@ -190,31 +191,19 @@ function fmtCompact(n) {
 /* ────────────────────────────────────────────────────────────────
  * DATA
  * ────────────────────────────────────────────────────────────────
- * There is no sample content on this page any more.
+ * No sample content on this page. What stood here was a `DEMO` object — 128
+ * campaigns, 34 clients, ₹86.0L, invented brands and colleagues — merged under
+ * whatever the backend sent. But the page read `summaryData` off outlet context
+ * and nothing ever put it there, so DEMO was, in practice, the entire page.
  *
- * What stood here was a `DEMO` object — 128 campaigns, 34 clients,
- * ₹86.0L of revenue, ten invented brands, eight invented colleagues
- * with invented utilisation figures and stock-photo faces — merged
- * field-by-field under anything the backend sent. It was written as
- * a fallback, but the page read `summaryData` off the router's outlet
- * context and nothing ever put `summaryData` there, so the merge had
- * nothing to merge and DEMO was, in practice, the entire page. The
- * founder's landing screen was a brochure.
- *
- * Every figure now comes from lib/summaryMetrics.buildSummary(), which
- * derives it from the live collections and returns null for anything
- * the database cannot answer — see that file for the metric-by-metric
- * account of what is derived and what is deliberately left blank.
- *
- * The shape below is what an unloaded page renders: nulls and empty
- * arrays, which every section already knows how to draw as "—" or
- * "not yet connected". It is not a fallback and must never gain
- * plausible-looking values.
+ * The shape below is what an unloaded page renders: nulls and empty arrays,
+ * which every section already draws as "—" or "not yet connected". It is not a
+ * fallback and must never gain plausible-looking values.
  */
 const EMPTY = {
   asOf: null,
   bigNumbers: { campaigns: null, clients: null, team: null, creators: null },
-  health: { revenue: null, delivery: null, clients: null, team: null, growth: null },
+  health: { revenue: null, delivery: null, clients: null, team: null, growth: null, basis: {}, unmeasured: [] },
   revenue: { total: null, deltaPct: null, trend: [], collected: null, outstanding: null, overdue: null, renewalsDue: null },
   campaigns: { stages: [] },
   clients: { total: null, active: null, idle: null, healthy: null, atRisk: null, critical: null, names: [] },
@@ -2023,6 +2012,7 @@ function AgencyHealth({ health = {} }) {
     .map((definition) => ({
       ...definition,
       value: Number(health?.[definition.key]),
+      basis: health?.basis?.[definition.key] || null, // the fraction behind the %
     }))
     .filter(
       (item) =>
@@ -2030,6 +2020,8 @@ function AgencyHealth({ health = {} }) {
         health?.[item.key] !== undefined &&
         Number.isFinite(item.value)
     );
+
+  const unmeasured = health?.unmeasured || [];
 
   /*
    * Dynamically position only the signals we actually have.
@@ -2054,16 +2046,6 @@ function AgencyHealth({ health = {} }) {
         measuredCount
       : null;
 
-  const strongest =
-    measuredCount > 0
-      ? [...measured].sort((a, b) => b.value - a.value)[0]
-      : null;
-
-  const weakest =
-    measuredCount > 0
-      ? [...measured].sort((a, b) => a.value - b.value)[0]
-      : null;
-
   const ref = useRef(null);
 
   const { scrollYProgress } = useScroll({
@@ -2084,21 +2066,12 @@ function AgencyHealth({ health = {} }) {
         padding: "110px 44px 100px",
         position: "relative",
         overflow: "hidden",
-        background: F.ink,
+        // The wash that used to be an absolutely positioned overlay child here
+        // is now the shared DARK_SURFACE token, so the growth panel and the
+        // client cards wear the same material rather than approximating it.
+        background: DARK_SURFACE,
       }}
     >
-      {/* BACKGROUND ATMOSPHERE */}
-
-      <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          background:
-            "radial-gradient(65% 70% at 20% 20%, rgba(49,65,95,0.45), transparent 70%)",
-          pointerEvents: "none",
-        }}
-      />
-
       <div
         style={{
           position: "absolute",
@@ -2595,16 +2568,18 @@ function AgencyHealth({ health = {} }) {
                       color: "#15161A",
                     }}
                   >
-                    What the system knows.
+                    What each reading counts.
                   </div>
                 </div>
 
-                {/* SIGNAL LIST */}
+                {/* Carries the DENOMINATOR, not the percentage — the rings
+                    beside this already own that. "Team 36%" → "5/11 people
+                    carrying at least one live campaign". */}
 
                 <div
                   style={{
                     flex: 1,
-                    padding: "8px 22px",
+                    padding: "6px 22px",
                   }}
                 >
                   {measured.map((item, index) => (
@@ -2612,12 +2587,11 @@ function AgencyHealth({ health = {} }) {
                       key={item.key}
                       style={{
                         display: "flex",
-                        alignItems: "center",
+                        alignItems: "flex-start",
                         gap: 13,
-                        padding: "17px 2px",
+                        padding: "16px 2px",
                         borderBottom:
-                          index <
-                          measured.length - 1
+                          index < measured.length - 1
                             ? "1px solid rgba(20,21,26,0.07)"
                             : "none",
                       }}
@@ -2626,177 +2600,166 @@ function AgencyHealth({ health = {} }) {
                         style={{
                           width: 10,
                           height: 10,
+                          marginTop: 5,
                           borderRadius: "50%",
-                          background:
-                            item.color,
-                          boxShadow:
-                            `0 0 0 5px ${item.color}18`,
+                          background: item.color,
+                          boxShadow: `0 0 0 5px ${item.color}18`,
                           flexShrink: 0,
                         }}
                       />
 
-                      <div
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                        }}
-                      >
+                      <div style={{ flex: 1, minWidth: 0 }}>
                         <div
                           style={{
-                            fontFamily: T.ui,
-                            fontSize: 11,
-                            fontWeight: 650,
-                            color: "#24252A",
+                            display: "flex",
+                            alignItems: "baseline",
+                            justifyContent: "space-between",
+                            gap: 10,
                           }}
                         >
-                          {item.label}
+                          <span
+                            style={{
+                              fontFamily: T.ui,
+                              fontSize: 11,
+                              fontWeight: 650,
+                              color: "#24252A",
+                            }}
+                          >
+                            {item.label}
+                          </span>
+
+                          {item.basis && (
+                            <span
+                              style={{
+                                fontFamily: T.ui,
+                                fontSize: 15,
+                                fontWeight: 700,
+                                color: "#15161A",
+                                fontVariantNumeric: "tabular-nums",
+                                flexShrink: 0,
+                              }}
+                            >
+                              {item.basis.count}
+                              <span style={{ color: "#9A958C", fontWeight: 500 }}>
+                                {" / "}
+                                {item.basis.total}
+                              </span>
+                              <span
+                                style={{
+                                  marginLeft: 5,
+                                  fontSize: 10,
+                                  fontWeight: 500,
+                                  color: "#9A958C",
+                                }}
+                              >
+                                {item.basis.unit}
+                              </span>
+                            </span>
+                          )}
                         </div>
 
                         <div
                           style={{
-                            marginTop: 5,
+                            marginTop: 6,
                             height: 4,
                             borderRadius: 999,
-                            background:
-                              "rgba(20,21,26,0.07)",
+                            background: "rgba(20,21,26,0.07)",
                             overflow: "hidden",
                           }}
                         >
                           <motion.div
-                            initial={
-                              reduce
-                                ? false
-                                : { width: 0 }
-                            }
+                            initial={reduce ? false : { width: 0 }}
                             whileInView={{
-                              width: `${Math.min(
-                                Math.max(
-                                  item.value,
-                                  0
-                                ),
-                                100
-                              )}%`,
+                              width: `${Math.min(Math.max(item.value, 0), 100)}%`,
                             }}
-                            viewport={{
-                              once: true,
-                            }}
-                            transition={{
-                              duration: 1,
-                              ease: EASE,
-                            }}
+                            viewport={{ once: true }}
+                            transition={{ duration: 1, ease: EASE }}
                             style={{
                               height: "100%",
                               borderRadius: 999,
-                              background:
-                                item.color,
+                              background: item.color,
                             }}
                           />
                         </div>
-                      </div>
 
-                      <div
-                        style={{
-                          fontFamily: T.ui,
-                          fontSize: 19,
-                          fontWeight: 700,
-                          color: "#15161A",
-                          fontVariantNumeric:
-                            "tabular-nums",
-                        }}
-                      >
-                        {Math.round(
-                          item.value
+                        {item.basis?.note && (
+                          <div
+                            style={{
+                              marginTop: 7,
+                              fontFamily: T.ui,
+                              fontSize: 10.5,
+                              lineHeight: 1.45,
+                              color: "#7B766E",
+                            }}
+                          >
+                            {item.basis.note}
+                          </div>
                         )}
-                        %
                       </div>
                     </div>
                   ))}
                 </div>
 
-                {/* BOTTOM SUMMARY */}
+                {/* Explains the two missing rings. The gap is the only thing
+                    on this screen the reader can't work out for themselves. */}
 
-                <div
-                  style={{
-                    margin: "0 22px 22px",
-                    padding: "16px 17px",
-                    borderRadius: 14,
-                    background: "#EDE8DE",
-                  }}
-                >
+                {unmeasured.length > 0 && (
                   <div
                     style={{
-                      display: "flex",
-                      justifyContent:
-                        "space-between",
-                      gap: 15,
+                      margin: "0 22px 22px",
+                      padding: "15px 17px",
+                      borderRadius: 14,
+                      background: "#EDE8DE",
                     }}
                   >
-                    <div>
-                      <div
-                        style={{
-                          fontFamily: T.ui,
-                          fontSize: 8.5,
-                          fontWeight: 700,
-                          textTransform:
-                            "uppercase",
-                          letterSpacing:
-                            "0.1em",
-                          color: "#858078",
-                        }}
-                      >
-                        Highest measured
-                      </div>
-
-                      <div
-                        style={{
-                          marginTop: 4,
-                          fontFamily: T.display,
-                          fontStyle: "italic",
-                          fontSize: 18,
-                          color: "#17181C",
-                        }}
-                      >
-                        {strongest.label}
-                      </div>
-                    </div>
-
                     <div
                       style={{
-                        textAlign: "right",
+                        fontFamily: T.ui,
+                        fontSize: 8.5,
+                        fontWeight: 700,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.1em",
+                        color: "#858078",
                       }}
                     >
-                      <div
-                        style={{
-                          fontFamily: T.ui,
-                          fontSize: 8.5,
-                          fontWeight: 700,
-                          textTransform:
-                            "uppercase",
-                          letterSpacing:
-                            "0.1em",
-                          color: "#858078",
-                        }}
-                      >
-                        Current reading
-                      </div>
-
-                      <div
-                        style={{
-                          marginTop: 4,
-                          fontFamily: T.ui,
-                          fontSize: 18,
-                          fontWeight: 750,
-                          color: "#17181C",
-                        }}
-                      >
-                        {Math.round(
-                          strongest.value
-                        )}
-                        %
-                      </div>
+                      Not measured yet
                     </div>
+
+                    {unmeasured.map((u) => (
+                      <div
+                        key={u.label}
+                        style={{
+                          marginTop: 9,
+                          display: "flex",
+                          gap: 9,
+                          alignItems: "baseline",
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontFamily: T.display,
+                            fontStyle: "italic",
+                            fontSize: 14,
+                            color: "#17181C",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {u.label}
+                        </span>
+                        <span
+                          style={{
+                            fontFamily: T.ui,
+                            fontSize: 10.5,
+                            lineHeight: 1.45,
+                            color: "#7B766E",
+                          }}
+                        >
+                          {u.reason}
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                </div>
+                )}
               </div>
             </Reveal>
           )}
@@ -4043,23 +4006,17 @@ function CampaignFlow({ stages = [] }) {
  * Front: who they are and whether anything is live.
  * Back:  the campaigns themselves — name, stage, and how far along.
  *
- * ── Why the 3D flip is built this way ───────────────────────────────────────
- * `transformStyle: preserve-3d` on a rotating parent with `backfaceVisibility:
- * hidden` on each face is the only version of this that behaves in Safari.
- * Animating two absolutely-positioned faces' opacity instead looks identical
- * for the first 40% of the turn and then shows both at once through the middle.
+ * Flip: `preserve-3d` on the rotating parent + `backfaceVisibility: hidden`
+ * per face, PLUS an opacity cut at mid-turn — see faceAnim for why both.
  *
- * The card is a fixed height rather than auto: two faces occupy the same box,
- * so the box cannot size to its content — it would collapse to whichever face
- * is currently laid out and jump on every flip. The back scrolls internally
- * when a brand has more campaigns than fit.
+ * Fixed height, not auto: two faces share one box, so it can't size to content
+ * without jumping on every flip. The back scrolls internally when it overflows.
  *
- * ── Front-face identity ─────────────────────────────────────────────────────
- * Uses the brand's real uploaded logo (same source the nav's brand-filter
- * pill already renders, ClientsAPI.avatarUrl) rather than a colour-coded
- * initials badge. Falls back to the initials badge when the client has no
- * logo on file, or if the image URL 404s/fails to decode.
+ * Front shows the brand's uploaded logo (ClientsAPI.avatarUrl), falling back to
+ * initials when there is none or the image fails.
  */
+const FLIP_S = 0.55; // turn duration; faces cross-cut at half of it
+
 function ClientCard({ client, delay = 0 }) {
   const [flipped, setFlipped] = useState(false);
   const [logoBroken, setLogoBroken] = useState(false);
@@ -4074,6 +4031,19 @@ function ClientCard({ client, delay = 0 }) {
   const activeCount = client.activeCampaigns ?? 0;
 
   const toggle = () => setFlipped((f) => !f);
+
+  // Hides the far face by state, not by backface-visibility alone.
+  // `backdrop-filter` on a face flattens the 3D context (preserve-3d → flat),
+  // which kills backface culling and prints the front through the back,
+  // mirrored. Filters are gone, but this keeps the card immune to the next one.
+  // Cut lands mid-turn, card edge-on, so the swap is invisible.
+  const faceAnim = (isBack) => ({
+    animate: {
+      opacity: flipped === isBack ? 1 : 0,
+      pointerEvents: flipped === isBack ? "auto" : "none", // keep hidden face unclickable
+    },
+    transition: { duration: 0, delay: reduce ? 0 : FLIP_S / 2 },
+  });
 
   const face = {
     position: "absolute",
@@ -4090,6 +4060,7 @@ function ClientCard({ client, delay = 0 }) {
       <div
         onClick={toggle}
         role="button"
+        aria-pressed={flipped}
         tabIndex={0}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -4101,8 +4072,8 @@ function ClientCard({ client, delay = 0 }) {
           flipped ? "hide" : "show"
         } campaigns`}
         style={{
-          perspective: 1400,
-          height: 190,
+          perspective: 1600,
+          height: 215,
           cursor: "pointer",
           outline: "none",
         }}
@@ -4112,28 +4083,26 @@ function ClientCard({ client, delay = 0 }) {
           transition={
             reduce
               ? { duration: 0 }
-              : { duration: 0.6, ease: EASE }
+              : { duration: FLIP_S, ease: EASE }
           }
-          whileHover={
-            !reduce && !flipped
-              ? { y: -5 }
-              : undefined
-          }
+          whileHover={!reduce ? { y: -5 } : undefined}
           style={{
             position: "relative",
             width: "100%",
             height: "100%",
             transformStyle: "preserve-3d",
+            willChange: "transform", // composite the turn, don't repaint it
           }}
         >
 
           {/* =====================================================
               FRONT
           ===================================================== */}
-          <div
+          <motion.div
+            {...faceAnim(false)}
             style={{
               ...face,
-              background: F.ink,
+              background: DARK_SURFACE, // shared with Agency Health + growth panel
               boxShadow:
                 "0 18px 45px rgba(20,21,26,0.10)",
             }}
@@ -4153,20 +4122,10 @@ function ClientCard({ client, delay = 0 }) {
                   objectFit: "cover",
                   objectPosition: "center",
                   opacity: 0.48,
-                  filter: "grayscale(15%)",
+                  // Plain `filter` is safe inside preserve-3d; `backdrop-filter`
+                  // is not — the blur it used to do is folded in here.
+                  filter: "grayscale(15%) blur(0.4px)",
                   transform: "scale(1.06)",
-                }}
-              />
-            )}
-
-            {/* IMAGE BLUR / DEPTH */}
-            {showLogo && (
-              <div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  backdropFilter: "blur(1px)",
-                  WebkitBackdropFilter: "blur(1px)",
                 }}
               />
             )}
@@ -4256,14 +4215,13 @@ function ClientCard({ client, delay = 0 }) {
                   gap: 6,
                   padding: "6px 10px",
                   borderRadius: 999,
+                  // Opaque, not glass — backdrop-filter breaks the flip.
                   background: live
-                    ? "rgba(255,255,255,0.90)"
-                    : "rgba(20,21,26,0.55)",
+                    ? "rgba(255,255,255,0.92)"
+                    : "rgba(20,21,26,0.72)",
                   border: live
                     ? "1px solid rgba(255,255,255,0.65)"
                     : "1px solid rgba(255,255,255,0.16)",
-                  backdropFilter: "blur(10px)",
-                  WebkitBackdropFilter: "blur(10px)",
                 }}
               >
                 <span
@@ -4403,15 +4361,16 @@ function ClientCard({ client, delay = 0 }) {
                 </motion.div>
               </div>
             </div>
-          </div>
+          </motion.div>
 
           {/* =====================================================
               BACK
           ===================================================== */}
-          <div
+          <motion.div
+            {...faceAnim(true)}
             style={{
               ...face,
-              transform: "rotateY(180deg)",
+              rotateY: 180, // motion style value, not a raw transform string
               background: F.paper,
               boxShadow:
                 "0 18px 45px rgba(20,21,26,0.08)",
@@ -4661,7 +4620,7 @@ function ClientCard({ client, delay = 0 }) {
                 Click to return ↗
               </span>
             </div>
-          </div>
+          </motion.div>
 
         </motion.div>
       </div>
@@ -4709,8 +4668,8 @@ function ClientPortfolio({ clients = {} }) {
           // permanently empty disc. A grid packs them, reads left-to-right, and
           // gets denser rather than sparser as the book grows.
           <div style={{
-            display: "grid", gap: 14,
-            gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))",
+            display: "grid", gap: 16,
+            gridTemplateColumns: "repeat(auto-fill, minmax(238px, 1fr))",
           }}>
             {names.map((n, i) => <ClientCard key={n.id || i} client={n} delay={Math.min(i * 0.05, 0.4)} />)}
           </div>
@@ -4884,6 +4843,35 @@ const DECISION_CATEGORIES = [
   { label: "Staffing", note: "A role or campaign that needs to be assigned", color: F.plum },
 ];
 
+// Brand logo where one resolved, initials where it didn't (creator
+// applications have no brand). `logo` is attached in FounderSummary.
+function DecisionBadge({ decision }) {
+  const [broken, setBroken] = useState(false);
+  const seed = decision.tag || decision.thumb;
+
+  if (!decision.logo || broken) {
+    return <InitialsBadge seed={seed} size={56} radius={12} />;
+  }
+
+  return (
+    <div
+      style={{
+        width: 56, height: 56, borderRadius: 12, flexShrink: 0,
+        overflow: "hidden", background: F.surface,
+        border: `1px solid ${F.hairline}`,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+    >
+      <img
+        src={decision.logo}
+        alt=""
+        onError={() => setBroken(true)}
+        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+      />
+    </div>
+  );
+}
+
 function DecisionsHorizon({ items = [] }) {
   return (
     <section style={{ padding: "140px 44px", background: F.cream }}>
@@ -4941,7 +4929,7 @@ function DecisionsHorizon({ items = [] }) {
                         </div>
                       )}
                     </div>
-                    {(d.tag || d.thumb) && <InitialsBadge seed={d.tag || d.thumb} size={56} radius={12} />}
+                    {(d.tag || d.thumb) && <DecisionBadge decision={d} />}
                   </motion.div>
                 </Reveal>
               ))}
@@ -6558,19 +6546,19 @@ function PerformanceGraph({ lines = [] }) {
 /* ────────────────────────────────────────────────────────────────
  * 10b — LIVE-POST GROWTH
  *
- * The audience side of Trajectory, which it sits directly beneath: that
- * section is what has been invoiced and delivered, this is what the delivered
- * work went on to do once it was live.
+ * The audience side of Trajectory above it: that section is what was invoiced
+ * and delivered, this is what the delivered work went on to do.
  *
- * Drawn from the append-only history the backend now records on every
- * post-metrics refresh. Until that existed each refresh overwrote the previous
- * numbers, so the agency only ever had a "now" — this curve was unrecoverable
- * from stored data, which is why the page never had it.
- *
- * Cumulative, so it only ever climbs; see growthFrom() in lib/summaryMetrics
- * for why creators measured on different days are carried forward rather than
- * counted as zero.
+ * Drawn from the backend's append-only post-metrics history. Before that each
+ * refresh overwrote the previous numbers, so this curve was unrecoverable.
+ * Cumulative — see growthFrom() for why creators measured on different days are
+ * carried forward rather than counted as zero.
  * ──────────────────────────────────────────────────────────────── */
+
+// Tooltip box, in viewBox units. Named because the clamp maths below needs
+// both, and a magic 130 in three places is how a tooltip ends up half off-panel.
+const TIP_W = 190;
+const TIP_H = 92;
 
 function LivePostGrowth({ growth }) {
   const reduce = useReducedMotion();
@@ -6595,7 +6583,6 @@ function LivePostGrowth({ growth }) {
   const first = series[0] ?? 0;
   const gained = latest - first;
 
-  const peak = series.length ? Math.max(...series) : 0;
   const color = metric === "views" ? F.navy : F.plum;
 
   const growthPct =
@@ -6613,11 +6600,8 @@ function LivePostGrowth({ growth }) {
     return `${MONTHS[Number(m) - 1]} ${Number(day)}`;
   };
 
-  const fmtAxis = (value) => {
-    if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
-    if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
-    return Math.round(value);
-  };
+  // Axis ticks use fmtCompact — same formatter as the headline. A private K/M
+  // helper here once printed 8.8M under a headline reading 88.4L.
 
   /*
    * Keep the baseline at zero.
@@ -6689,18 +6673,14 @@ function LivePostGrowth({ growth }) {
   const handleMove = (e) => {
     if (!has) return;
 
-    const svg = e.currentTarget;
-    const rect = svg.getBoundingClientRect();
-
-    const mouseX =
-      ((e.clientX - rect.left) / rect.width) * W;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mouseX = ((e.clientX - rect.left) / rect.width) * W;
 
     let closest = 0;
     let distance = Infinity;
 
     pts.forEach((p, i) => {
       const d = Math.abs(p.x - mouseX);
-
       if (d < distance) {
         distance = d;
         closest = i;
@@ -6710,8 +6690,47 @@ function LivePostGrowth({ growth }) {
     setHover(closest);
   };
 
-  const hoverPoint =
-    hover !== null ? pts[hover] : null;
+  // Date + running total is barely more than the axis says, so the tooltip
+  // carries the STEP over the previous reading. First point has no
+  // predecessor and says so rather than showing a fabricated +0.
+  const hoverPoint = hover !== null ? pts[hover] : null;
+
+  const hoverDetail = useMemo(() => {
+    if (hover === null || !pts[hover]) return null;
+
+    const point = pts[hover];
+    const previous = hover > 0 ? pts[hover - 1] : null;
+    const step = previous ? point.value - previous.value : null;
+
+    return {
+      date: label(point.date),
+      value: point.value,
+      step,
+      stepPct:
+        previous && previous.value > 0
+          ? (step / previous.value) * 100
+          : null,
+      sharePct: latest > 0 ? (point.value / latest) * 100 : null,
+      isFirst: hover === 0,
+    };
+    // `label` is pure; `pts` already changes when metric or data does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hover, pts, latest]);
+
+  // Replaced a "Peak" tile, which on a cumulative curve is always the latest
+  // reading — i.e. the headline restated.
+  const perPost = growth?.creators ? latest / growth.creators : null;
+
+  const spanDays =
+    has && points.length > 1
+      ? Math.max(
+          1,
+          Math.round(
+            (new Date(points[points.length - 1].date) - new Date(points[0].date)) /
+              86400000
+          )
+        )
+      : null;
 
   return (
     <section
@@ -6748,7 +6767,7 @@ function LivePostGrowth({ growth }) {
               marginTop: 42,
               borderRadius: 28,
               overflow: "hidden",
-              background: "#111216",
+              background: DARK_SURFACE,
               boxShadow:
                 "0 30px 80px rgba(20,21,26,0.14)",
               border:
@@ -6892,21 +6911,36 @@ function LivePostGrowth({ growth }) {
               }}
             >
               {[
-                [
-                  "Growth",
-                  has ? `+${fmtCompact(gained)}` : "—",
-                ],
-                [
-                  "Peak",
-                  has ? fmtCompact(peak) : "—",
-                ],
-                [
-                  "Readings",
-                  has ? points.length : "—",
-                ],
-              ].map(([labelText, value], i) => (
+                {
+                  label: "Added since tracking began",
+                  value: has ? `+${fmtCompact(gained)}` : "—",
+                  note: has && spanDays
+                    ? `over ${spanDays} ${spanDays === 1 ? "day" : "days"}`
+                    : null,
+                },
+                {
+                  label: `Average per post`,
+                  value: perPost != null ? fmtCompact(Math.round(perPost)) : "—",
+                  note: growth?.creators
+                    ? `across ${growth.creators} tracked ${
+                        growth.creators === 1 ? "post" : "posts"
+                      }`
+                    : null,
+                },
+                {
+                  label: "Tracked window",
+                  value: has
+                    ? `${label(points[0].date)} — ${label(points[points.length - 1].date)}`
+                    : "—",
+                  note: has
+                    ? `${points.length} metric ${
+                        points.length === 1 ? "refresh" : "refreshes"
+                      }`
+                    : null,
+                },
+              ].map((stat, i) => (
                 <div
-                  key={labelText}
+                  key={stat.label}
                   style={{
                     padding: "18px 26px",
                     borderRight:
@@ -6921,11 +6955,10 @@ function LivePostGrowth({ growth }) {
                       fontSize: 9.5,
                       textTransform: "uppercase",
                       letterSpacing: "0.12em",
-                      color:
-                        "rgba(255,255,255,0.34)",
+                      color: "rgba(255,255,255,0.34)",
                     }}
                   >
-                    {labelText}
+                    {stat.label}
                   </div>
 
                   <div
@@ -6937,8 +6970,21 @@ function LivePostGrowth({ growth }) {
                       color: "#FFFFFF",
                     }}
                   >
-                    {value}
+                    {stat.value}
                   </div>
+
+                  {stat.note && (
+                    <div
+                      style={{
+                        marginTop: 3,
+                        fontFamily: T.ui,
+                        fontSize: 10,
+                        color: "rgba(255,255,255,0.34)",
+                      }}
+                    >
+                      {stat.note}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -6951,17 +6997,16 @@ function LivePostGrowth({ growth }) {
                 padding: "28px 22px 20px",
               }}
             >
+              {/* Scales uniformly. preserveAspectRatio="none" + a fixed height
+                  stretched the viewBox ~2x, distorting labels and tooltip. */}
               <svg
                 viewBox={`0 0 ${W} ${H}`}
                 width="100%"
-                height="360"
-                preserveAspectRatio="none"
                 style={{
                   display: "block",
+                  height: "auto",
                   overflow: "visible",
-                  cursor: has
-                    ? "crosshair"
-                    : "default",
+                  cursor: has ? "crosshair" : "default",
                 }}
                 onMouseMove={handleMove}
                 onMouseLeave={() => setHover(null)}
@@ -7043,7 +7088,7 @@ function LivePostGrowth({ growth }) {
                         fontSize="10"
                         fill="rgba(255,255,255,0.30)"
                       >
-                        {fmtAxis(value)}
+                        {fmtCompact(value)}
                       </text>
                     </g>
                   );
@@ -7155,54 +7200,55 @@ function LivePostGrowth({ growth }) {
                           strokeWidth="2"
                         />
 
+                        {/* Clamped to the plot area, and flipped below the
+                            curve when the point sits too high to fit above. */}
                         <g
-                          transform={`
-                            translate(
-                              ${Math.min(
-                                Math.max(
-                                  hoverPoint.x - 65,
-                                  left
-                                ),
-                                W - right - 130
-                              )},
-                              ${Math.max(
-                                hoverPoint.y - 72,
-                                8
-                              )}
-                            )
-                          `}
+                          transform={`translate(${Math.min(
+                            Math.max(hoverPoint.x - TIP_W / 2, left),
+                            W - right - TIP_W
+                          )}, ${
+                            hoverPoint.y - TIP_H - 16 < 0
+                              ? hoverPoint.y + 18
+                              : hoverPoint.y - TIP_H - 16
+                          })`}
                         >
                           <rect
-                            width="130"
-                            height="58"
-                            rx="10"
+                            width={TIP_W}
+                            height={TIP_H}
+                            rx="12"
                             fill="#FFFFFF"
                           />
 
-                          <text
-                            x="12"
-                            y="20"
-                            fontFamily={T.ui}
-                            fontSize="9"
-                            fill="#777"
-                          >
-                            {label(
-                              hoverPoint.date
-                            )}
+                          <text x="14" y="21" fontFamily={T.ui} fontSize="9.5" fill="#8A8A90">
+                            {hoverDetail.date} · {metric === "views" ? "Views" : "Engagements"}
                           </text>
 
                           <text
-                            x="12"
-                            y="42"
+                            x="14"
+                            y="46"
                             fontFamily={T.ui}
-                            fontSize="15"
+                            fontSize="19"
                             fontWeight="700"
                             fill="#111216"
                           >
-                            {fmtCompact(
-                              hoverPoint.value
-                            )}
+                            {fmtCompact(hoverDetail.value)}
                           </text>
+
+                          <text x="14" y="65" fontFamily={T.ui} fontSize="10" fill="#5C5C63">
+                            {hoverDetail.isFirst
+                              ? "first recorded reading"
+                              : `+${fmtCompact(hoverDetail.step)} since previous${
+                                  hoverDetail.stepPct != null
+                                    ? ` · +${hoverDetail.stepPct.toFixed(1)}%`
+                                    : ""
+                                }`}
+                          </text>
+
+                          {hoverDetail.sharePct != null && (
+                            <text x="14" y="81" fontFamily={T.ui} fontSize="10" fill="#9A9AA1">
+                              {hoverDetail.sharePct.toFixed(0)}% of the total to date
+                            </text>
+                          )}
                         </g>
                       </g>
                     )}
@@ -7574,12 +7620,28 @@ export default function FounderSummary() {
         };
       });
 
+      // Decisions carry `tag`, a client NAME — quotes/invoices store the client
+      // as a string, not an id, so summaryMetrics has nothing to build a URL
+      // from. Resolved here, where both collections are in hand. Name matching
+      // is imperfect (duplicates, off-book brands) so misses fall back to
+      // initials rather than being treated as an error.
+      const normalise = (s) => String(s || "").trim().toLowerCase();
+      const clientByName = new Map(
+        rawClients.map((c) => [normalise(c.name), c])
+      );
+
+      const decisionsWithLogos = (summary.decisions || []).map((d) => ({
+        ...d,
+        logo: ClientsAPI.avatarUrl(clientByName.get(normalise(d.tag))),
+      }));
+
       setData({
         ...summary,
         clients: {
           ...summary.clients,
           names: clientNamesWithAvatars,
         },
+        decisions: decisionsWithLogos,
       });
     });
 

@@ -255,12 +255,44 @@ function healthFrom({ campaigns, team, clients }) {
     ? Math.round(withProgress.reduce((s, c) => s + Number(c.progress), 0) / withProgress.length)
     : null;
 
+  const staffed = team.members.filter((m) => m.activeProjects > 0).length;
+
   return {
     revenue: null,
     delivery,
     clients: pctOrNull(clients.active, clients.total),
     team: team.staffedPct,
     growth: null,
+
+    /* What each score is a percentage OF. "Delivery 90%" means nothing until
+       you know it averages 1 campaign, not 30 — the counts were already being
+       computed here and thrown away.
+
+       basis[key] is non-null EXACTLY when health[key] is, so consumers need no
+       second guard. */
+    basis: {
+      revenue: null,
+      growth: null,
+      delivery: delivery === null ? null : {
+        count: withProgress.length, total: active.length, unit: "campaigns",
+        note: "mean completion across campaigns in flight",
+      },
+      clients: clients.total ? {
+        count: clients.active, total: clients.total, unit: "clients",
+        note: "on the books with a campaign running",
+      } : null,
+      team: team.staffedPct === null ? null : {
+        count: staffed, total: team.members.length, unit: "people",
+        note: "carrying at least one live campaign",
+      },
+    },
+
+    /* Why the two missing rings are missing — both need a baseline the DB
+       doesn't hold. Named, so the gap reads as deliberate, not as a bug. */
+    unmeasured: [
+      { label: "Revenue", reason: "needs a target to score attainment against" },
+      { label: "Growth", reason: "needs a prior period to measure movement from" },
+    ],
   };
 }
 

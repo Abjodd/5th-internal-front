@@ -44,4 +44,15 @@ export const T = {
   radiusSm: 5,
 };
 
+/**
+ * The one dark surface in a light theme — Agency Health, the growth panel,
+ * client cards, campaign cards. Previously four separate flat blacks that read
+ * as four materials.
+ *
+ * A single `background` shorthand (not a base + overlay child) so it drops onto
+ * any element. Anything dark should use this; a new flat black is a regression.
+ */
+export const DARK_SURFACE =
+  "radial-gradient(125% 105% at 18% 10%, rgba(59,79,116,0.55) 0%, rgba(46,60,90,0.20) 44%, rgba(20,21,26,0) 72%), #14151A";
+
 export default T;

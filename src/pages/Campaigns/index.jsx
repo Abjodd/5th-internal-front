@@ -37,7 +37,7 @@ import CreatorHandle from "../../components/CreatorHandle";
 import Donut from "../../components/Donut";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
-import { T as BASE_T } from "../../theme/tokens";
+import { T as BASE_T, DARK_SURFACE } from "../../theme/tokens";
 
 // Stage → colour, layered on top of the shared theme. Both tracks are keyed
 // into one map: the fork means a campaign has two live nodes at once, and
@@ -1467,7 +1467,7 @@ const CampCard = forwardRef(function CampCard(
         cursor: "pointer",
         isolation: "isolate",
 
-        background: "#111216",
+        background: DARK_SURFACE,
 
         border: `1px solid ${
           accent

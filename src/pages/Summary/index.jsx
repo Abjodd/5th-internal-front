@@ -1055,113 +1055,605 @@ function ClientCard({ client, delay = 0 }) {
   const [flipped, setFlipped] = useState(false);
   const [logoBroken, setLogoBroken] = useState(false);
   const reduce = useReducedMotion();
-  const [fg, bg] = badgeTone(client.name || "?");
+
   const live = client.status === "active";
   const campaigns = client.campaigns || [];
   const logoUrl = ClientsAPI.avatarUrl(client);
   const showLogo = Boolean(logoUrl) && !logoBroken;
 
+  const campaignCount = campaigns.length;
+  const activeCount = client.activeCampaigns ?? 0;
+
+  const toggle = () => setFlipped((f) => !f);
+
   const face = {
-    position: "absolute", inset: 0, backfaceVisibility: "hidden", WebkitBackfaceVisibility: "hidden",
-    borderRadius: 16, border: `1px solid ${F.hairline}`, background: F.surface,
-    display: "flex", flexDirection: "column", overflow: "hidden",
+    position: "absolute",
+    inset: 0,
+    backfaceVisibility: "hidden",
+    WebkitBackfaceVisibility: "hidden",
+    borderRadius: 20,
+    border: `1px solid ${F.hairline}`,
+    overflow: "hidden",
   };
 
   return (
     <Reveal delay={delay}>
       <div
-        onClick={() => setFlipped((f) => !f)}
+        onClick={toggle}
         role="button"
         tabIndex={0}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFlipped((f) => !f); } }}
-        aria-label={`${client.name} — ${flipped ? "hide" : "show"} campaigns`}
-        style={{ perspective: 1200, height: 168, cursor: "pointer", outline: "none" }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggle();
+          }
+        }}
+        aria-label={`${client.name} — ${
+          flipped ? "hide" : "show"
+        } campaigns`}
+        style={{
+          perspective: 1400,
+          height: 190,
+          cursor: "pointer",
+          outline: "none",
+        }}
       >
         <motion.div
           animate={{ rotateY: flipped ? 180 : 0 }}
-          transition={reduce ? { duration: 0 } : { duration: 0.55, ease: EASE }}
-          style={{ position: "relative", width: "100%", height: "100%", transformStyle: "preserve-3d" }}
+          transition={
+            reduce
+              ? { duration: 0 }
+              : { duration: 0.6, ease: EASE }
+          }
+          whileHover={
+            !reduce && !flipped
+              ? { y: -5 }
+              : undefined
+          }
+          style={{
+            position: "relative",
+            width: "100%",
+            height: "100%",
+            transformStyle: "preserve-3d",
+          }}
         >
-          {/* FRONT */}
-          <div style={{ ...face, padding: "18px 18px 16px", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-              <div style={{
-                width: 38, height: 38, borderRadius: 11, flexShrink: 0, overflow: "hidden",
-                background: showLogo ? "#FFFFFF" : bg,
-                border: showLogo ? `1px solid ${F.hairline}` : "none",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontFamily: T.ui, fontWeight: 700, fontSize: 13, color: fg,
-              }}>
-                {showLogo
-                  ? <img src={logoUrl} alt="" onError={() => setLogoBroken(true)}
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  : initials(client.name)}
-              </div>
-              <div style={{ minWidth: 0, textAlign: "left" }}>
-                <div style={{
-                  fontFamily: T.display, fontStyle: "italic", fontSize: 17, color: F.ink,
-                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                }}>{client.name}</div>
-                <div style={{ fontFamily: T.ui, fontSize: 10.5, color: F.muted, marginTop: 2 }}>
-                  {campaigns.length} campaign{campaigns.length === 1 ? "" : "s"} on record
-                </div>
+
+          {/* =====================================================
+              FRONT
+          ===================================================== */}
+          <div
+            style={{
+              ...face,
+              background: F.ink,
+              boxShadow:
+                "0 18px 45px rgba(20,21,26,0.10)",
+            }}
+          >
+
+            {/* BACKGROUND IMAGE */}
+            {showLogo && (
+              <img
+                src={logoUrl}
+                alt=""
+                onError={() => setLogoBroken(true)}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  objectPosition: "center",
+                  opacity: 0.48,
+                  filter: "grayscale(15%)",
+                  transform: "scale(1.06)",
+                }}
+              />
+            )}
+
+            {/* IMAGE BLUR / DEPTH */}
+            {showLogo && (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  backdropFilter: "blur(1px)",
+                  WebkitBackdropFilter: "blur(1px)",
+                }}
+              />
+            )}
+
+            {/* CINEMATIC GRADIENT */}
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                background: `
+                  linear-gradient(
+                    180deg,
+                    rgba(15,16,20,0.08) 0%,
+                    rgba(15,16,20,0.18) 30%,
+                    rgba(15,16,20,0.72) 70%,
+                    rgba(15,16,20,0.97) 100%
+                  )
+                `,
+              }}
+            />
+
+            {/* TOP CONTENT */}
+            <div
+              style={{
+                position: "relative",
+                zIndex: 2,
+                padding: "16px 17px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+              }}
+            >
+
+              {/* LOGO */}
+              <motion.div
+                whileHover={
+                  !reduce
+                    ? { scale: 1.05 }
+                    : undefined
+                }
+                style={{
+                  width: 46,
+                  height: 46,
+                  borderRadius: 14,
+                  overflow: "hidden",
+                  background: "rgba(255,255,255,0.94)",
+                  border:
+                    "1px solid rgba(255,255,255,0.75)",
+                  boxShadow:
+                    "0 8px 25px rgba(0,0,0,0.18)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                {showLogo ? (
+                  <img
+                    src={logoUrl}
+                    alt=""
+                    onError={() => setLogoBroken(true)}
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "cover",
+                    }}
+                  />
+                ) : (
+                  <span
+                    style={{
+                      fontFamily: T.ui,
+                      fontWeight: 800,
+                      fontSize: 14,
+                      color: F.ink,
+                    }}
+                  >
+                    {initials(client.name)}
+                  </span>
+                )}
+              </motion.div>
+
+              {/* STATUS */}
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  background: live
+                    ? "rgba(255,255,255,0.90)"
+                    : "rgba(20,21,26,0.55)",
+                  border: live
+                    ? "1px solid rgba(255,255,255,0.65)"
+                    : "1px solid rgba(255,255,255,0.16)",
+                  backdropFilter: "blur(10px)",
+                  WebkitBackdropFilter: "blur(10px)",
+                }}
+              >
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: live
+                      ? F.forest
+                      : "rgba(255,255,255,0.45)",
+                    boxShadow: live
+                      ? `0 0 0 3px ${F.forestTint}`
+                      : "none",
+                  }}
+                />
+
+                <span
+                  style={{
+                    fontFamily: T.ui,
+                    fontSize: 9,
+                    fontWeight: 800,
+                    letterSpacing: "0.09em",
+                    color: live
+                      ? F.forest
+                      : "rgba(255,255,255,0.72)",
+                  }}
+                >
+                  {live ? "LIVE" : "IDLE"}
+                </span>
               </div>
             </div>
 
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <span style={{
-                display: "inline-flex", alignItems: "center", gap: 6,
-                padding: "4px 10px", borderRadius: 20,
-                background: live ? F.forestTint : F.hairline,
-                fontFamily: T.ui, fontSize: 10, fontWeight: 700, letterSpacing: "0.04em",
-                color: live ? F.forest : F.muted,
-              }}>
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: live ? F.forest : F.muted }} />
-                {live ? `${client.activeCampaigns} LIVE` : "NO LIVE WORK"}
-              </span>
-              <span style={{ fontFamily: T.ui, fontSize: 15, color: F.muted, lineHeight: 1 }}>&#8635;</span>
+            {/* BOTTOM CONTENT */}
+            <div
+              style={{
+                position: "absolute",
+                zIndex: 3,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                padding: "0 18px 16px",
+              }}
+            >
+
+              {/* CLIENT NAME */}
+              <div
+                style={{
+                  fontFamily: T.display,
+                  fontStyle: "italic",
+                  fontSize: "clamp(20px, 2vw, 25px)",
+                  lineHeight: 1,
+                  color: "#FFFFFF",
+                  fontWeight: 500,
+                  letterSpacing: "-0.02em",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  textShadow:
+                    "0 2px 14px rgba(0,0,0,0.45)",
+                }}
+              >
+                {client.name}
+              </div>
+
+              {/* META ROW */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginTop: 10,
+                }}
+              >
+
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: T.ui,
+                      fontSize: 10.5,
+                      color: "rgba(255,255,255,0.65)",
+                    }}
+                  >
+                    {campaignCount} campaign
+                    {campaignCount === 1 ? "" : "s"}
+                  </span>
+
+                  <span
+                    style={{
+                      width: 3,
+                      height: 3,
+                      borderRadius: "50%",
+                      background:
+                        "rgba(255,255,255,0.35)",
+                    }}
+                  />
+
+                  <span
+                    style={{
+                      fontFamily: T.ui,
+                      fontSize: 10.5,
+                      color: live
+                        ? "rgba(255,255,255,0.85)"
+                        : "rgba(255,255,255,0.55)",
+                      fontWeight: live ? 700 : 500,
+                    }}
+                  >
+                    {activeCount} active
+                  </span>
+                </div>
+
+                {/* FLIP ICON */}
+                <motion.div
+                  animate={{ rotate: flipped ? 180 : 0 }}
+                  transition={{ duration: 0.3 }}
+                  style={{
+                    width: 27,
+                    height: 27,
+                    borderRadius: "50%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background:
+                      "rgba(255,255,255,0.12)",
+                    border:
+                      "1px solid rgba(255,255,255,0.18)",
+                    color: "rgba(255,255,255,0.78)",
+                    fontSize: 14,
+                  }}
+                >
+                  ↗
+                </motion.div>
+              </div>
             </div>
           </div>
 
-          {/* BACK — pre-rotated so it faces the viewer once the parent turns */}
-          <div style={{ ...face, transform: "rotateY(180deg)", background: F.paper }}>
-            <div style={{
-              padding: "11px 14px", borderBottom: `1px solid ${F.hairline}`,
-              display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexShrink: 0,
-            }}>
-              <span style={{
-                fontFamily: T.ui, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.1em",
-                color: F.muted, textTransform: "uppercase",
-                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-              }}>{client.name}</span>
-              <span style={{ fontFamily: T.ui, fontSize: 14, color: F.muted, lineHeight: 1, flexShrink: 0 }}>&#8635;</span>
+          {/* =====================================================
+              BACK
+          ===================================================== */}
+          <div
+            style={{
+              ...face,
+              transform: "rotateY(180deg)",
+              background: F.paper,
+              boxShadow:
+                "0 18px 45px rgba(20,21,26,0.08)",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+
+            {/* BACK HEADER */}
+            <div
+              style={{
+                padding: "14px 16px",
+                borderBottom: `1px solid ${F.hairline}`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                flexShrink: 0,
+              }}
+            >
+              <div
+                style={{
+                  minWidth: 0,
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily: T.ui,
+                    fontSize: 8.5,
+                    fontWeight: 800,
+                    color: F.muted,
+                    letterSpacing: "0.13em",
+                    textTransform: "uppercase",
+                    marginBottom: 3,
+                  }}
+                >
+                  Client campaigns
+                </div>
+
+                <div
+                  style={{
+                    fontFamily: T.display,
+                    fontStyle: "italic",
+                    fontSize: 17,
+                    color: F.ink,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {client.name}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: "50%",
+                  border: `1px solid ${F.hairline}`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: F.muted,
+                  fontSize: 14,
+                  flexShrink: 0,
+                }}
+              >
+                ↗
+              </div>
             </div>
 
-            <div style={{ flex: 1, overflowY: "auto", padding: "8px 12px 10px", textAlign: "left" }}>
+            {/* CAMPAIGNS */}
+            <div
+              style={{
+                flex: 1,
+                overflowY: "auto",
+                padding: "7px 14px 10px",
+              }}
+            >
               {campaigns.length === 0 ? (
-                <div style={{
-                  height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-                  fontFamily: T.ui, fontSize: 11, color: F.muted, fontStyle: "italic", textAlign: "center",
-                }}>
-                  No campaigns on the books yet
-                </div>
-              ) : campaigns.map((c) => (
-                <div key={c.id} style={{ padding: "6px 0", borderBottom: `1px solid ${F.hairline}` }}>
-                  <div style={{
-                    fontFamily: T.ui, fontSize: 11.5, fontWeight: 600, color: F.ink,
-                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                  }}>{c.name}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
-                    <span style={{ fontFamily: T.ui, fontSize: 9.5, color: F.muted, flexShrink: 0 }}>{c.stage}</span>
-                    <span style={{ flex: 1, height: 3, borderRadius: 2, background: F.hairline, overflow: "hidden" }}>
-                      <span style={{ display: "block", height: "100%", width: `${c.progress}%`, background: c.live ? F.forest : F.gold }} />
-                    </span>
-                    <span style={{ fontFamily: T.ui, fontSize: 9.5, fontWeight: 700, color: F.inkSoft, flexShrink: 0 }}>{c.progress}%</span>
+                <div
+                  style={{
+                    height: "100%",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    fontFamily: T.ui,
+                    color: F.muted,
+                    textAlign: "center",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 20,
+                      opacity: 0.45,
+                    }}
+                  >
+                    ○
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontStyle: "italic",
+                    }}
+                  >
+                    No campaigns yet
                   </div>
                 </div>
-              ))}
+              ) : (
+                campaigns.map((c, i) => (
+                  <motion.div
+                    key={c.id || i}
+                    whileHover={{
+                      x: 3,
+                    }}
+                    transition={{
+                      duration: 0.2,
+                    }}
+                    style={{
+                      padding: "8px 0",
+                      borderBottom:
+                        i < campaigns.length - 1
+                          ? `1px solid ${F.hairline}`
+                          : "none",
+                    }}
+                  >
+                    {/* CAMPAIGN NAME */}
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontFamily: T.ui,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: F.ink,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {c.name}
+                      </div>
+
+                      <span
+                        style={{
+                          fontFamily: T.ui,
+                          fontSize: 8.5,
+                          fontWeight: 700,
+                          color: c.live
+                            ? F.forest
+                            : F.muted,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {c.live ? "LIVE" : c.stage}
+                      </span>
+                    </div>
+
+                    {/* PROGRESS */}
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        marginTop: 7,
+                      }}
+                    >
+                      <div
+                        style={{
+                          flex: 1,
+                          height: 4,
+                          borderRadius: 10,
+                          background: F.hairline,
+                          overflow: "hidden",
+                        }}
+                      >
+                        <motion.div
+                          initial={
+                            reduce
+                              ? false
+                              : { width: 0 }
+                          }
+                          animate={{
+                            width: `${c.progress || 0}%`,
+                          }}
+                          transition={{
+                            duration: 0.7,
+                            delay: i * 0.04,
+                          }}
+                          style={{
+                            height: "100%",
+                            borderRadius: 10,
+                            background: c.live
+                              ? F.forest
+                              : F.gold,
+                          }}
+                        />
+                      </div>
+
+                      <span
+                        style={{
+                          fontFamily: T.ui,
+                          fontSize: 9,
+                          fontWeight: 800,
+                          color: F.inkSoft,
+                          minWidth: 28,
+                          textAlign: "right",
+                        }}
+                      >
+                        {c.progress || 0}%
+                      </span>
+                    </div>
+                  </motion.div>
+                ))
+              )}
+            </div>
+
+            {/* BACK FOOTER */}
+            <div
+              style={{
+                padding: "8px 14px",
+                borderTop: `1px solid ${F.hairline}`,
+                fontFamily: T.ui,
+                fontSize: 8.5,
+                color: F.muted,
+                letterSpacing: "0.04em",
+                display: "flex",
+                justifyContent: "space-between",
+                flexShrink: 0,
+              }}
+            >
+              <span>
+                {campaignCount} total
+              </span>
+
+              <span>
+                Click to return ↗
+              </span>
             </div>
           </div>
+
         </motion.div>
       </div>
     </Reveal>
@@ -1994,18 +2486,51 @@ export default function FounderSummary() {
       // and false claim. They stay whole, and the sections that read them stay
       // agency-wide on purpose.
       const forBrand = (rows) => brandFilter ? rows.filter(r => r?.brandId === brandFilter) : rows;
-      setData(
-        buildSummary(
-          {
-            campaigns: forBrand(campaigns),
-            clients:   brandFilter ? clients.filter(c => (c.id || c._id) === brandFilter) : clients,
-            invoices:  forBrand(invoices),
-            quotes:    forBrand(quotes),
-            users, creators, clientRequests, creatorRequests,
-          },
-          F,
-        ),
+      const summary = buildSummary(
+        {
+          campaigns: forBrand(campaigns),
+          clients: brandFilter
+            ? clients.filter(c => (c.id || c._id) === brandFilter)
+            : clients,
+          invoices: forBrand(invoices),
+          quotes: forBrand(quotes),
+          users,
+          creators,
+          clientRequests,
+          creatorRequests,
+        },
+        F,
       );
+
+      const rawClients = brandFilter
+        ? clients.filter(c => (c.id || c._id) === brandFilter)
+        : clients;
+
+      const clientById = new Map(
+        rawClients.map((c) => [String(c.id || c._id), c])
+      );
+
+      const clientNamesWithAvatars = (summary.clients?.names || []).map((client) => {
+        const raw = clientById.get(String(client.id || client._id));
+
+        return {
+          ...client,
+
+          // Preserve the avatar fields that ClientsAPI.avatarUrl()
+          // needs to build the actual image URL.
+          hasAvatar: raw?.hasAvatar ?? client.hasAvatar ?? false,
+          avatarUpdatedAt:
+            raw?.avatarUpdatedAt ?? client.avatarUpdatedAt ?? null,
+        };
+      });
+
+      setData({
+        ...summary,
+        clients: {
+          ...summary.clients,
+          names: clientNamesWithAvatars,
+        },
+      });
     });
 
     return () => { live = false; };

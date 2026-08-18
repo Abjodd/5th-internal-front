@@ -131,18 +131,10 @@ function stagesFrom(campaigns) {
    client, so that is what the constellation reports instead — engagement, not
    health, and labelled as such. */
 function clientsFrom(clients, campaigns) {
-  const activeByClient = new Map();
-  for (const c of (campaigns || []).filter(isActive)) {
-    for (const key of [c.brandId, c.client]) {
-      if (key) activeByClient.set(key, (activeByClient.get(key) || 0) + 1);
-    }
-  }
-
-  // The campaigns themselves, per client — what the Portfolio card shows on its
-  // reverse. Matched on brandId OR the denormalized `client` display name,
-  // exactly like the active count above: campaigns predating brandId carry only
-  // the name, and dropping them would under-report a client's book on the card
-  // while still counting them in the badge on its front.
+  // The campaigns themselves, per client — the list on the Portfolio card's
+  // reverse, and the source of the count on its front. Matched on brandId OR
+  // the denormalized `client` display name: campaigns predating brandId carry
+  // only the name, and dropping them would under-report a client's book.
   const campaignsByClient = new Map();
   for (const c of campaigns || []) {
     for (const key of [c.brandId, c.client]) {
@@ -153,10 +145,14 @@ function clientsFrom(clients, campaigns) {
   }
 
   const names = (clients || []).map((c) => {
-    const activeCampaigns = activeByClient.get(c.id) ?? activeByClient.get(c.name) ?? 0;
     // ?? not ||, and id before name: a client whose id matched an EMPTY list
     // must not fall through to a same-named bucket.
     const own = campaignsByClient.get(c.id) ?? campaignsByClient.get(c.name) ?? [];
+    // Counted off `own`, not a bucket of its own. A parallel activeByClient map
+    // used to hold this — same campaigns, same id-then-name fallback, resolved
+    // separately — so the two could land on different buckets and the badge on
+    // a card's front could contradict the list on its back.
+    const activeCampaigns = own.filter(isActive).length;
     return {
       id: c.id,
       name: c.name,

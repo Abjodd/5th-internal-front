@@ -1435,7 +1435,7 @@ const CampCard = forwardRef(function CampCard(
       ref={ref}
       initial={{ opacity: 0, y: 14, scale: 0.97 }}
       animate={{
-        opacity: done ? 0.72 : 1,
+        opacity: 1,
         y: 0,
         scale: 1,
       }}
@@ -1446,7 +1446,6 @@ const CampCard = forwardRef(function CampCard(
       }}
       whileHover={{
         y: -6,
-        opacity: 1,
         boxShadow:
           "0 24px 55px rgba(0,0,0,0.16), 0 4px 14px rgba(0,0,0,0.08)",
       }}
@@ -1527,7 +1526,7 @@ const CampCard = forwardRef(function CampCard(
               position: "absolute",
               inset: 0,
               background:
-                "linear-gradient(105deg, rgba(10,11,14,0.97) 0%, rgba(10,11,14,0.88) 38%, rgba(10,11,14,0.52) 72%, rgba(10,11,14,0.30) 100%)",
+                "linear-gradient(105deg, rgba(25,28,36,0.82) 0%, rgba(25,28,36,0.72) 38%, rgba(25,28,36,0.40) 72%, rgba(25,28,36,0.19) 100%)",
               pointerEvents: "none",
               zIndex: 1,
             }}
@@ -1543,7 +1542,7 @@ const CampCard = forwardRef(function CampCard(
               bottom: 0,
               height: "58%",
               background:
-                "linear-gradient(transparent, rgba(10,11,14,0.96))",
+                "linear-gradient(transparent, rgba(25,28,36,0.82))",
               pointerEvents: "none",
               zIndex: 1,
             }}
@@ -1570,6 +1569,25 @@ const CampCard = forwardRef(function CampCard(
             filter: "blur(55px)",
             pointerEvents: "none",
             zIndex: 1,
+          }}
+        />
+      )}
+
+      {/* =========================================================
+          FINISHED — SETTLED, NOT FOGGED
+      =========================================================
+      Ended or fully paid campaigns recede so the board reads as "here is
+      what's live, and here is what's behind it".
+       */}
+      {done && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(10,11,14,0.34)",
+            pointerEvents: "none",
+            zIndex: 4,
           }}
         />
       )}

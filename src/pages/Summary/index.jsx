@@ -104,6 +104,7 @@ import {
   QuotesAPI, ClientRequestsAPI, CreatorRequestsAPI,
 } from "../../lib/api";
 import { buildSummary } from "../../lib/summaryMetrics";
+import { useBrandAccent } from "../../lib/brandAccent";
 import { DARK_SURFACE } from "../../theme/tokens";
 
 
@@ -4016,6 +4017,9 @@ function CampaignFlow({ stages = [] }) {
  * initials when there is none or the image fails.
  */
 const FLIP_S = 0.55; // turn duration; faces cross-cut at half of it
+// Symmetric on purpose. The face swap fires at FLIP_S/2, so half the DURATION
+// must be half the ROTATION.
+const FLIP_EASE = [0.65, 0, 0.35, 1];
 
 function ClientCard({ client, delay = 0 }) {
   const [flipped, setFlipped] = useState(false);
@@ -4026,9 +4030,19 @@ function ClientCard({ client, delay = 0 }) {
   const campaigns = client.campaigns || [];
   const logoUrl = ClientsAPI.avatarUrl(client);
   const showLogo = Boolean(logoUrl) && !logoBroken;
+  // Same hook the Campaigns tiles use, so a brand's colour 
+  // is identical on both boards.
+  const accent = useBrandAccent(showLogo ? logoUrl : null);
 
   const campaignCount = campaigns.length;
+  // Counted off this same list upstream (summaryMetrics), so the front badge and
+  // the back's live/idle split can't disagree.
   const activeCount = client.activeCampaigns ?? 0;
+  // Mean completion across the book — the one number that says "how far along
+  // is this client" without reading every row.
+  const meanProgress = campaignCount
+    ? Math.round(campaigns.reduce((s, c) => s + (c.progress || 0), 0) / campaignCount)
+    : null;
 
   const toggle = () => setFlipped((f) => !f);
 
@@ -4036,7 +4050,7 @@ function ClientCard({ client, delay = 0 }) {
   // `backdrop-filter` on a face flattens the 3D context (preserve-3d → flat),
   // which kills backface culling and prints the front through the back,
   // mirrored. Filters are gone, but this keeps the card immune to the next one.
-  // Cut lands mid-turn, card edge-on, so the swap is invisible.
+  // Cut lands at FLIP_S/2 — edge-on only because FLIP_EASE is symmetric.
   const faceAnim = (isBack) => ({
     animate: {
       opacity: flipped === isBack ? 1 : 0,
@@ -4083,7 +4097,7 @@ function ClientCard({ client, delay = 0 }) {
           transition={
             reduce
               ? { duration: 0 }
-              : { duration: FLIP_S, ease: EASE }
+              : { duration: FLIP_S, ease: FLIP_EASE }
           }
           whileHover={!reduce ? { y: -5 } : undefined}
           style={{
@@ -4108,7 +4122,20 @@ function ClientCard({ client, delay = 0 }) {
             }}
           >
 
-            {/* BACKGROUND IMAGE */}
+            {/* BACKGROUND IMAGE — shape, deliberately not colour.
+                It used to sit at 0.48, barely scrimmed, so the tile's colour
+                was whatever the logo's BACKGROUND happened to be: Adidas (white
+                plate) washed out and took the white title with it, Nike (black
+                mark, no plate) vanished, Pronto went green — three materials
+                for three uploads.
+
+                `grayscale(1)` is the rule, not a taste call: it strips the
+                plate's hue entirely, so the only thing a logo can contribute
+                here is light and dark. Colour comes from `accent` below, which
+                is SAMPLED from the mark rather than smeared from the file, so
+                a brand looks the same whether its logo shipped on white,
+                transparent or its own colour. `brightness` caps how far a white
+                plate can lift the tile. */}
             {showLogo && (
               <img
                 src={logoUrl}
@@ -4121,16 +4148,44 @@ function ClientCard({ client, delay = 0 }) {
                   height: "100%",
                   objectFit: "cover",
                   objectPosition: "center",
-                  opacity: 0.48,
+                  opacity: 0.3,
                   // Plain `filter` is safe inside preserve-3d; `backdrop-filter`
                   // is not — the blur it used to do is folded in here.
-                  filter: "grayscale(15%) blur(0.4px)",
-                  transform: "scale(1.06)",
+                  filter: "grayscale(1) brightness(0.75) blur(2px)",
+                  transform: "scale(1.1)",
                 }}
               />
             )}
 
-            {/* CINEMATIC GRADIENT */}
+            {/* BRAND GLOW — now the ONLY colour a logo can put on this tile,
+                so it carries more weight than when the wash was also tinting.
+                Two lobes rather than one: a single corner blob read as a
+                lighting artefact, a diagonal reads as the tile's material.
+                Null for a greyscale logo (Nike, Adidas), which is the point —
+                an uncoloured tile means "this brand has no colour to give",
+                not "the sampler failed". Gradients rather than a blurred
+                circle: no `filter` inside the 3D context, and cheaper. */}
+            {accent && (
+              <div
+                aria-hidden="true"
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  background: `
+                    radial-gradient(150px 130px at 84% 4%, ${accent}, transparent 72%),
+                    radial-gradient(190px 150px at 8% 104%, ${accent}, transparent 76%)
+                  `,
+                  opacity: 0.42,
+                }}
+              />
+            )}
+
+            {/* CINEMATIC GRADIENT — the tile's floor, weighted to the bottom.
+                Only the lower half carries text (name + meta over white), so
+                that end stays near-opaque; the top only holds the logo chip and
+                the status pill, both of which paint their own background, so it
+                can run much lighter without costing legibility. Its job is to
+                stop a white-plate logo washing the tile out, not to black it. */}
             <div
               style={{
                 position: "absolute",
@@ -4138,10 +4193,10 @@ function ClientCard({ client, delay = 0 }) {
                 background: `
                   linear-gradient(
                     180deg,
-                    rgba(15,16,20,0.08) 0%,
-                    rgba(15,16,20,0.18) 30%,
-                    rgba(15,16,20,0.72) 70%,
-                    rgba(15,16,20,0.97) 100%
+                    rgba(22,24,30,0.40) 0%,
+                    rgba(22,24,30,0.48) 30%,
+                    rgba(22,24,30,0.80) 70%,
+                    rgba(22,24,30,0.96) 100%
                   )
                 `,
               }}
@@ -4371,7 +4426,10 @@ function ClientCard({ client, delay = 0 }) {
             style={{
               ...face,
               rotateY: 180, // motion style value, not a raw transform string
-              background: F.paper,
+              // White body between two paper bands — the same three-band split
+              // the front reads as, so the card keeps its structure through the
+              // turn instead of becoming one flat sheet.
+              background: F.surface,
               boxShadow:
                 "0 18px 45px rgba(20,21,26,0.08)",
               display: "flex",
@@ -4382,7 +4440,8 @@ function ClientCard({ client, delay = 0 }) {
             {/* BACK HEADER */}
             <div
               style={{
-                padding: "14px 16px",
+                padding: "12px 14px",
+                background: F.paper,
                 borderBottom: `1px solid ${F.hairline}`,
                 display: "flex",
                 alignItems: "center",
@@ -4426,20 +4485,28 @@ function ClientCard({ client, delay = 0 }) {
               </div>
 
               <div
-                style={{
-                  width: 30,
-                  height: 30,
-                  borderRadius: "50%",
-                  border: `1px solid ${F.hairline}`,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: F.muted,
-                  fontSize: 14,
-                  flexShrink: 0,
-                }}
+                title={`${meanProgress ?? 0}% mean completion across ${campaignCount} campaign${campaignCount === 1 ? "" : "s"}`}
+                style={{ position: "relative", flexShrink: 0, display: "grid", placeItems: "center" }}
               >
-                ↗
+                <UtilizationRing
+                  pct={meanProgress ?? 0}
+                  color={activeCount ? F.forest : F.muted}
+                  size={38}
+                  stroke={3}
+                />
+                <span
+                  style={{
+                    position: "absolute",
+                    fontFamily: T.ui,
+                    fontSize: 9.5,
+                    fontWeight: 800,
+                    color: F.inkSoft,
+                    letterSpacing: "-0.02em",
+                  }}
+                >
+                  {meanProgress ?? 0}
+                  <span style={{ fontSize: 6.5, color: F.muted }}>%</span>
+                </span>
               </div>
             </div>
 
@@ -4449,6 +4516,9 @@ function ClientCard({ client, delay = 0 }) {
                 flex: 1,
                 overflowY: "auto",
                 padding: "7px 14px 10px",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: campaignCount <= 2 ? "center" : "flex-start",
               }}
             >
               {campaigns.length === 0 ? (
@@ -4495,6 +4565,7 @@ function ClientCard({ client, delay = 0 }) {
                     }}
                     style={{
                       padding: "8px 0",
+                      flexShrink: 0, // flex column parent: don't squash rows when the list scrolls
                       borderBottom:
                         i < campaigns.length - 1
                           ? `1px solid ${F.hairline}`
@@ -4602,18 +4673,26 @@ function ClientCard({ client, delay = 0 }) {
             <div
               style={{
                 padding: "8px 14px",
+                background: F.paper,
                 borderTop: `1px solid ${F.hairline}`,
                 fontFamily: T.ui,
                 fontSize: 8.5,
                 color: F.muted,
                 letterSpacing: "0.04em",
                 display: "flex",
+                alignItems: "center",
                 justifyContent: "space-between",
+                gap: 8,
                 flexShrink: 0,
               }}
             >
-              <span>
-                {campaignCount} total
+              {/* "N total" only repeated the front. The live/idle split is the
+                  thing the rows above make you count by hand. */}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: activeCount ? F.forest : F.hairlineStrong }} />
+                <span style={{ color: F.inkSoft, fontWeight: 700 }}>{activeCount} live</span>
+                <span>·</span>
+                <span>{campaignCount - activeCount} idle</span>
               </span>
 
               <span>

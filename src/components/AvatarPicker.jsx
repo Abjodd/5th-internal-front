@@ -1,17 +1,14 @@
 /**
  * AvatarPicker — the one control for setting a profile photo.
  *
- * Used by the Auth page's add/edit modals (internal users and brand portal
- * credentials) and the Profile page, so the 2MB rule, the compression step and
- * the "what does an empty avatar look like" answer are all decided once.
+ * Used by the Auth page's modals and the Profile page, so the 2MB rule, the
+ * compression step and the empty-state answer are decided once.
  *
- * ── The three-state value contract ───────────────────────────────────────────
- * `value` mirrors what the backend's PATCH expects, and the distinction is
- * load-bearing (see withAvatar in routes/auth.js):
+ * THE THREE-STATE VALUE CONTRACT mirrors what the backend's PATCH expects, and
+ * the distinction is load-bearing (see withAvatar in routes/auth.js):
  *
- *   undefined  — untouched. The caller must OMIT avatarImage from the patch, so
- *                an edit that never opened this control keeps the photo.
- *   null       — the user pressed Remove. Send null to clear it.
+ *   undefined  — untouched. OMIT avatarImage from the patch.
+ *   null       — the user pressed Remove. Send null to clear.
  *   data URI   — a new photo. Send it.
  *
  * Collapsing "untouched" and "removed" into one falsy value is what would make

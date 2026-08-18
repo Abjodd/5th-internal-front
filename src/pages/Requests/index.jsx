@@ -3,17 +3,16 @@
  * ─────────────────────────────────────────────────────────────────
  * Every inbound submission from the public landing pages, in one place:
  *
- *   Client Requests   brand signups from "Start a project"      → /api/client-requests
- *   Creator Requests  applications from "Apply as a creator"    → /api/creator-requests
- *   Career Requests   job applications from the Careers page    → /api/career-requests
+ *   Client Requests   brand signups from "Start a project"   → /api/client-requests
+ *   Creator Requests  "Apply as a creator" applications      → /api/creator-requests
+ *   Career Requests   job applications from Careers          → /api/career-requests
  *
- * Creator applications used to sit as a second tab inside the Creators
- * directory, which put the same kind of work — triaging an inbound lead — in
- * two unrelated sections. The directory is now purely the roster of creators
- * we work with; anything still awaiting a decision lives here.
+ * Creator applications used to be a tab inside the Creators directory, which put
+ * the same work — triaging an inbound lead — in two unrelated sections. The
+ * directory is now purely the roster; anything awaiting a decision lives here.
  *
- * This file owns only the page chrome: header, search, tab strip and the
- * shared toast. Each tab's data, mutations and modals stay in its own panel.
+ * This file owns only the page chrome. Each tab's data and modals stay in its
+ * own panel.
  */
 import { useState, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";

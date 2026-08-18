@@ -1,18 +1,15 @@
 /**
- * How complete an internal user's profile is, and what is missing from it.
+ * How complete an internal user's profile is, and what is missing.
  *
- * Mirrors the client portal's lib/profileCompletion so both products score the
- * same idea the same way — see that file for why system-assigned values
- * (account id, created-at) are deliberately excluded from the count.
+ * Mirrors the client portal's lib/profileCompletion so both score the same idea
+ * the same way — see there for why system-assigned values are excluded.
  *
- * `role` is excluded for the same reason: it is the access-control key, so a
- * user who can sign in always has one. Counting a field that is never empty
- * just adds a free point to everybody's score.
+ * `role` is excluded: it is the access-control key, so anyone who can sign in
+ * has one, and counting a never-empty field gives everybody a free point.
  *
- * `teamId` IS counted despite not being self-serve, because a missing one is
- * genuinely consequential rather than cosmetic — it is the id campaigns store
- * in amId/cmId/eaId, so a user without one owns nothing and shows up nowhere.
- * Surfacing that on their own profile is how it gets noticed.
+ * `teamId` IS counted despite not being self-serve — it is what campaigns store
+ * in amId/cmId/eaId, so a user without one owns nothing and appears nowhere.
+ * Their own profile is where that gets noticed.
  */
 
 const filled = (v) => v != null && String(v).trim() !== "";

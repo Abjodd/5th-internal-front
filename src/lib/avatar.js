@@ -1,23 +1,13 @@
-// Profile-photo handling, shared by every screen that can set one (the Auth
-// page's add/edit modals and the Profile page).
+// Profile-photo handling, shared by the Auth page's modals and the Profile page.
 //
-// ── Why the image is compressed before it is uploaded ────────────────────────
-// A profile photo is rendered as a 24-40px ICON — in the app shell's user chip,
-// the Auth table, campaign rosters, the Summary's team grid. Nothing on any
-// screen displays it larger than about 90px. Uploading the original file would
-// mean storing (and re-serving) a few megabytes to draw a circle the size of a
-// fingernail.
+// The photo renders as a 24-40px icon and never above ~90px, so the browser
+// centre-crops to a square, downscales to 256px and re-encodes as JPEG before
+// upload: a 4MB phone photo becomes ~20-30KB, small enough to live inline on the
+// user document — which is what lets this ship without a new collection.
 //
-// So the browser does the work: the image is centre-cropped to a square,
-// downscaled to 256px and re-encoded as JPEG. A 4MB phone photo becomes ~20-30KB
-// — small enough to live inline on the user document, which is what lets this
-// ship without a new collection or a file store.
-//
-// The 2MB limit is checked against the ORIGINAL file, before any of that, so the
-// user gets an immediate, honest error about the file they actually picked
-// rather than a silent success on something the server would refuse. The backend
-// enforces the same 2MB cap on the decoded bytes independently — this check is
-// for the error message, not for security (see routes/auth.js parseAvatar).
+// The 2MB limit is checked against the ORIGINAL file so the error names the file
+// the user actually picked. The backend enforces the same cap on decoded bytes
+// independently; this check is for the message, not for security.
 
 export const MAX_AVATAR_BYTES = 2 * 1024 * 1024; // 2MB — matches the backend
 export const AVATAR_ACCEPT = "image/png,image/jpeg,image/webp";

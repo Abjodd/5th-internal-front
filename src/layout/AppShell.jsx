@@ -35,31 +35,20 @@ const F = {
 };
 
 // ── Liquid-glass pill system ──────────────────────────────────────
-// The nav is NOT one bar — it's several independent floating pills
-// (logo · brand filter · section tabs · search+user) with visible
-// transparent gaps between them, each its own pane of glass. That's
-// what makes it read as "not a navbar": no single container ties
-// them together, they just happen to float in a row.
+// The nav is NOT one bar — it's several independent floating pills (logo ·
+// brand filter · section tabs · search+user) with transparent gaps between
+// them. No container ties them together; they just float in a row.
 //
-// "Liquid glass" tuning: fill opacity is kept very low so page
-// content genuinely shows through, the blur carries all the
-// legibility work, and a bright inner top-edge + soft outer edge
-// stand in for a specular highlight, the way real glass catches light.
+// Fill opacity stays very low so page content shows through and the blur does
+// the legibility work; a bright inner top-edge stands in for a specular
+// highlight.
 //
-// ── Why there are two materials ───────────────────────────────────
-// A 10%-opaque white pane cannot carry its own contrast: whatever is
-// behind it sets its brightness. Over the paper background that's
-// fine, but the Founder Summary scrolls full-bleed near-black
-// sections (hero, Agency Health, the photo interludes, the footer)
-// under the nav — the glass went dark while the ink stayed #14151A,
-// and the wordmark, the tab labels and the user's role all vanished.
-// That is the "navbar colour disappears when I scroll" bug.
-//
-// Raising the fill opacity until dark ink survives a black backdrop
-// needs ~0.85 alpha, which throws the material away. So instead the
-// material INVERTS: over dark backdrops the pills become smoked
-// glass with light ink. Both variants stay genuinely transparent —
-// only which side of the contrast they sit on changes.
+// TWO MATERIALS, because a 10%-opaque white pane can't carry its own contrast
+// — whatever is behind it sets its brightness. Over the Summary's full-bleed
+// dark sections the glass went dark while the ink stayed #14151A and the
+// labels vanished. Raising fill until dark ink survives black needs ~0.85
+// alpha, which throws the material away, so it INVERTS instead: smoked glass
+// with light ink. Both stay transparent; only the side of the contrast changes.
 const GLASS_LIGHT = {
   fill: "rgba(255,255,255,0.10)",
   fillScrolled: "rgba(255,255,255,0.20)",

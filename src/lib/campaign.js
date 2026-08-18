@@ -4,23 +4,18 @@
 //   Draft → Brief Locked ─┬─ Team Assigned → Execution → Creator Payment
 //                         └─ PO Raised → Advance Received → Invoice Raised → Payment Done
 //
-// Only the first two nodes are COMMON. Nothing at all can happen until the
-// brief is written and signed off, so both tracks share those — and only
-// those. Team assignment sits on the EXECUTION branch, not in the common head:
-// staffing the campaign is what unblocks the work, and it has no bearing on
-// whether the client's PO can be recorded.
+// Only the first two nodes are COMMON — nothing happens until the brief is
+// signed off. Team assignment sits on the EXECUTION branch: staffing unblocks
+// the work and has no bearing on whether the client's PO can be recorded.
 //
 // Only the FINANCE track is stored (`campaign.stage`). It moves on documents
-// that exist outside this app — the client's PO, their bank transfer — so
-// nothing here can derive it; somebody has to say it happened. `team_assigned`
-// is on that stored track too (it is the stage between the lock and the PO),
-// but it is DRAWN on the execution rail, because that is the branch it gates.
+// outside this app — the client's PO, their bank transfer — so nothing here can
+// derive it. `team_assigned` is stored too (it sits between lock and PO) but is
+// DRAWN on the execution rail, because that is the branch it gates.
 //
-// The EXECUTION track is otherwise DERIVED on every read (executionStageOf)
-// from the roster and the deliverables, and is never stored. The two were one
-// linear stage before, which is what made a campaign waiting on a client's
-// advance indistinguishable from one whose creators hadn't started: a single
-// rail cannot say "the money is late but the work is fine".
+// The EXECUTION track is DERIVED on every read (executionStageOf) and never
+// stored. One linear stage made "the money is late but the work is fine"
+// impossible to say.
 //
 // `p` is the progress % a campaign reads on entering a stored stage.
 export const COMMON_STAGES = [
@@ -65,13 +60,12 @@ const OLD_16_TO_7 = {
   creator_paid:      "execution",
 };
 // `brief_log` meant "team staffed, brief still being written". The brief now
-// locks BEFORE the team is assigned, so those campaigns land back on `draft`:
-// the lock is genuinely still owed, and the team they already have carries
-// them straight through the next node the moment it lands.
+// locks BEFORE the team is assigned, so those land back on `draft` — the lock is
+// genuinely still owed, and the team they have carries them straight through.
 //
-// `execution` and `reporting` both meant "the client's advance is in and we're
-// delivering" — on the finance track that is exactly `advance_received`, and
-// how far the delivery itself got is re-derived from the creators either way.
+// `execution` and `reporting` both meant "advance in, delivering" — on the
+// finance track that is `advance_received`, and delivery progress is re-derived
+// from the creators either way.
 const OLD_7_TO_FORK = {
   draft:     "draft",
   brief_log: "draft",
@@ -94,16 +88,13 @@ export const normStage = s => PL_IDS.includes(s) ? s : (LEGACY_STAGE[s] || "draf
 export const stageLabel = s => (PIPELINE.find(p => p.id === normStage(s)) || PIPELINE[0]).label;
 export const stageIdx   = s => PL_IDS.indexOf(normStage(s));
 
-// Campaign money + creator-shape helpers shared by the pages that read a
-// campaign: Campaigns (owns the record) and Billing (derives the P&L and the
-// payee registry from it).
+// Campaign money + creator-shape helpers shared by Campaigns (owns the record)
+// and Billing (derives the P&L and payee registry from it).
 //
-// These live here rather than in either page because both pages have to agree
-// on them. They previously did not: the 60% creator-budget fallback was written
-// out twice, once in each file, so a change to one would have quietly put the
-// campaign's Financials tab and Billing's Campaign P&L back into disagreement —
-// exactly the class of bug that motivated deriving these numbers in the first
-// place.
+// Here rather than in either page because both must agree. They previously did
+// not: the 60% creator-budget fallback was written out in both files, so a
+// change to one silently put the Financials tab and the Campaign P&L back into
+// disagreement — the exact bug that motivated deriving these at all.
 
 // Creator budget — the slice of the total budget that pays creators. It's set
 // explicitly on the Commercial step of the New Campaign wizard; campaigns
@@ -114,15 +105,13 @@ export const creatorBudgetOf = c => c?.creatorBudget || Math.round((c?.budget ||
 export const numReqOf = c => c?.numReq || 5;
 
 // ── DELIVERABLES PLANNING ────────────────────────────────────────────────────
-// Two numbers describe the scope of a campaign: how many creators, and how many
-// posts each one owes. `deliverablesPerCreator` is the PLAN — the default a
-// creator is briefed with — not a constraint, because rosters are never uniform:
-// a campaign of five creators where one hero creator does two reels and the rest
-// do one is normal, and a single campaign-wide multiplier can't express it.
+// `deliverablesPerCreator` is the PLAN — the default a creator is briefed with —
+// not a constraint. Rosters are never uniform: five creators where one hero does
+// two reels and the rest do one is normal, and a campaign-wide multiplier can't
+// express it.
 //
-// So each creator carries an optional `numDeliverables` that overrides the plan
-// for that row only. Nothing has to be set for the common case (everyone does
-// the same count); the override exists for the row that differs.
+// Each creator carries an optional `numDeliverables` overriding the plan for
+// that row only. Nothing to set for the common case.
 export const perCreatorDelivOf = c => Number(c?.deliverablesPerCreator) || 1;
 
 // What THIS creator owes — their own override, else the campaign plan.
@@ -141,15 +130,12 @@ export function totalDelivOf(camp) {
 }
 
 // ── LIVE LINKS ───────────────────────────────────────────────────────────────
-// A creator posts one link per deliverable, so `live` holds an ARRAY. It was a
-// single `postUrl` string, which meant a creator doing two reels had nowhere to
-// record the second — the campaign was only ever half-tracked.
+// One link per deliverable, so `live` holds an ARRAY. It was a single `postUrl`,
+// so a creator doing two reels had nowhere to record the second.
 //
-// `postUrl` is still written as the first link and is NOT dead: the client
-// portal reads `cr.live?.postUrl` directly (mapping.js, Overview.jsx,
-// DetailPanel.jsx in 5th-avenue-client-front). Keeping it mirrored means the
-// portal renders unchanged against the new shape and can be migrated on its own
-// schedule instead of having to ship in lockstep with this.
+// `postUrl` is still written as the first link and is NOT dead — the client
+// portal reads `cr.live?.postUrl` directly. Mirroring it means the portal
+// renders unchanged and can migrate on its own schedule.
 export const liveLinksOf = cr => {
   const live = cr?.live;
   if (!live) return [];
@@ -172,18 +158,15 @@ export const withLiveLinks = (live, urls) => {
 export const trackedPostsOf = cr => Number(cr?.tracking?.postsCounted) || 0;
 
 // Posts actually up. A link is a CLAIM; tracking data is the proof, so a
-// deliverable only counts once metrics have come back for it. Pasting a URL
-// used to be enough, which meant a typo ("hi.com") read as a delivered post —
-// and, because this number feeds execStats, it marked the creator live, the
-// campaign's Execution donut complete, and the whole delivery track finished
-// against a link that resolves to nothing.
+// deliverable counts only once metrics come back. Pasting a URL used to be
+// enough, so a typo ("hi.com") marked the creator live and the whole delivery
+// track complete against a link that resolves to nothing.
 //
-// Three-way min, and each bound is load-bearing:
-//   tracked — the proof, and the new gate
-//   links   — `postsCounted` isn't decremented when a link is deleted, so a
-//             creator who posted twice and removed one would still read 2
-//   target  — a creator who posted three against a target of two is 100%
-//             done, not 150%
+// Three-way min, each bound load-bearing:
+//   tracked — the proof, and the gate
+//   links   — postsCounted isn't decremented on delete, so a creator who posted
+//             twice and removed one would still read 2
+//   target  — three posts against a target of two is 100%, not 150%
 export const delivDoneOf = (camp, cr) =>
   Math.min(trackedPostsOf(cr), liveLinksOf(cr).length, delivTargetOf(camp, cr));
 
@@ -193,12 +176,10 @@ export const perCreatorOf = c => Math.round(creatorBudgetOf(c) / numReqOf(c));
 
 // What we pay a creator for this campaign.
 //
-// The field is `cost`. It was `fee`, and was also mirrored into an unread
-// `negotiatedCost`. scrap/migrate_creator_fee_to_cost.js renames it on every
-// campaign document, but a read-side fallback is kept deliberately: it means
-// the frontend can be deployed before the migration is run (or against an
-// environment where it never was) without invoices rendering ₹0 and creator
-// expenses posting an amount of zero. `??` not `||`, so a negotiated 0 survives.
+// The field is `cost` (was `fee`, also mirrored into an unread
+// `negotiatedCost`). The read-side fallback is deliberate: the frontend can ship
+// before the migration runs, or against an environment where it never did,
+// without invoices rendering ₹0. `??` not `||`, so a negotiated 0 survives.
 export const costOf = cr => cr?.cost ?? cr?.fee ?? cr?.negotiatedCost ?? 0;
 
 // Normalises a creator entry read from the API onto the current field names.
@@ -242,22 +223,16 @@ const HANDLE_RE = /^[A-Za-z0-9._-]{1,50}$/;
 
 // Public profile link for a creator's handle, or null when one can't be built.
 //
-// Returning null matters: a handle with no derivable profile stays plain text
-// rather than becoming a link that 404s — and, more importantly, rather than
+// Null matters: a handle with no derivable profile stays plain text rather than
 // rendering as accent-coloured "link" text that isn't clickable.
 //
 // `igUrl` is checked first and is NOT Instagram-only despite the name — the
-// YouTube lookup writes the channel URL into the same field, so whenever a
-// profile was auto-fetched that URL is the canonical one.
+// YouTube lookup writes its channel URL into the same field, so an auto-fetched
+// profile URL is always canonical. Handles are stored inconsistently with and
+// without a leading "@", so it's stripped either way.
 //
-// Handles are stored with a leading "@" ("@anjalikitchen") but not always
-// ("adidastestcr"), so the "@" is stripped before templating either way.
-//
-// Lives here rather than in the Campaigns page because a creator's handle is
-// rendered on five screens (campaign roster, suggestions, deliverables, the
-// creators directory, and the creator-applications inbox) — it was only ever a
-// link on one of them, so the same @handle was clickable in Deliverables and
-// dead text everywhere else.
+// Here rather than in Campaigns because a handle renders on five screens; it was
+// only ever a link on one of them.
 export const profileUrl = (cr) => {
   if (cr?.igUrl) return extUrl(cr.igUrl);
   const raw = String(cr?.handle || "").trim();
@@ -272,28 +247,23 @@ export const isLockedCreator = c => c?.status === "locked";
 export const expenseIdFor = (campId, crId) => `EXP-${campId}-${crId}`;
 
 // ── ROSTER GATE ──────────────────────────────────────────────────────────────
-// "The roster is confirmed." One definition, three consumers, which is the
-// whole reason it lives here:
-//   - the client is auto-sent the roster the moment it goes true,
-//   - the client PO can't be recorded until it is (the PO buys these creators
-//     at these fees; raised against an unconfirmed list its value is a guess,
-//     and anyone who then backs off means reissuing it),
-//   - and the Creators tab counts down to it.
-// It used to be one hand-written `lockedCount >= required` on a button.
+// "The roster is confirmed." One definition, three consumers — which is why it
+// lives here rather than as a hand-written `lockedCount >= required` on a button:
+//   - the client is auto-sent the roster when it goes true
+//   - the client PO can't be recorded until it is (a PO raised against an
+//     unconfirmed list is a guess, and a creator backing off means reissuing it)
+//   - the Creators tab counts down to it
 //
-// Locked is the only status that counts. Shortlisted, reached out and
-// negotiating all mean "we asked" — a name that hasn't agreed a fee is not
-// something anyone downstream can rely on.
+// Only `locked` counts. Shortlisted / reached out / negotiating all mean "we
+// asked", and a name that hasn't agreed a fee is not something to rely on.
 //
-// The count it's measured against is `numReq`, the plan. That plan is editable
-// on the Brief tab right up to the PO (see canEditScope in TabBrief), which is
-// what keeps this gate from being a trap: a team that planned five, locked four
-// and decided four is the roster changes the plan to four — deliberately, in
-// the field the client was quoted from — rather than being stuck, or being let
-// through by a rule that quietly stopped meaning anything.
+// Measured against `numReq`, the plan — which stays editable up to the PO (see
+// canEditScope). That's what keeps this from being a trap: a team that planned
+// five and locked four changes the plan, deliberately, in the field the client
+// was quoted from.
 //
-// `creators` is separable so a caller holding a roster it hasn't saved yet
-// (onUpdateCreators) can ask about the roster it is about to write.
+// `creators` is separable so a caller holding an unsaved roster can ask about
+// the one it is about to write.
 export const lockedCountOf = (camp, creators = camp?.creators) =>
   (creators || []).filter(isLockedCreator).length;
 export const rosterReady = (camp, creators = camp?.creators) =>
@@ -320,14 +290,12 @@ export function rosterGap(camp, creators = camp?.creators) {
 // invisible to someone who needs it.
 export const teamComplete = c => !!(c?.amId && c?.cmId && c?.eaId);
 
-// The stored stage is a second witness, and it has to be read too. `briefStatus`
-// only started being set to "signed_off" once the lock became a step of its
-// own; every campaign from before that carries whatever the old shortlisting
-// flow left there. Trusting the flag alone put those campaigns' execution track
-// back at Draft — no team, no creators, nothing live — while their finance track
-// sat at Advance Received, a stage only reachable by a campaign whose brief was
-// locked and whose PO was raised. A stage past `draft` is proof the lock
-// happened, whatever the flag says.
+// The stored stage is a second witness and has to be read too. `briefStatus`
+// only started being set to "signed_off" when the lock became its own step, so
+// older campaigns carry whatever the old flow left. Trusting the flag alone put
+// those campaigns' execution track back at Draft while their finance track sat
+// at Advance Received — a stage only reachable with a locked brief. A stage past
+// `draft` is proof the lock happened, whatever the flag says.
 export const briefLocked  = c => c?.briefStatus === "signed_off" || stageIdx(c?.stage) > 0;
 
 // An asset counts as "in" the moment anything arrives — `rework` and
@@ -335,18 +303,15 @@ export const briefLocked  = c => c?.briefStatus === "signed_off" || stageIdx(c?.
 // missing. Only `yet_to_receive` (and an empty status) is nothing.
 export const assetIn = a => !!a?.status && a.status !== "yet_to_receive";
 
-// Every locked creator walks four milestones — locked → scripting (concept in)
-// → shooting (video in) → live — and execution progress is milestones reached
-// over milestones planned. The denominator is the TARGET creator count, not the
-// locked count: locking one of five creators and finishing their work has to
-// read 20%, not 100%. max() keeps it honest if more get locked than planned.
+// Every locked creator walks four milestones — locked → scripting → shooting →
+// live — and progress is milestones reached over milestones planned. The
+// denominator is the TARGET creator count, not the locked count: locking one of
+// five and finishing their work reads 20%, not 100%. max() keeps it honest if
+// more get locked than planned.
 //
-// The `live` milestone is the one that isn't binary. A creator on a 3-post
-// brief who has posted 2 is two-thirds done, and counting them as 0 or 1 are
-// both wrong — the first stalls a campaign that is visibly progressing, the
-// second calls it complete while a post is still owed. So live contributes
-// delivered/expected per creator, summed, and the real counts are returned
-// alongside so the UI can state them rather than only a percentage.
+// `live` is the one non-binary milestone: a creator 2 of 3 posts in is
+// two-thirds done, and 0 or 1 are both wrong. It contributes delivered/expected
+// per creator, and the real counts are returned so the UI can state them.
 export function execStats(c){
   const lockd = (c?.creators || []).filter(isLockedCreator);
   const target= Math.max(numReqOf(c), lockd.length);
@@ -375,16 +340,13 @@ export function execStats(c){
 // on the target would trap it in Execution with no way to close it out.
 export const execDone = c => { const s = execStats(c); return s.locked > 0 && s.live === s.locked; };
 
-// Signing off an empty brief would quote the client against nothing, so the
-// lock needs the brief to actually say something first. Returns what's still
-// missing, so the UI can name it instead of just greying a button out.
+// Signing off an empty brief would quote the client against nothing. Returns
+// what's still missing so the UI can name it rather than just greying a button.
 //
-// Audience and Key Messages are NOT gates. They are useful context, not things
-// the campaign can be priced or staffed without, and holding the lock for them
-// stalled campaigns whose brief was otherwise complete — the client had already
-// said what they wanted, in the Objective, and nobody could move until someone
-// invented a sentence for a field. They stay on the brief, and stay editable
-// until the PO is recorded; they just no longer block anyone.
+// Audience and Key Messages are NOT gates — useful context, not things the
+// campaign can't be priced or staffed without. Holding the lock for them stalled
+// campaigns whose brief was otherwise complete until someone invented a
+// sentence. Still on the brief, still editable until the PO.
 export const briefGaps = c => [
   ...(String(c?.brief?.objective || "").trim() ? [] : ["Objective"]),
   ...((c?.brief?.deliverables || []).length ? [] : ["Deliverables"]),
@@ -427,17 +389,15 @@ export function creatorPayStats(camp, expenseById){
 }
 
 // Locking a creator commits money, so Billing has to hear about it. This is the
-// DECISION half of that sync — pure in, pure out — with the network half left
-// to the caller. Split that way so the rule ("what should happen to the books
-// when the roster changes") is unit-testable without stubbing fetch.
+// DECISION half — pure in, pure out — with the network half left to the caller,
+// so the rule is unit-testable without stubbing fetch.
 //
-// Returns a list of {op:"create"|"update", id, body}.
+// Returns [{op:"create"|"update", id, body}].
 //
-// It walks the UNION of the previous and next rosters, not just `next`. A
-// locked creator who is REMOVED is absent from `next`, so walking `next` alone
-// left their expense at `pending_approval` forever — off the campaign, but
-// still inflating Committed Spend, Pool remaining and the payee registry, with
-// no screen anywhere that could surface it again.
+// Walks the UNION of previous and next rosters, not just `next`. A locked
+// creator who is REMOVED is absent from `next`, so walking it alone left their
+// expense at `pending_approval` forever — off the campaign but still inflating
+// Committed Spend and the payee registry, with no screen able to surface it.
 export function creatorExpensePlan(camp, prevCreators, nextCreators) {
   const prevById = new Map((prevCreators || []).map(c => [c._id, c]));
   const nextById = new Map((nextCreators || []).map(c => [c._id, c]));

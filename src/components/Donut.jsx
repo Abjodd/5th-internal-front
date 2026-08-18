@@ -3,18 +3,15 @@ import { motion } from "motion/react";
 /**
  * 5th Avenue — Donut
  *
- * A ring chart, and nothing else. Deliberately presentational: it takes
- * segments and draws them. Hover explanations, click-to-expand and tooltips
- * are the caller's business — an earlier version owned its own tooltip, which
- * meant every consumer inherited a popup that was clipped by whichever card it
- * happened to be rendered inside.
+ * A ring chart and nothing else. Deliberately presentational: hover
+ * explanations, click-to-expand and tooltips are the caller's business — an
+ * earlier version owned its own tooltip, so every consumer inherited a popup
+ * clipped by whichever card it was rendered inside.
  *
- * Segments are drawn with stroke-dasharray on a single circle rather than as
- * arc paths: one element per segment, no trigonometry, and the gap between
- * segments is a dash gap rather than a hand-placed mask.
+ * Segments are stroke-dasharray on one circle rather than arc paths: no
+ * trigonometry, and the gap between segments is a dash gap rather than a mask.
  *
- * `center` is whatever belongs in the hole — usually a percentage. It is a
- * node, not a number, so a caller can put a count over a label there instead.
+ * `center` is a node, not a number, so a caller can put a count over a label.
  */
 const SF = "'SF Pro Display','-apple-system','BlinkMacSystemFont','Helvetica Neue',sans-serif";
 

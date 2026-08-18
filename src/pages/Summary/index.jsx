@@ -2,91 +2,14 @@
  * 5th Avenue — Internal Platform
  * FounderSummary.jsx — Founder Landing
  * ─────────────────────────────────────────────────────────────────
- * A cinematic, editorial visual report — closer to an annual report
- * or a Bloomberg/Monocle cover story than a dashboard. The founder
- * scrolls top to bottom; nothing is clickable in the functional
- * sense (no navigation, no filters, no editable state). Motion is
- * ambient: parallax photography, mask-reveal headlines, self-drawing
- * charts, drifting particles, a film-grain texture over the whole
- * page for warmth. All of it respects prefers-reduced-motion.
+ * A cinematic, editorial visual report — closer to an annual report than a
+ * dashboard. The founder scrolls top to bottom; nothing is clickable in the
+ * functional sense (no navigation, no filters, no editable state). Motion is
+ * ambient: parallax photography, mask-reveal headlines, self-drawing charts,
+ * film grain. All of it respects prefers-reduced-motion.
  *
- * CHANGELOG (this pass — fixes for reported bugs)
- * ──────────────────────────────────────────────
- * 1. HERO OVERLAP: the two-line italic title was colliding with the
- *    subtitle row. Root cause was (a) the title + subtitle sharing a
- *    single flex-end block with no explicit gap, and (b) the hero's
- *    critical above-the-fold text using `whileInView` — on a fast
- *    load this can paint mid-animation and *look* like missing text.
- *    Fixed: explicit `gap`, larger min-height, tighter line-height
- *    that doesn't clip descenders, and the hero text now animates
- *    with `animate` (fires immediately on mount) instead of relying
- *    on a scroll observer.
- * 2. "PLAIN / EMPTY" DIAGRAM SECTIONS: Agency Health, Client
- *    Constellation and Risk Radar were single SVGs dropped onto a
- *    flat background with nothing else around them — visually they
- *    read as broken or unfinished, and the heading had no breathing
- *    room above it. Fixed: added generous top padding, a soft radial
- *    background wash behind each diagram, drifting particles for
- *    ambient motion, and a row of small "insight cards" under each
- *    diagram so the section never looks like an empty canvas.
- * 3. BROKEN / IRRELEVANT PHOTOS: `thumbUrl()` piped a keyword into
- *    loremflickr, which does a loose keyword match against a stock
- *    photo pool — hence a cat statue where a content-creator photo
- *    was expected. Client/decision thumbnails now render as
- *    deterministic colour-coded initials badges (no network call,
- *    never wrong, always on-brand). The large editorial photography
- *    (`PHOTOS`, `MOSAIC`) now points at a curated, fixed set of
- *    Unsplash images that are actually about filming/content
- *    creation/influencer work, instead of a random keyword search.
- * 4. LABEL LEGIBILITY: text sitting directly on top of connector
- *    lines in the radial diagrams now sits on a small backing pill
- *    so it stays readable regardless of what's behind it.
- * 5. MORE MOTION: hover-lift on every card/tile, staggered legends,
- *    drifting background particles, springier marquee, pulse rings
- *    tuned down so they don't look like loading spinners.
- *
- * CHANGELOG (this pass #2 — layout / section-boundary fixes)
- * ──────────────────────────────────────────────
- * 6. REVENUE SIDE TILE: the photo tile and the trend line beneath it
- *    were two separate floating elements with mismatched widths and
- *    a bare dashed placeholder line hanging in empty space whenever
- *    there was no trend to draw — it read as broken, not "no data
- *    yet." The photo, the trend and the fallback state are now one
- *    bordered card so the column always has a single clean shape,
- *    matched in height to the numbers column beside it.
- * 7. SECTIONS "COINCIDING": Team, Decisions and Performance all sit
- *    on the same cream background back-to-back with no seam between
- *    Team and Decisions (a seam existed between Decisions and
- *    Performance, but not the pair before it), so the page read as
- *    one long run rather than three distinct chapters. Added the
- *    missing seam and gave each of the three a distinct header
- *    treatment (kicker position, rule weight) so adjacent sections
- *    are legible as separate even at a fast scroll.
- * 8. TRAJECTORY HAD NO GRAPH: with fewer than two data points on any
- *    line, Performance rendered a bare dashed rectangle with a
- *    sentence in it — no chart, no shape, nothing "graph-like."
- *    Rebuilt so the panel always draws an actual chart frame (axis
- *    baseline, gridlines, value bars) at every data state: full
- *    trend line with ≥2 points, a comparative bar read at exactly 1
- *    point per line, and a labelled empty frame (not a dashed box)
- *    when there is truly nothing yet.
- * 9. CAMPAIGN FLOW SIDE TILE: the image column used a fixed
- *    `paddingTop` to line up with the timeline, which only matched
- *    one specific timeline length — any other stage count left the
- *    tile floating above or below the timeline's true midpoint.
- *    Switched to grid alignment so the tile is always centred
- *    against whatever height the timeline actually renders at.
- *
- * CHANGELOG (this pass #3 — client cards use real brand logos)
- * ──────────────────────────────────────────────
- * 10. CLIENT PORTFOLIO CARDS: the front face of each client card
- *     showed a deterministic colour-coded initials badge instead of
- *     the brand's actual uploaded logo — the same logo the nav's
- *     brand-filter pill already renders via ClientsAPI.avatarUrl().
- *     Client cards now render that logo when the client record has
- *     one (hasAvatar/avatarUpdatedAt coming through on clients.names
- *     from lib/summaryMetrics), and fall back to the initials badge
- *     only when there is no logo or the image fails to load.
+ * Every figure comes from lib/summaryMetrics.buildSummary(). Anything the
+ * database cannot answer renders as "—", never as a plausible stand-in.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -346,23 +269,15 @@ function Reveal({ children, delay = 0, y = 22, style = {} }) {
 /**
  * The rising-from-behind-a-mask reveal used by every section TITLE.
  *
- * ── The trigger has to sit on the OUTER element ─────────────────────────────
- * This previously put `whileInView` on the inner, translated element, and that
- * could never fire: the inner div starts at y:"100%", which parks it entirely
- * below the clipping edge of its own `overflow: hidden` parent.
- * IntersectionObserver honours ancestor clipping when it computes an
- * intersection rect, so the element the observer was watching had exactly 0%
- * visible area — and 0% never reaches the 0.4 threshold that would start the
- * animation that would bring it into view. A deadlock: the reveal hid itself
- * too well to ever be told to un-hide.
+ * The trigger MUST sit on the OUTER element. With `whileInView` on the inner
+ * translated element it could never fire: the inner starts at y:"100%", parked
+ * below the clipping edge of its own `overflow:hidden` parent, and
+ * IntersectionObserver honours ancestor clipping — 0% visible never reaches the
+ * 0.4 threshold that would start the animation that would bring it into view.
  *
- * The effect was that EVERY section heading on this page ("Agency Health",
- * "Revenue", "The client portfolio.", …) rendered as a blank gap between its
- * eyebrow and its subtitle. It reads as a spacing bug rather than a missing
- * heading, which is why it survived so long.
- *
- * So the observer now watches the outer wrapper — which is never clipped and
- * intersects normally — and the inner element is driven by variant propagation.
+ * Every section heading rendered as a blank gap, which reads as a spacing bug
+ * rather than a missing heading. The observer now watches the unclipped outer
+ * wrapper and the inner is driven by variant propagation.
  */
 function MaskReveal({ children, delay = 0, style = {} }) {
   const reduce = useReducedMotion();
@@ -2863,25 +2778,8 @@ function RevenueSection({ data = {} }) {
         )
       : null;
 
-  /*
-   * ============================================================
-   * NORMALISE THE TREND
-   * ============================================================
-   *
-   * Supports:
-   *
-   * [{ date:"2026-08-01", value:120 }]
-   *
-   * [{ date:"2026-08-01", total:120 }]
-   *
-   * [{ date:"2026-08-01", amount:120 }]
-   *
-   * [[date, value]]
-   *
-   * [100, 120, 140]
-   *
-   * We only keep REAL numeric points.
-   */
+  /* Accepts {date,value|total|amount}, [date,value] pairs, or a bare
+   * number array. Only REAL numeric points are kept. */
 
   const rawTrend = Array.isArray(data.trend)
     ? data.trend
@@ -4122,20 +4020,7 @@ function ClientCard({ client, delay = 0 }) {
             }}
           >
 
-            {/* BACKGROUND IMAGE — shape, deliberately not colour.
-                It used to sit at 0.48, barely scrimmed, so the tile's colour
-                was whatever the logo's BACKGROUND happened to be: Adidas (white
-                plate) washed out and took the white title with it, Nike (black
-                mark, no plate) vanished, Pronto went green — three materials
-                for three uploads.
-
-                `grayscale(1)` is the rule, not a taste call: it strips the
-                plate's hue entirely, so the only thing a logo can contribute
-                here is light and dark. Colour comes from `accent` below, which
-                is SAMPLED from the mark rather than smeared from the file, so
-                a brand looks the same whether its logo shipped on white,
-                transparent or its own colour. `brightness` caps how far a white
-                plate can lift the tile. */}
+            {/* BACKGROUND IMAGE */}
             {showLogo && (
               <img
                 src={logoUrl}
@@ -4157,14 +4042,11 @@ function ClientCard({ client, delay = 0 }) {
               />
             )}
 
-            {/* BRAND GLOW — now the ONLY colour a logo can put on this tile,
-                so it carries more weight than when the wash was also tinting.
-                Two lobes rather than one: a single corner blob read as a
-                lighting artefact, a diagonal reads as the tile's material.
-                Null for a greyscale logo (Nike, Adidas), which is the point —
-                an uncoloured tile means "this brand has no colour to give",
-                not "the sampler failed". Gradients rather than a blurred
-                circle: no `filter` inside the 3D context, and cheaper. */}
+            {/* BRAND GLOW — the tile's only colour, the wash above being
+                greyscaled. Null for a greyscale logo, which is the point: an
+                uncoloured tile means the brand has no colour to give, not that
+                the sampler failed. Gradients rather than a blurred circle — no
+                `filter` inside the 3D context, and cheaper. */}
             {accent && (
               <div
                 aria-hidden="true"
@@ -4180,12 +4062,10 @@ function ClientCard({ client, delay = 0 }) {
               />
             )}
 
-            {/* CINEMATIC GRADIENT — the tile's floor, weighted to the bottom.
-                Only the lower half carries text (name + meta over white), so
-                that end stays near-opaque; the top only holds the logo chip and
-                the status pill, both of which paint their own background, so it
-                can run much lighter without costing legibility. Its job is to
-                stop a white-plate logo washing the tile out, not to black it. */}
+            {/* CINEMATIC GRADIENT — weighted to the bottom, where the white
+                name and meta sit. The top only holds the logo chip and status
+                pill, which paint their own backgrounds, so it needn't be opaque
+                there. Its job is to stop a white-plate logo washing out. */}
             <div
               style={{
                 position: "absolute",
@@ -4193,10 +4073,10 @@ function ClientCard({ client, delay = 0 }) {
                 background: `
                   linear-gradient(
                     180deg,
-                    rgba(22,24,30,0.40) 0%,
-                    rgba(22,24,30,0.48) 30%,
-                    rgba(22,24,30,0.80) 70%,
-                    rgba(22,24,30,0.96) 100%
+                    rgba(15,16,20,0.50) 0%,
+                    rgba(15,16,20,0.58) 30%,
+                    rgba(15,16,20,0.86) 70%,
+                    rgba(15,16,20,0.98) 100%
                   )
                 `,
               }}

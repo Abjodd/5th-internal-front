@@ -1,23 +1,17 @@
 /**
  * 5th Avenue — Internal OS · Your profile
  *
- * Reached from the app shell's user chip (top right). Mirrors the client
- * portal's Settings → Profile pane so the two products answer "who am I signed
- * in as" the same way.
+ * Reached from the app shell's user chip. Mirrors the client portal's Settings →
+ * Profile pane so both products answer "who am I signed in as" the same way.
  *
- * ── What is editable here, and why so little ────────────────────────────────
- * Your PHOTO, and nothing else.
+ * Your PHOTO is the only editable field. Everything else — name, role, teamId,
+ * login email — is what the founder set on Access & Credentials, and several are
+ * load-bearing: `teamId` is what campaigns store in amId/cmId/eaId, so editing it
+ * here would silently detach someone from every campaign they own, and `role` is
+ * the access-control key. Those belong behind the founder's judgement.
  *
- * Everything else on this page — name, role, team id, login email — is what the
- * founder set on Access & Credentials, and several of those fields are load
- * bearing elsewhere: `teamId` is the id campaigns store in amId/cmId/eaId, so
- * editing it here would silently detach someone from every campaign they own,
- * and `role` is the access-control key. Those belong on the founder's page,
- * behind the founder's judgement, not on a self-serve screen.
- *
- * A photo is the one thing that is genuinely yours, affects nothing but how you
- * appear, and is tedious to ask someone else to change — so it is the one thing
- * you can change here.
+ * A photo affects nothing but how you appear, and is tedious to ask someone else
+ * to change — so it is the one thing you can change here.
  */
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";

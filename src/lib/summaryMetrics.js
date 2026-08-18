@@ -1,39 +1,21 @@
 /**
  * src/lib/summaryMetrics.js — the Founder Summary, derived from the database.
  *
- * ── Why this file exists ─────────────────────────────────────────────────────
- * The Summary page shipped with a `DEMO` object: 128 campaigns, 34 clients,
- * ₹86.0L revenue, ten invented client names, eight invented team members with
- * invented utilisation percentages and stock-photo faces. It was written as a
- * landing-page fallback for fields the backend had not sent yet — but the
- * page reads `summaryData` off the router's outlet context, and nothing has
- * ever put `summaryData` there. Every number on the page was the fallback.
- * The founder was reading a brochure, not the business.
+ * The page shipped with a `DEMO` object (128 campaigns, ₹86.0L, invented
+ * colleagues) written as a fallback — but the page read `summaryData` off outlet
+ * context and nothing ever put it there, so every number was the fallback.
  *
- * So this module derives the page from the collections that actually exist,
- * and — just as important — refuses to derive the ones that don't.
+ * THE RULE: a metric with no backing data returns `null`, never 0 and never a
+ * plausible stand-in. The page already draws null as "—" or "Awaiting data".
+ * A founder who can tell "not measured" from "zero" can act on the difference.
  *
- * ── The rule for a missing metric ────────────────────────────────────────────
- * A metric with no backing data returns `null`, never 0 and never a plausible
- * stand-in. The page already renders `null` correctly: "—" for a number,
- * "Awaiting data" on an insight card, "Risk signals not yet connected" for a
- * whole panel. Those empty states existed all along; DEMO was what stopped
- * them ever being seen. A founder who can tell "we have not measured this"
- * from "this is zero" can act on the difference.
+ * Deliberately null, and what each would need:
+ *   health.revenue / .growth        — a target, or a prior-period baseline
+ *   team.*.utilizationPct           — capacity data; nothing records hours
+ *   clients.healthy/atRisk/critical — a health field; `clients` has none
+ *   revenue.renewalsDue             — retainers carry no renewal date
  *
- * Metrics deliberately left null, and what each would need:
- *   health.revenue / .growth  — a target or prior-period baseline to score against
- *   team.*.utilizationPct     — capacity or timesheet data; nothing records hours
- *   clients.healthy/atRisk/critical — a client health/status field; `clients` has none
- *   revenue.renewalsDue       — retainers have no renewal date on the record
- *
- * `health.clients` used to be on that list and no longer is — see healthFrom().
- *
- * There used to be a sixth entry here, `risks.*` — a five-signal "risk radar"
- * with nothing behind any of its five values. No risk scoring exists anywhere
- * in the platform, so the section could only ever render five empty rings; it
- * has been removed from both this module and the page rather than kept as
- * permanent dead weight waiting on a model that doesn't exist yet.
+ * `health.clients` used to be on that list — see healthFrom().
  */
 import { PIPELINE, normStage } from "./campaign";
 import { ISO_DATE } from "./format";

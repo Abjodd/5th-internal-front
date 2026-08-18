@@ -1,26 +1,18 @@
 /**
  * A brand's colour, taken from the logo it actually uploaded.
  *
- * ── Only from a real logo ───────────────────────────────────────────────────
- * An earlier version of this hashed the brand NAME into a palette so every
- * brand had a colour whether or not it had uploaded anything. That is what made
- * the board too colourful: the hues were arbitrary — FreshBite could come out
- * navy, Nike gold — so they read as decoration rather than identity, and there
- * were as many of them as there were brands.
+ * NO FALLBACK, on purpose. An earlier version hashed the brand NAME into a
+ * palette so every brand had a colour — arbitrary hues (FreshBite navy, Nike
+ * gold) that read as decoration, one per brand, which is what made the board too
+ * colourful. `accentFromImage` resolves null for a brand with no logo, a broken
+ * image, or no usable colour, and callers leave those plain. Colour therefore
+ * always means "the brand's own colour", never "the hash landed here".
  *
- * There is no fallback here on purpose. `accentFromImage` resolves null for a
- * brand with no logo, a broken image, or a logo with no usable colour in it,
- * and callers leave those cards plain. Colour on a card therefore always means
- * "this is the brand's own colour", never "the hash landed here".
- *
- * ── Picking a colour a UI can actually use ──────────────────────────────────
- * "Average the pixels" is the obvious approach and the wrong one: averaging a
- * red-and-green logo gives mud, and averaging anything on a white background
- * gives near-white. Instead pixels are binned by coarse colour, near-white /
- * near-black / transparent pixels are discarded (they are background, not
- * identity), each bin is weighted by how saturated it is, and the winning bin's
- * mean is normalised into a predictable lightness band — so a very pale logo
- * and a very dark one still produce tints of comparable strength.
+ * Averaging pixels is the obvious approach and the wrong one — a red-and-green
+ * logo gives mud, anything on white gives near-white. Instead: bin by coarse
+ * colour, discard near-white/near-black/transparent as background, weight bins
+ * by saturation, and normalise the winner into a fixed lightness band so pale
+ * and dark logos yield tints of comparable strength.
  */
 
 import { useEffect, useState } from "react";

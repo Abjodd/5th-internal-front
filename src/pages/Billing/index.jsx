@@ -65,18 +65,15 @@ function fmtFull(n) { return "₹" + (n || 0).toLocaleString("en-IN"); }
 function fmtPct(n)  { return `${Number(n || 0).toFixed(1)}%`; }
 
 // ── MARGIN MODEL ──────────────────────────────────────────────────────────────
-// One model, and it's the same arithmetic IM Financials already shows: the
-// client's budget splits into the creator pool the team gets to spend and the
-// agency fee we keep. Both numbers come off the campaign — nothing is stored
-// here and nothing is assumed.
+// One model, the same arithmetic IM Financials shows: the client's budget splits
+// into the creator pool the team spends and the agency fee we keep. Both come
+// off the campaign — nothing stored, nothing assumed.
 //
-// The old model read marginPct / agencyFeePct / agencyFeeType off the campaign
-// and fell back to `|| 35` / `|| 15` when they were missing — which was always,
-// since no campaign in the database has ever carried those fields. So every
-// P&L reported two invented percentages as if they were the commercials, while
-// `creatorBudget` (the number the brief actually collects) was loaded into
-// campsRef and then used in exactly one display row. Two pages, two answers,
-// for the same campaign. Deriving it means they cannot disagree again.
+// The old model read marginPct/agencyFeePct off the campaign and fell back to
+// `|| 35` / `|| 15` — which was always, since no campaign has ever carried those
+// fields. Every P&L reported two invented percentages as the commercials while
+// `creatorBudget`, the number the brief actually collects, went unused. Deriving
+// it means the two pages cannot disagree again.
 function calcMargin(clientBudget, creatorBudget) {
   const budget    = clientBudget || 0;
   // Clamped: a creator pool larger than the budget is a data error, not a
@@ -89,37 +86,28 @@ function calcMargin(clientBudget, creatorBudget) {
 
 // ── PO LEDGER MODEL ───────────────────────────────────────────────────────────
 // A purchase order has two independent axes. The old model jammed both into one
-// enum (pending_approval → approved → work_delivered → matched → closed), which
-// made "matched" something a human asserted with a button rather than something
+// enum, which made "matched" something a human asserted rather than something
 // the books proved:
 //
-//   approval    — pending_approval → approved / rejected      (a human decision)
-//   fulfilment  — open → partially_billed → fully_billed      (derived, below)
+//   approval    — pending_approval → approved / rejected   (a human decision)
+//   fulfilment  — open → partially_billed → fully_billed   (derived, below)
 //
-// Fulfilment and every money figure are recomputed from the documents that bill
-// against the PO. Nothing is stored. The previous design stored `invoicedAmount`
-// on each client PO and nothing ever incremented it — the real values existed
-// only in seed rows, so every PO raised through the UI sat at 0 forever while
-// the "Remaining" column happily reported the full value as unspent.
+// Fulfilment and every money figure are recomputed from the documents billing
+// against the PO. Nothing is stored. The old design stored `invoicedAmount` and
+// nothing ever incremented it, so every PO raised through the UI sat at 0 while
+// "Remaining" reported the full value as unspent.
 
-// Overdue is DERIVED, never stored. Nothing in the app ever set
-// `status:"overdue"` — there was no date sweep anywhere — so the Aged
-// Receivables panel, the overdue filter and the red header count were all
-// permanently empty while invoices sat unpaid indefinitely. Compounding it,
-// every auto-created invoice carried `dueDate:"TBD"`, so even a sweep would
-// have had nothing to compare.
+// Overdue is DERIVED, never stored. Nothing ever set `status:"overdue"` — there
+// was no date sweep — so Aged Receivables, the overdue filter and the red header
+// count were permanently empty while invoices sat unpaid. Every auto-created
+// invoice also carried `dueDate:"TBD"`, so a sweep would have had nothing to
+// compare.
 //
-// Only ISO dates count. "TBD" and the localised strings older Billing-created
-// invoices carry mean "no due date agreed" — which is not the same as "not yet
-// due", and must not be reported as either.
-// ISO_DATE and todayISO come from lib/format — both were re-declared here
-// while Campaigns imported/hand-rolled its own copies of the same two things.
+// Only ISO dates count. "TBD" and the localised strings older invoices carry
+// mean "no due date agreed", which is neither overdue nor not-yet-due.
 //
-// Declared above isOverdue because it calls it: both are const arrow functions,
-// so this only works today by virtue of the call happening after module init.
-// receivedOf / isOverdue moved to lib/invoiceMoney (imported at the top of
-// this file) once the Founder Summary began reporting the same figures — two
-// copies of "what counts as collected" is how the two pages would drift.
+// receivedOf / isOverdue live in lib/invoiceMoney — two copies of "what counts
+// as collected" is how this page and the Founder Summary would drift.
 
 // Outbound (us → vendor): the bills are expenses tagged with this PO.
 const billedAgainstPO = (poId, expenses) =>
@@ -1729,19 +1717,17 @@ export default function InternalBilling() {
     }
   }, [showToast]);
 
-  // These refs mirror the latest list so a setter can resolve `next` OUTSIDE
-  // the state updater.
-  //
-  // React state updaters must be pure. These setters used to call
-  // syncCollection() from inside setXxxRaw(prev => ...), and because <App/>
-  // renders inside <React.StrictMode> (main.jsx), React deliberately
-  // double-invokes updaters in development. Every create therefore fired the
-  // SAME POST twice in the same millisecond — which is exactly the duplicate
-  // _id that crashed the backend (E11000 on client_pos: "CPO-1785781224336").
-  // Every edit likewise fired two PATCHes.
-  //
-  // Writing the ref synchronously (rather than syncing it in an effect) keeps
-  // consecutive setter calls in one tick chaining off each other correctly.
+    // These refs mirror the latest list so a setter can resolve `next` OUTSIDE
+    // the state updater.
+    //
+    // React state updaters must be pure. These setters used to call
+    // syncCollection() from inside setXxxRaw(prev => ...), and StrictMode
+    // double-invokes updaters in development — so every create fired the SAME
+    // POST twice in one millisecond, which is the duplicate _id that crashed the
+    // backend (E11000 on client_pos). Every edit fired two PATCHes.
+    //
+    // Written synchronously rather than synced in an effect, so consecutive
+    // setter calls in one tick chain off each other correctly.
   const invoicesRef = useRef([]), expensesRef = useRef([]), quotesRef = useRef([]);
   const posRef = useRef([]), clientPOsRef = useRef([]);
   const makeSetter = useCallback((ref, setRaw, api) => (updater) => {

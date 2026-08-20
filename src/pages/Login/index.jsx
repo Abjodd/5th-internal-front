@@ -3,30 +3,31 @@
  * Full-bleed immersive design: a reactive three.js "gem" — a wireframe
  * icosahedron warped by simplex noise — floats behind a glass card,
  * surrounded by a drifting particle field. The gem tightens and flares
- * gold on submit, flashes red and shakes on error, and blooms into a
- * warp-scale burst on success right before navigation.
+ * white on submit, flashes red and shakes on error, and blooms into a
+ * scale burst on success right before navigation.
  *
- * NOTE: this design intentionally uses its own dark palette (`C` below)
- * rather than the light-mode tokens in theme/tokens.js — bring `T` back
- * in for the accent if you want it tied to the shared brand color instead.
+ * Palette: deep navy / ink blue with a single bright cobalt accent and
+ * white highlights — no gold, no purple. The rotating gradient ring
+ * that used to frame the card has been removed; the card now sits on
+ * a plain hairline border so the gem stays the only moving frame.
  */
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import * as THREE from "three";
 import { useAuth } from "../../context/AuthContext";
 
-// ── Local dark palette for this design ───────────────────────────────
+// ── Local dark-blue / white palette for this design ──────────────────
 const C = {
-  bg: "#05060D",
-  glass: "rgba(10,11,22,0.82)",
-  glassBorder: "rgba(255,255,255,0.16)",
-  inputBg: "rgba(255,255,255,0.07)",
-  text: "#FBFAF7",
-  sub: "rgba(251,250,247,0.72)",
-  faint: "rgba(251,250,247,0.5)",
-  accent: "#A594FF",
-  accent2: "#FFD166",
-  red: "#FF7373",
+  bg: "#03060F",
+  glass: "rgba(6,10,26,0.82)",
+  glassBorder: "rgba(255,255,255,0.14)",
+  inputBg: "rgba(255,255,255,0.06)",
+  text: "#F5F7FF",
+  sub: "rgba(245,247,255,0.68)",
+  faint: "rgba(245,247,255,0.46)",
+  accent: "#3E7BFF",
+  accent2: "#FFFFFF",
+  red: "#FF6B6B",
 };
 
 // ── GLSL: simplex noise (Ashima Arts, public domain) ─────────────────
@@ -140,7 +141,7 @@ function useReactiveGem(containerRef, statusRef) {
 
     // Faint solid core so the wireframe reads as a volume, not a net
     const coreGeo = new THREE.IcosahedronGeometry(1.28, 2);
-    const coreMat = new THREE.MeshBasicMaterial({ color: 0x0a0e22, transparent: true, opacity: 0.4 });
+    const coreMat = new THREE.MeshBasicMaterial({ color: 0x040817, transparent: true, opacity: 0.4 });
     const core = new THREE.Mesh(coreGeo, coreMat);
     scene.add(core);
 
@@ -158,7 +159,7 @@ function useReactiveGem(containerRef, statusRef) {
     const particleGeo = new THREE.BufferGeometry();
     particleGeo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     const particleMat = new THREE.PointsMaterial({
-      color: 0xc9cfff, size: 0.022, transparent: true, opacity: 0.55,
+      color: 0xcdd9ff, size: 0.022, transparent: true, opacity: 0.55,
       blending: THREE.AdditiveBlending, depthWrite: false,
     });
     const particles = new THREE.Points(particleGeo, particleMat);
@@ -315,7 +316,7 @@ export default function LoginPage() {
   return (
     <div style={{
       position: "relative", height: "100%", width: "100%",
-      background: "radial-gradient(120% 120% at 50% 0%, #12163A 0%, #05060D 62%)",
+      background: "radial-gradient(120% 120% at 50% 0%, #0A1638 0%, #03060F 62%)",
       fontFamily: "'Sora', sans-serif", overflow: "hidden",
     }}>
       <style>{`
@@ -323,7 +324,6 @@ export default function LoginPage() {
         @keyframes riseIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes shakeX { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-9px); } 40% { transform: translateX(7px); } 60% { transform: translateX(-5px); } 80% { transform: translateX(3px); } }
-        @keyframes borderSpin { to { transform: rotate(360deg); } }
         @keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
         @keyframes shimmerText { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
         @keyframes fieldIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
@@ -331,9 +331,9 @@ export default function LoginPage() {
         @keyframes ringPulse { 0% { box-shadow: 0 0 0 0 ${C.accent}55; } 100% { box-shadow: 0 0 0 14px ${C.accent}00; } }
         @keyframes burstRing { 0% { transform: scale(0.4); opacity: 0.9; } 100% { transform: scale(2.6); opacity: 0; } }
         .la-input { transition: border-color .15s, box-shadow .15s, background .15s; }
-        .la-input:focus { box-shadow: 0 0 0 4px ${C.accent}30; border-color: ${C.accent} !important; background: rgba(255,255,255,0.1) !important; }
-        .la-input::placeholder { color: rgba(251,250,247,0.32); }
-        .la-btn .shine { position: absolute; top: 0; left: 0; width: 40%; height: 100%; background: linear-gradient(120deg, transparent, rgba(255,255,255,0.55), transparent); animation: shine 2.8s ease-in-out infinite; pointer-events: none; }
+        .la-input:focus { box-shadow: 0 0 0 4px ${C.accent}30; border-color: ${C.accent} !important; background: rgba(255,255,255,0.09) !important; }
+        .la-input::placeholder { color: rgba(245,247,255,0.3); }
+        .la-btn .shine { position: absolute; top: 0; left: 0; width: 40%; height: 100%; background: linear-gradient(120deg, transparent, rgba(255,255,255,0.5), transparent); animation: shine 2.8s ease-in-out infinite; pointer-events: none; }
         @media (prefers-reduced-motion: reduce) {
           .marquee-track { animation: none !important; }
           .kinetic, .la-card, .la-btn { animation: none !important; }
@@ -353,7 +353,7 @@ export default function LoginPage() {
       {/* Vignette so the card stays legible over the scene */}
       <div style={{
         position: "absolute", inset: 0, zIndex: 1, pointerEvents: "none",
-        background: "radial-gradient(45% 42% at 50% 46%, rgba(5,6,13,0.55) 0%, rgba(5,6,13,0.86) 70%, rgba(5,6,13,0.96) 100%)",
+        background: "radial-gradient(45% 42% at 50% 46%, rgba(3,6,15,0.55) 0%, rgba(3,6,15,0.87) 70%, rgba(3,6,15,0.97) 100%)",
       }} />
 
       {/* Wordmark */}
@@ -362,8 +362,8 @@ export default function LoginPage() {
         display: "flex", alignItems: "center", gap: 10,
         animation: "riseIn 0.7s cubic-bezier(0.16,1,0.3,1) both",
       }}>
-        <svg width="16" height="16" viewBox="0 0 16 16" style={{ filter: `drop-shadow(0 0 4px ${C.accent2}80)` }}>
-          <polygon points="8,0 16,8 8,16 0,8" fill="none" stroke={C.accent2} strokeWidth="1.4" />
+        <svg width="16" height="16" viewBox="0 0 16 16" style={{ filter: `drop-shadow(0 0 4px ${C.accent}80)` }}>
+          <polygon points="8,0 16,8 8,16 0,8" fill="none" stroke={C.accent} strokeWidth="1.4" />
         </svg>
         <span style={{ fontSize: 13, color: C.text, letterSpacing: "0.24em", textTransform: "uppercase", fontWeight: 400, textShadow: "0 1px 8px rgba(0,0,0,0.6)" }}>
           Fifth Avenue
@@ -384,29 +384,21 @@ export default function LoginPage() {
             animation: `riseIn 0.75s 0.1s cubic-bezier(0.16,1,0.3,1) both${shake ? ", shakeX 0.48s ease-in-out" : ""}`,
           }}
         >
-          {/* Thin rotating gradient ring — padding trick so it never washes over the text */}
-          <div style={{
-            position: "absolute", inset: -1.5, borderRadius: 22, padding: 1.5,
-            background: `conic-gradient(from 0deg, ${C.accent}, ${C.accent2}, ${err ? C.red : C.accent}, ${C.accent})`,
-            animation: "borderSpin 6s linear infinite",
-            WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
-            WebkitMaskComposite: "xor", maskComposite: "exclude",
-          }} />
-
-          {/* Success burst rings */}
+          {/* Success burst rings — the one moment allowed to be loud */}
           {status === "success" && (
             <>
               <div style={{ position: "absolute", inset: 0, borderRadius: 20, border: `2px solid ${C.accent2}`, animation: "burstRing 0.9s ease-out forwards", pointerEvents: "none" }} />
-              <div style={{ position: "absolute", inset: 0, borderRadius: 20, border: `2px solid ${C.accent2}`, animation: "burstRing 0.9s 0.15s ease-out forwards", pointerEvents: "none" }} />
+              <div style={{ position: "absolute", inset: 0, borderRadius: 20, border: `2px solid ${C.accent}`, animation: "burstRing 0.9s 0.15s ease-out forwards", pointerEvents: "none" }} />
             </>
           )}
 
           <div style={{
             position: "relative",
             background: C.glass, backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
-            border: `1px solid ${C.glassBorder}`,
+            border: `1px solid ${err ? `${C.red}66` : C.glassBorder}`,
             borderRadius: 20, padding: "38px 34px",
             boxShadow: "0 40px 90px rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,255,255,0.06)",
+            transition: "border-color 0.2s",
           }}>
             <div style={{ marginBottom: 30 }}>
               <div className="kinetic" style={{
@@ -416,7 +408,7 @@ export default function LoginPage() {
                 <KineticText
                   text="Sign in"
                   style={{
-                    background: `linear-gradient(90deg, ${C.text}, ${C.accent2}, ${C.text})`,
+                    background: `linear-gradient(90deg, ${C.text}, ${C.accent}, ${C.text})`,
                     backgroundSize: "200% auto",
                     WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent",
                     animation: "shimmerText 5s linear infinite",
@@ -483,7 +475,7 @@ export default function LoginPage() {
                   width: "100%", padding: "13px", display: "flex", alignItems: "center",
                   justifyContent: "center", gap: 8,
                   background: loading ? "rgba(255,255,255,0.12)" : `linear-gradient(120deg, ${C.accent}, ${C.accent2})`,
-                  color: loading ? C.sub : "#0B0B12",
+                  color: loading ? C.sub : "#050914",
                   border: "none", borderRadius: 999, fontSize: 13, fontWeight: 700,
                   fontFamily: "'Sora', sans-serif", cursor: loading ? "not-allowed" : "pointer",
                   letterSpacing: "0.01em",
@@ -497,7 +489,7 @@ export default function LoginPage() {
                 {loading && (
                   <span style={{
                     width: 14, height: 14, borderRadius: "50%",
-                    border: "2px solid rgba(11,11,18,0.3)", borderTopColor: "#0B0B12",
+                    border: "2px solid rgba(5,9,20,0.3)", borderTopColor: "#050914",
                     animation: "spin 0.7s linear infinite",
                   }} />
                 )}
@@ -513,7 +505,7 @@ export default function LoginPage() {
         position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 2,
         overflow: "hidden", padding: "14px 0",
         borderTop: `1px solid rgba(255,255,255,0.1)`,
-        background: "linear-gradient(0deg, rgba(5,6,13,0.92) 30%, transparent)",
+        background: "linear-gradient(0deg, rgba(3,6,15,0.92) 30%, transparent)",
       }}>
         <div className="marquee-track" style={{
           display: "flex", whiteSpace: "nowrap", width: "max-content",

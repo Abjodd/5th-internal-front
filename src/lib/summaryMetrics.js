@@ -1,39 +1,21 @@
 /**
  * src/lib/summaryMetrics.js — the Founder Summary, derived from the database.
  *
- * ── Why this file exists ─────────────────────────────────────────────────────
- * The Summary page shipped with a `DEMO` object: 128 campaigns, 34 clients,
- * ₹86.0L revenue, ten invented client names, eight invented team members with
- * invented utilisation percentages and stock-photo faces. It was written as a
- * landing-page fallback for fields the backend had not sent yet — but the
- * page reads `summaryData` off the router's outlet context, and nothing has
- * ever put `summaryData` there. Every number on the page was the fallback.
- * The founder was reading a brochure, not the business.
+ * The page shipped with a `DEMO` object (128 campaigns, ₹86.0L, invented
+ * colleagues) written as a fallback — but the page read `summaryData` off outlet
+ * context and nothing ever put it there, so every number was the fallback.
  *
- * So this module derives the page from the collections that actually exist,
- * and — just as important — refuses to derive the ones that don't.
+ * THE RULE: a metric with no backing data returns `null`, never 0 and never a
+ * plausible stand-in. The page already draws null as "—" or "Awaiting data".
+ * A founder who can tell "not measured" from "zero" can act on the difference.
  *
- * ── The rule for a missing metric ────────────────────────────────────────────
- * A metric with no backing data returns `null`, never 0 and never a plausible
- * stand-in. The page already renders `null` correctly: "—" for a number,
- * "Awaiting data" on an insight card, "Risk signals not yet connected" for a
- * whole panel. Those empty states existed all along; DEMO was what stopped
- * them ever being seen. A founder who can tell "we have not measured this"
- * from "this is zero" can act on the difference.
+ * Deliberately null, and what each would need:
+ *   health.revenue / .growth        — a target, or a prior-period baseline
+ *   team.*.utilizationPct           — capacity data; nothing records hours
+ *   clients.healthy/atRisk/critical — a health field; `clients` has none
+ *   revenue.renewalsDue             — retainers carry no renewal date
  *
- * Metrics deliberately left null, and what each would need:
- *   health.revenue / .growth  — a target or prior-period baseline to score against
- *   team.*.utilizationPct     — capacity or timesheet data; nothing records hours
- *   clients.healthy/atRisk/critical — a client health/status field; `clients` has none
- *   revenue.renewalsDue       — retainers have no renewal date on the record
- *
- * `health.clients` used to be on that list and no longer is — see healthFrom().
- *
- * There used to be a sixth entry here, `risks.*` — a five-signal "risk radar"
- * with nothing behind any of its five values. No risk scoring exists anywhere
- * in the platform, so the section could only ever render five empty rings; it
- * has been removed from both this module and the page rather than kept as
- * permanent dead weight waiting on a model that doesn't exist yet.
+ * `health.clients` used to be on that list — see healthFrom().
  */
 import { PIPELINE, normStage } from "./campaign";
 import { ISO_DATE } from "./format";
@@ -131,18 +113,10 @@ function stagesFrom(campaigns) {
    client, so that is what the constellation reports instead — engagement, not
    health, and labelled as such. */
 function clientsFrom(clients, campaigns) {
-  const activeByClient = new Map();
-  for (const c of (campaigns || []).filter(isActive)) {
-    for (const key of [c.brandId, c.client]) {
-      if (key) activeByClient.set(key, (activeByClient.get(key) || 0) + 1);
-    }
-  }
-
-  // The campaigns themselves, per client — what the Portfolio card shows on its
-  // reverse. Matched on brandId OR the denormalized `client` display name,
-  // exactly like the active count above: campaigns predating brandId carry only
-  // the name, and dropping them would under-report a client's book on the card
-  // while still counting them in the badge on its front.
+  // The campaigns themselves, per client — the list on the Portfolio card's
+  // reverse, and the source of the count on its front. Matched on brandId OR
+  // the denormalized `client` display name: campaigns predating brandId carry
+  // only the name, and dropping them would under-report a client's book.
   const campaignsByClient = new Map();
   for (const c of campaigns || []) {
     for (const key of [c.brandId, c.client]) {
@@ -153,10 +127,14 @@ function clientsFrom(clients, campaigns) {
   }
 
   const names = (clients || []).map((c) => {
-    const activeCampaigns = activeByClient.get(c.id) ?? activeByClient.get(c.name) ?? 0;
     // ?? not ||, and id before name: a client whose id matched an EMPTY list
     // must not fall through to a same-named bucket.
     const own = campaignsByClient.get(c.id) ?? campaignsByClient.get(c.name) ?? [];
+    // Counted off `own`, not a bucket of its own. A parallel activeByClient map
+    // used to hold this — same campaigns, same id-then-name fallback, resolved
+    // separately — so the two could land on different buckets and the badge on
+    // a card's front could contradict the list on its back.
+    const activeCampaigns = own.filter(isActive).length;
     return {
       id: c.id,
       name: c.name,
@@ -255,12 +233,44 @@ function healthFrom({ campaigns, team, clients }) {
     ? Math.round(withProgress.reduce((s, c) => s + Number(c.progress), 0) / withProgress.length)
     : null;
 
+  const staffed = team.members.filter((m) => m.activeProjects > 0).length;
+
   return {
     revenue: null,
     delivery,
     clients: pctOrNull(clients.active, clients.total),
     team: team.staffedPct,
     growth: null,
+
+    /* What each score is a percentage OF. "Delivery 90%" means nothing until
+       you know it averages 1 campaign, not 30 — the counts were already being
+       computed here and thrown away.
+
+       basis[key] is non-null EXACTLY when health[key] is, so consumers need no
+       second guard. */
+    basis: {
+      revenue: null,
+      growth: null,
+      delivery: delivery === null ? null : {
+        count: withProgress.length, total: active.length, unit: "campaigns",
+        note: "mean completion across campaigns in flight",
+      },
+      clients: clients.total ? {
+        count: clients.active, total: clients.total, unit: "clients",
+        note: "on the books with a campaign running",
+      } : null,
+      team: team.staffedPct === null ? null : {
+        count: staffed, total: team.members.length, unit: "people",
+        note: "carrying at least one live campaign",
+      },
+    },
+
+    /* Why the two missing rings are missing — both need a baseline the DB
+       doesn't hold. Named, so the gap reads as deliberate, not as a bug. */
+    unmeasured: [
+      { label: "Revenue", reason: "needs a target to score attainment against" },
+      { label: "Growth", reason: "needs a prior period to measure movement from" },
+    ],
   };
 }
 

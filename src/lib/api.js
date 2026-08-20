@@ -23,23 +23,19 @@ async function request(path, options = {}) {
 }
 
 /**
- * Builds the `<img src>` for a photo served from `${basePath}/:id/avatar` —
- * used for internal users, brand-portal credentials and client logos, which all
- * store their image the same way (see avatarStore.js on the backend).
+ * Builds the `<img src>` for a photo served from `${basePath}/:id/avatar` — used
+ * for internal users, brand credentials and client logos, which store their
+ * image the same way (see avatarStore.js on the backend).
  *
- * The bytes never travel in a list or login payload; a record carries
- * `hasAvatar` + `avatarUpdatedAt` and the URL is derived from those. Returns
- * null when there is nothing to fetch, so callers render initials rather than
- * firing a request that is certain to 404.
+ * Bytes never travel in a list or login payload; a record carries `hasAvatar` +
+ * `avatarUpdatedAt` and the URL is derived from those. Returns null when there
+ * is nothing to fetch, so callers render initials instead of a certain 404.
  *
- * `?v=` is the record's own avatarUpdatedAt: the backend serves the image with
- * a one-year immutable cache, so without a changing URL a replaced photo would
- * keep showing the old one until a hard reload. BASE-prefixed so it resolves
- * against the API, not the SPA.
+ * `?v=` is avatarUpdatedAt — the backend serves the image immutable for a year,
+ * so without a changing URL a replaced photo would keep showing the old one.
  *
- * Accepts a record or a bare id — an id alone cannot know whether a photo
- * exists, so it always produces a URL and leaves the 404 to the <img> onError
- * fallback.
+ * Accepts a record or a bare id. An id alone can't know whether a photo exists,
+ * so it always produces a URL and leaves the 404 to the <img> onError fallback.
  */
 const avatarUrlFor = (basePath) => (record) => {
   const id = typeof record === "string" ? record : record?.id;

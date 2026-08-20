@@ -3,11 +3,11 @@
  * Route table. Login is public; everything else is protected.
  * AuthProvider wraps the whole tree so useAuth() works everywhere.
  */
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./routes/ProtectedRoute";
 import AppShell from "./layout/AppShell";
-import LoginPage from "./pages/Login";
 import Campaigns from "./pages/Campaigns";
 import Billing from "./pages/Billing";
 import Summary from "./pages/Summary";
@@ -16,13 +16,22 @@ import Requests from "./pages/Requests";
 import Auth from "./pages/Auth";
 import Profile from "./pages/Profile";
 
+// Lazy because it is the only consumer of three.js (~600KB). Statically
+// imported, every authenticated page downloaded a renderer it never used.
+const LoginPage = lazy(() => import("./pages/Login"));
+
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
         <Routes>
-          {/* Public */}
-          <Route path="/login" element={<LoginPage />} />
+          {/* Fallback is the page's own bg, not a spinner — the chunk resolves
+              fast enough that a spinner would only flash. */}
+          <Route path="/login" element={
+            <Suspense fallback={<div style={{ minHeight: "100vh", background: "#05060D" }} />}>
+              <LoginPage />
+            </Suspense>
+          } />
 
           {/* Protected — wrapped in AppShell */}
           <Route element={

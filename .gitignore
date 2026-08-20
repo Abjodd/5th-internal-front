@@ -6,9 +6,8 @@ dist/
 dist-ssr/
 
 # env
-.env
-.env.local
-.env.*.local
+.env*
+!.env.example
 
 # editor
 .vscode/*
@@ -30,4 +29,3 @@ pnpm-debug.log*
 #scrap file
 scrap/
 .vercel
-.env*

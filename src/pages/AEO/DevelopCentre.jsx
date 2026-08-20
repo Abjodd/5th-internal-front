@@ -447,32 +447,11 @@ function WorkPackageDetail({ wp, onStatusChange, showToast }) {
   const isReview = wp.status === "review";
   const isApproved = wp.status === "approved";
 
-  // ── REAL API CALL ─────────────────────────────────────────────────────────
-  // Production: call through a server-side proxy (never expose API keys client-side)
-  //
-  // const systemPrompt = `You are an expert marketing strategist for ${wp.company.name},
-  //   a ${wp.company.industry} company. Model: ${wp.company.model}.
-  //   Market: ${wp.company.market}. Key competitors: ${wp.company.competitors.join(", ")}.
-  //   Generate a structured ${chLabel(wp.ch)} work package based on the following
-  //   recommendation. Return valid JSON with keys matching: ${schema.map(s=>s.id).join(", ")}.
-  //   Each key should contain implementation-ready content a team can act on directly.`;
-  //
-  // const response = await fetch("https://api.anthropic.com/v1/messages", {
-  //   method: "POST",
-  //   headers: { "Content-Type": "application/json" },
-  //   body: JSON.stringify({
-  //     model: "claude-sonnet-4-20250514",
-  //     max_tokens: 4000,
-  //     system: systemPrompt,
-  //     messages: [{ role:"user", content:
-  //       `Recommendation: ${wp.rec.recommendation}\n` +
-  //       `Issue: ${wp.rec.issue}\n` +
-  //       `Insight: ${wp.rec.insight}` }]
-  //   })
-  // });
-  // const data = await response.json();
-  // const text = data.content.map(i => i.text || "").join("");
-  // const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+  // Generation is stubbed. For production, call an LLM through a SERVER-SIDE
+  // proxy — never with a key in client code. Prompt shape: company context
+  // (name, industry, model, market, competitors) as the system message, the
+  // recommendation as the user message, response parsed as JSON keyed to
+  // `schema`. See git history for the original draft.
   // ─────────────────────────────────────────────────────────────────────────
 
   const runGeneration = () => {

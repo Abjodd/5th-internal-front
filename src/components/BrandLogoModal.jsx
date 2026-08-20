@@ -1,26 +1,18 @@
 /**
  * BrandLogoModal — set the logo that identifies a brand everywhere.
  *
- * ── Why this exists ─────────────────────────────────────────────────────────
- * The backend has stored a logo on the Client document for a while (see
- * avatarStore.js), and a lot reads it: the campaign board's brand masthead, the
- * accent colour every tile in that brand's group is tinted with
- * (lib/brandAccent.js), and a portal member's fallback picture. But there was
- * no way to SET one — the only avatar controls in the app wrote to a user or to
- * a brand credential, which are people, not the brand. So uploading a photo for
- * someone at Nike changed that person's picture and, understandably but
- * wrongly, looked like it should have changed Nike's.
+ * The backend has stored a logo on the Client document for a while, and plenty
+ * reads it: the campaign board's masthead, the accent every tile in that brand's
+ * group is tinted with, a portal member's fallback picture. But there was no way
+ * to SET one — the only avatar controls wrote to a user or a brand credential,
+ * which are people, not the brand.
  *
- * ── Why a website field sits in a logo dialog ───────────────────────────────
- * Because it is what makes the suggestion possible, and no brand here has one
- * stored. The founder types the site once, gets the brand's own icon offered
- * back, and confirms it — which is a great deal faster than finding a logo file
- * for every brand on the roster. The website is saved with the logo, so it only
- * has to be typed once ever.
+ * The website field is here because it is what makes the suggestion possible and
+ * no brand has one stored: type the site once, get the brand's own icon offered
+ * back, confirm. It is saved alongside the logo so it is only typed once ever.
  *
- * Nothing is written until Save: the suggestion is a data URI held in state and
- * committed through the same PATCH an uploaded file takes, so there is one
- * write path for a logo however it was chosen.
+ * Nothing is written until Save — the suggestion is a data URI in state, committed
+ * through the same PATCH an uploaded file takes, so a logo has one write path.
  */
 import { useState } from "react";
 import { ClientsAPI } from "../lib/api";

@@ -1,21 +1,13 @@
 /**
  * 5th Avenue — Internal OS · Design Tokens
  * ─────────────────────────────────────────────────────────────────
- * Single source of truth for the light theme used across every page.
- * Previously every page file (17 of them) hard-coded its own copy of
- * this object — several were even still on the old dark palette from
- * before the light-theme redesign (FounderSummary + the whole AEO
- * module). Centralizing here means:
- *   - one edit updates the whole product's palette
- *   - every page is guaranteed to be on the current light theme
- *   - page-specific extras (e.g. Campaigns' pipeline-stage colors)
- *     just spread ...T and add their own keys, see Campaigns/index.jsx
+ * Single source of truth for the light theme. Every page file used to hard-code
+ * its own copy — several still on the pre-redesign dark palette. Page-specific
+ * extras (e.g. Campaigns' pipeline-stage colours) spread ...T and add keys.
  *
- * Palette notes: warm paper neutrals (not cool SaaS gray) + a deep
- * indigo-navy accent instead of a default blue, so the primary accent
- * doesn't collide visually with the amber/gold semantic colors used
- * for pending/finance states. Pairs with the serif italic "5th Avenue"
- * wordmark for an editorial, less "generated dashboard" feel.
+ * Warm paper neutrals rather than cool SaaS grey, and a deep indigo-navy accent
+ * instead of a default blue so it doesn't collide with the amber/gold used for
+ * pending and finance states.
  */
 export const T = {
   bg: "#F7F6F2",
@@ -43,5 +35,16 @@ export const T = {
   radius: 8,
   radiusSm: 5,
 };
+
+/**
+ * The one dark surface in a light theme — Agency Health, the growth panel,
+ * client cards, campaign cards. Previously four separate flat blacks that read
+ * as four materials.
+ *
+ * A single `background` shorthand (not a base + overlay child) so it drops onto
+ * any element. Anything dark should use this; a new flat black is a regression.
+ */
+export const DARK_SURFACE =
+  "radial-gradient(125% 105% at 18% 10%, rgba(59,79,116,0.55) 0%, rgba(46,60,90,0.20) 44%, rgba(20,21,26,0) 72%), #14151A";
 
 export default T;

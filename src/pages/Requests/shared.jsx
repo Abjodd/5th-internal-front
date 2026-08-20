@@ -110,14 +110,12 @@ export const fmtWhen = (iso) => {
 /**
  * Confirm-before-removing, shared by all three inboxes.
  *
- * Removal here is a HARD delete on the backend — the row is gone from Mongo,
- * not flagged — and the only copy of an inbound lead's contact details goes
- * with it. That is not something a misplaced click should be able to do, and
- * all three panels sit in a list where the click target is inches from an
- * expand toggle.
+ * Removal is a HARD delete — the row is gone from Mongo, not flagged, and the
+ * only copy of an inbound lead's contact details goes with it. All three panels
+ * put the click target inches from an expand toggle.
  *
- * Escape closes it, and the destructive button is never the one under the
- * cursor when the dialog opens.
+ * Escape closes it, and the destructive button is never under the cursor when
+ * the dialog opens.
  */
 export const ConfirmDialog = ({ title, body, confirmLabel = "Remove", busy, onConfirm, onCancel }) => {
   useEffect(() => {

@@ -1,18 +1,15 @@
 /**
  * 5th Avenue — Creators (founder-only)
  * ─────────────────────────────────────────────────────────────────
- * Directory of every creator we work with, row by row, with their profile,
- * billing/onboarding details, campaign appearances and generated invoices
- * (PDFs stored in the backend's GridFS bucket).
+ * Directory of every creator we work with: profile, billing/onboarding details,
+ * campaign appearances and generated invoices (PDFs in the backend's GridFS).
  *
- * All data comes from GET /api/creators — the backend reads the creators
- * collection and joins campaigns/invoices onto it, so this page is a pure
- * view over that endpoint (single source of truth).
+ * All data comes from GET /api/creators, which joins campaigns and invoices onto
+ * the creators collection — this page is a pure view over that endpoint.
  *
- * Inbound creator applications are NOT here: they're untriaged leads, so they
- * live with the other landing-page submissions in pages/Requests. A creator
- * only appears in this directory once promoted from that inbox, or once a
- * campaign puts them on its creator list.
+ * Inbound applications are NOT here: they're untriaged leads and live in
+ * pages/Requests. A creator appears here once promoted from that inbox, or once
+ * a campaign puts them on its creator list.
  */
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";

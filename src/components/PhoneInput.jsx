@@ -3,20 +3,16 @@ import { phoneDigits, toPhone } from "../lib/validators";
 /**
  * 5th Avenue — PhoneInput
  *
- * Every number this company collects is an Indian mobile, so "+91" is a fixed
- * prefix rather than something anyone types. The field holds ten digits and
- * nothing else: an 11th is simply not accepted, and pasting "+91 98765 43210"
- * or "0 9876543210" lands on the same ten digits as typing them.
+ * Every number here is an Indian mobile, so "+91" is a fixed prefix rather than
+ * something anyone types. Ten digits, nothing else — an 11th isn't accepted, and
+ * pasting "+91 98765 43210" or "0 9876543210" lands on the same ten.
  *
- * Same contract as MoneyInput — the parent keeps the canonical value and this
- * only shapes what goes in and out. `onChange` receives the stored form,
- * "+91XXXXXXXXXX", or "" while the field is empty, so nothing downstream has
- * to know the prefix was displayed separately.
+ * Same contract as MoneyInput: the parent keeps the canonical value, this only
+ * shapes what goes in and out. `onChange` gives "+91XXXXXXXXXX" or "".
  *
- * Reading is normalised too, which is what makes this safe to drop onto
- * existing records: a creator saved before this component existed holds a bare
- * "9876543210" (or a hand-typed "+91-98765 43210"), and both display — and
- * re-save — correctly without a migration.
+ * Reading is normalised too, which makes this safe on existing records — a
+ * creator saved before this existed holds a bare "9876543210", and it displays
+ * and re-saves correctly without a migration.
  */
 const SF = "'SF Pro Display','-apple-system','BlinkMacSystemFont','Helvetica Neue',sans-serif";
 

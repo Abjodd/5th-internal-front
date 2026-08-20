@@ -1,16 +1,8 @@
 /**
- * 5th Avenue — Internal Operations: Campaigns  · VERSION V5
+ * 5th Avenue — Internal Operations: Campaigns
  * ──────────────────────────────────────────────────────────
- * V5 Changes:
- *  1. Add Creator → custom pop-up form (Name, Platform, Handle required;
- *     Phone, Niche, Followers, Avg Likes, Avg ER optional). No DB lookup.
- *  2. Payment Details column — Type (To Vendor / Net Banking) + ID. 🔒 internal.
- *  3. Roles: Founder · BM · CM · EA · Accounts. PCM-P/C removed.
- *  4. Senior EA / EA / Junior EA = job titles on TEAM, single "ea" role.
- *  5. Accounts Team → placeholder for dedicated view (next build).
- *  6. CM not auto-assigned → BM selects from fixed dropdown in Team tab.
- *  7. Deliverables tab → aggregate stat cards (Views, Likes, CPV, ER, Avg Forwards).
- *  8. Fee input step = 100.
+ * The IM board. Brand-grouped campaign tiles, a forked finance/execution
+ * pipeline per campaign, and the deliverables + team + P&L tabs behind each.
  */
  import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect, forwardRef } from "react";
 import { createPortal } from "react-dom";
@@ -37,7 +29,7 @@ import CreatorHandle from "../../components/CreatorHandle";
 import Donut from "../../components/Donut";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
-import { T as BASE_T } from "../../theme/tokens";
+import { T as BASE_T, DARK_SURFACE } from "../../theme/tokens";
 
 // Stage → colour, layered on top of the shared theme. Both tracks are keyed
 // into one map: the fork means a campaign has two live nodes at once, and
@@ -313,91 +305,16 @@ const mkCreator = (src={}, cost) => ({
   },
 });
 
-// ── SEED DATA ────────────────────────────────────────────────────────────────
-// const INIT_CAMPS = [
-//   {
-//     id:"c1",name:"Diwali Festive Push",client:"FreshBite Foods",
-//     service:"Influencer Marketing",region:"South India",
-//     stage:"execution",progress:62,budget:1250000,creatorBudget:750000,numReq:5,
-//     start:"Mar 1",end:"Apr 30",amId:"t7",cmId:"t1",eaId:"t3",
-//     brief:{objective:"Build festive awareness across South India for FreshBite's new snack range.",
-//       audience:"18–35 in TN, KA, KL, TS.",messages:"FreshBite — the festive snack companion.",
-//       deliverables:["Reel — Collab","Reel — Non-Collab","Story"],budget:"₹12.5L",timeline:"6 weeks"},
-//     briefStatus:"locked",amNote:"",cmNote:"Focus on authentic home-cook aesthetic.",
-//     creators:[
-//       {...mkCreator(CREATOR_DB[0],85000), status:"locked",   payType:"vendor",     payId:"VND-1042",
-//         concept:{status:"approved",fileLink:"https://drive.google.com/file1"},
-//         demo:{status:"locked",fileLink:"https://drive.google.com/demo1"},
-//         live:{postUrl:"https://instagram.com/p/abc1",postedDate:"Apr 12"},
-//         tracking:{views:480000,likes:21000,comments:980,forwards:3200,commentAnalysis:"Very positive. Users tagging friends.",positivityScore:88,lastFetched:"May 2 09:14"}},
-//       {...mkCreator(CREATOR_DB[1],180000),status:"negotiating",payType:null,payId:null,
-//         concept:{status:"received",fileLink:"https://drive.google.com/file2"},
-//         demo:{status:"yet_to_receive",fileLink:null},live:{postUrl:null,postedDate:null},
-//         tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
-//       {...mkCreator(CREATOR_DB[3],50000), status:"reached_out",payType:null,payId:null,
-//         concept:{status:"yet_to_receive",fileLink:null},demo:{status:"yet_to_receive",fileLink:null},
-//         live:{postUrl:null,postedDate:null},
-//         tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
-//     ],
-//     genRounds:1,sentToClient:true,
-//     internalNotes:"Creator budget ₹7.5L. Keep pricing tight.",
-//     timeline:[
-//       {date:"Feb 20",event:"Campaign submitted by client",actor:"Client"},
-//       {date:"Feb 25",event:"Brief locked by client",actor:"Client"},
-//       {date:"Feb 27",event:"CM approved, advance pending",actor:"Priya Nair"},
-//       {date:"Mar 2", event:"Advance confirmed",actor:"Accounts"},
-//       {date:"Mar 2", event:"Assigned to Arjun Reddy",actor:"Priya Nair"},
-//     ],
-//   },
-//   {
-//     id:"c2",name:"Summer Launch Teaser",client:"FreshBite Foods",
-//     service:"Influencer Marketing",region:"North India",
-//     stage:"draft",progress:8,budget:800000,creatorBudget:500000,numReq:8,
-//     start:"Apr 20",end:"Jun 15",amId:"t7",cmId:null,eaId:null,
-//     brief:{objective:"Teaser campaign for FreshBite's summer range.",audience:"18–28, college students.",
-//       messages:"",deliverables:[],budget:"₹8L",timeline:"Apr 20 – Jun 15"},
-//     briefStatus:"draft",amNote:"",cmNote:"",
-//     creators:[],genRounds:0,sentToClient:false,
-//     internalNotes:"Solid budget — good margin potential.",
-//     timeline:[{date:"Apr 18",event:"Campaign submitted",actor:"Client"}],
-//   },
-//   {
-//     id:"c3",name:"Festive Nano Wave",client:"FreshBite Foods",
-//     service:"Influencer Marketing",region:"Pan-India",
-//     stage:"live",progress:88,budget:320000,creatorBudget:200000,numReq:3,
-//     start:"Jan 1",end:"Feb 28",amId:"t7",cmId:"t1",eaId:"t4",
-//     brief:{objective:"Nano creator sampling across 10 cities.",audience:"18–30 urban millennials.",
-//       messages:"Healthy snacking, redefined.",deliverables:["Reel — Non-Collab","Story"],budget:"₹3.2L",timeline:"8 weeks"},
-//     briefStatus:"locked",amNote:"",cmNote:"",
-//     creators:[
-//       {...mkCreator(CREATOR_DB[5],18000),status:"locked",payType:"net_banking",payId:"9876543210@upi",
-//         concept:{status:"locked",fileLink:"#"},demo:{status:"locked",fileLink:"#"},
-//         live:{postUrl:"https://instagram.com/p/xyz1",postedDate:"Feb 10"},
-//         tracking:{views:420000,likes:18200,comments:840,forwards:1200,commentAnalysis:"Very positive. Strong brand recall.",positivityScore:91,lastFetched:"Apr 28 10:32"}},
-//       {...mkCreator(CREATOR_DB[9],8000),status:"locked",payType:"vendor",payId:"VND-2081",
-//         concept:{status:"locked",fileLink:"#"},demo:{status:"approved",fileLink:"#"},
-//         live:{postUrl:null,postedDate:null},
-//         tracking:{views:null,likes:null,comments:null,forwards:null,commentAnalysis:null,positivityScore:null,lastFetched:null}},
-//     ],
-//     genRounds:1,sentToClient:true,internalNotes:"Strong results on first creator.",timeline:[],
-//   },
-// ];
 
 // ── WORKFLOW ACTION LABELS ───────────────────────────────────────────────────
 // Shared by the confirmation modal and the post-action toast.
 const ACTION_MSGS={assign_am:"Assign Account Manager",assign_cm:"Assign Category Manager",assign_ea:"Assign Executive Associate",lock_brief:"Lock the brief",raise_po:"Record the client Purchase Order",advance_received:"Confirm advance received",raise_invoice:"Raise the client invoice",payment_done:"Confirm payment received",extend_end_date:"Campaign end date extended"};
-// Actions that don't get the generic "Confirm stage change" dialog.
-// extend_end_date is here because ExtendEndModal is already its own confirm
-// step (it has to be — it collects the new date), so the generic modal would
-// just be a second dialog saying less.
-// The three assign_* actions are here even though completing the team DOES
-// advance Brief Locked → Team Assigned: that transition is meant to be
-// automatic, and a dialog after a dropdown pick would make it read as a manual
-// stage change. The Team tab warns before the fact instead (see TabTeam).
-// raise_po joins them for the same reason as extend_end_date: ClientPOModal
-// collects the PO number and value, so it is already the confirmation step.
-// lock_brief has LockBriefModal, which names what is about to freeze — the
-// generic dialog could only repeat the action's label back.
+// Actions that don't get the generic "Confirm stage change" dialog, because
+// each already HAS a step that names what is about to happen:
+//   extend_end_date / raise_po / lock_brief — their own modals collect the data
+//   assign_* — completing the team auto-advances Brief Locked → Team Assigned,
+//     and a dialog after a dropdown pick would read as a manual stage change.
+//     TabTeam warns before the fact instead.
 const NO_CONFIRM_ACTIONS=new Set(["assign_am","assign_cm","assign_ea","extend_end_date","raise_po","lock_brief"]);
 const needsConfirm=action=>!NO_CONFIRM_ACTIONS.has(action);
 
@@ -584,18 +501,14 @@ const isLocked = isLockedCreator;
 // and Billing all have to derive it the same way.
 
 // ── BILLING BRIDGE ───────────────────────────────────────────────────────────
-// Locking a creator commits money. That commitment used to live only on the
-// campaign, so Billing — which reads the `expenses` collection — reported ₹0
-// spent on every campaign, forever: the collection was empty, "Total Spent"
-// was structurally stuck at zero, and every vendor PO read permanently open
-// because nothing was ever billed against it.
+// Locking a creator commits money. That used to live only on the campaign, so
+// Billing (which reads `expenses`) reported ₹0 spent on every campaign forever
+// and every vendor PO read permanently open.
 //
-// One expense per locked creator, with an id derived from the campaign and
-// creator ids so re-saving the roster updates the row instead of duplicating
-// it. The expense is created `pending_approval` — committed, not paid; Accounts
-// settles it on the Campaign P&L, which is what moves it to `paid`.
-// Executes the plan creatorExpensePlan() decides on — see lib/campaign.js for
-// the rule itself, which is kept pure so it can be tested without the network.
+// One expense per locked creator, id derived from campaign+creator ids so
+// re-saving updates the row instead of duplicating it. Created
+// `pending_approval` — committed, not paid; Accounts settles it on the P&L.
+// The rule itself is creatorExpensePlan() in lib/campaign.js, kept pure.
 function syncCreatorExpenses(camp,prevCreators,nextCreators,onError){
   const fail=()=>onError&&onError();
   for(const {op,id,body} of creatorExpensePlan(camp,prevCreators,nextCreators)){
@@ -713,31 +626,19 @@ const viewPl  = (camp,role) => role==="ea"
 const viewCol = (camp,role) => T.sc[viewPl(camp,role).id]||T.sub;
 
 // ── PIPELINE ─────────────────────────────────────────────────────────────────
-// The campaign header's centrepiece: two common nodes that FORK into two
-// independent rails — Execution on top (the work), Finance below (the money).
+// Two common nodes that FORK into two rails: Execution (the work) on top,
+// Finance (the money) below. They fork because they move independently — a
+// campaign with every creator live can still owe an advance, and a fully paid
+// one can still owe three posts. One rail hides that.
 //
-// It forks because the two genuinely move independently. A campaign whose
-// creators are all live can still be waiting on a client's advance, and a
-// campaign that has been paid in full can still owe three posts. On one rail
-// each of those is invisible; the fork is the only honest shape.
-//
-// What animates, and why each carries meaning rather than decoration:
-//
-//   the rails    — motion.path pathLength, so a rail DRAWS to where the
-//                  campaign has actually got. The fork curves are part of the
-//                  same paths, which is what makes the split read as one
-//                  movement instead of three shapes that happen to touch.
-//   the marker   — a single shared element (layoutId) that TRAVELS along the
-//                  execution track when it advances, so a change reads as
-//                  movement rather than two colours swapping in place.
-//   the sweep    — a slow highlight along the completed length, so a live
-//                  campaign's rail isn't dead track. It stops when nothing is
-//                  left in flight.
-//   the previews — hovering Execution or Creator Payment shows that node's
-//                  donuts without leaving the header; clicking opens the full
-//                  breakdown. The donuts are deliberately NOT drawn on the
-//                  rail itself — circles sitting on a progress line read as
-//                  ornament, and at rail scale none of them are legible.
+// The motion carries meaning, not decoration:
+//   rails    — pathLength draws to where the campaign actually got; the fork
+//              curves are part of the same paths, so the split reads as one
+//              movement rather than three shapes that touch.
+//   marker   — one shared element (layoutId) that TRAVELS, so an advance reads
+//              as movement rather than two colours swapping in place.
+//   sweep    — highlight along the completed length; stops when nothing is live.
+//   previews — hover a node for its donuts without leaving the header.
 const NODE_W  = 104;   // one node column
 const GUTTER  = 92;    // left of the rails — the two track tags live here
 const TOP_Y   = 16;    // execution rail, y of the marker centres
@@ -789,24 +690,16 @@ function useCountUp(value){
 
 // ── HOVER PREVIEW ────────────────────────────────────────────────────────────
 // Anchors a portalled card under an element and KEEPS it anchored. Measuring
-// once on mouseenter looked equivalent and wasn't: the header scrolls inside
-// the page, so a preview opened before a scroll stayed where the node used to
-// be. Re-measuring on scroll (capture phase, so it catches inner scrollers
-// too) and on resize is what makes the caret line up with the node it
-// describes.
+// once on mouseenter isn't enough — the header scrolls, so the card stayed
+// where the node used to be. Re-measures on scroll (capture phase, to catch
+// inner scrollers) and resize. Portalled to <body> because the header card is
+// overflow:hidden and clipped it.
 //
-// The card is portalled to <body> because the header card is `overflow:hidden`
-// — anything anchored inside it was clipped at the card's edge.
-//
-// The app scales its entire UI with `zoom` on <html>, which put the two halves
-// of this calculation in different units: getBoundingClientRect() reports
-// VISUAL pixels (the zoom already applied), while the `left`/`top` written on
-// the portalled card are layout pixels that the zoom multiplies AGAIN on paint.
-// So the card landed at zoom × the intended x — drifting further right the
-// further right the node sat, which is why the caret missed the node it was
-// describing rather than being uniformly off. Dividing the measurement back out
-// puts both halves in the card's own units. See lib/zoom.js — shared with
-// every other position:fixed popover anchored to a trigger's rect.
+// GOTCHA: the app zooms <html>, so getBoundingClientRect() returns VISUAL px
+// while `left`/`top` on the card are layout px that the zoom multiplies AGAIN.
+// The card landed at zoom × x, drifting further right the further right the
+// node sat. Divide the measurement back out — see lib/zoom.js, shared with
+// every position:fixed popover anchored to a rect.
 
 function useAnchor(target, width){
   const [pos,setPos] = useState(null);
@@ -987,21 +880,17 @@ function TrackNode({node,x,y,state,col,labelAbove,badge,interactive,onEnter,onLe
   );
 }
 
-// A rail is painted with a GRADIENT rather than one flat colour: it blends from
-// the colour of the node it leaves to the colour of the node the campaign is
-// standing on. A flat rail repainted itself wholesale on every advance — a teal
-// line became an amber line in one step, which read as a state change rather
-// than as progress — and it left the fork as two hard colour joins.
+// Rails use a GRADIENT, blending from the colour of the node left behind to the
+// node the campaign stands on. A flat rail repainted wholesale on each advance
+// — teal to amber in one step read as a state change, not progress.
 //
-// Two stops, deliberately, not one per node. The palette is chosen to be
-// legible as chips (navy PO, teal advance, amber invoice, green paid), and
-// interpolating end to end through all of them ran the line through olive and
-// brown on the way. Blending only start → current is smooth whatever the two
-// colours are, and it still moves: the head of the rail always wears the
-// current stage's colour, the same thing the marker and the track tag say.
+// Two stops, not one per node: the palette (navy PO, teal advance, amber
+// invoice, green paid) is chosen to work as chips, and interpolating end to end
+// ran the line through olive and brown. Start → current is smooth whatever the
+// two colours are, and the head still wears the current stage's colour.
 //
-// gradientUnits="userSpaceOnUse" so the stops sit at real column positions
-// rather than at fractions of a path whose length differs per branch.
+// userSpaceOnUse so stops sit at real column positions, not at fractions of a
+// path whose length differs per branch.
 const RailGradient = ({id,x0,x1,from,to}) => (
   <linearGradient id={id} gradientUnits="userSpaceOnUse" x1={x0} y1="0" x2={x1} y2="0">
     <stop offset="0" stopColor={from}/>
@@ -1017,19 +906,14 @@ function Rail({d,frac,stroke,flowing,reduce}){
       initial={reduce?false:{pathLength:0}} animate={{pathLength:frac}}
       transition={reduce?{duration:0}:PIPE_SPRING}/>
     {flowing&&frac>0.02&&(
-      // A short highlight travelling the drawn length, clipped by pathOffset so
-      // it never runs past progress that hasn't happened.
-      //
-      // pathLength MUST be declared in initial/animate, not in `style`. Framer
-      // only converts the path props into stroke-dasharray when it sees them on
-      // the animation target; passing it as a style left the highlight with no
-      // dash at all, so it painted the ENTIRE rail solid white — which is what
-      // made the rails look washed-out and completely still. It was covering
-      // the colour it was supposed to be travelling along.
-      // Long, faint and slow. A short bright glint read as a loading bar — the
-      // rail is meant to look alive, not to look busy. Stretching the highlight
-      // and dropping its opacity turns the same animation into a breath passing
-      // under the colour rather than a marker running along the top of it.
+          // A short highlight travelling the drawn length, clipped by pathOffset so
+          // it never runs past progress that hasn't happened. Long, faint and slow
+          // — a short bright glint read as a loading bar.
+          //
+          // pathLength MUST be in initial/animate, not `style`. Framer only
+          // converts it to stroke-dasharray when it sees it on the animation
+          // target; in `style` the highlight got no dash and painted the ENTIRE
+          // rail solid white, covering the colour it was meant to travel along.
       <motion.path d={d} fill="none" stroke="rgba(255,255,255,0.42)" strokeWidth={3} strokeLinecap="round"
         initial={{pathLength:0.34,pathOffset:-0.34}}
         animate={{pathLength:0.34,pathOffset:[-0.34,frac]}}
@@ -1400,16 +1284,13 @@ function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAge
 }
 
 // ── CAMPAIGN CARD (grid tile) ─────────────────────────────────────────────────
-// Three bands, always in the same place: identity, then the money, then a
-// status footer. Fixing the bands means a row of tiles lines up even when one
-// campaign has no team and another has an end-date warning — the old card let
-// every element shift vertically, so a row read as a ragged list rather than a
-// grid.
+// Three fixed bands — identity, money, status footer — so a row of tiles lines
+// up even when one campaign has no team and another has a date warning.
 //
-// The progress bar is the tile's bottom edge rather than a hairline floating in
-// the padding: it's the one element you compare ACROSS tiles, so it belongs on
-// a shared baseline. It carries the stage colour, which makes 90%-and-ended
-// (red) look nothing like 90%-and-live (amber) at a glance.
+// The progress bar is the tile's bottom edge, not a hairline in the padding:
+// it's the one element compared ACROSS tiles, so it belongs on a shared
+// baseline. It carries the stage colour, so 90%-and-ended (red) looks nothing
+// like 90%-and-live (amber).
 const CampCard = forwardRef(function CampCard(
   { camp, onClick, role, accent, logoUrl },
   ref
@@ -1434,6 +1315,9 @@ const CampCard = forwardRef(function CampCard(
     <motion.div
       ref={ref}
       initial={{ opacity: 0, y: 14, scale: 0.97 }}
+      // Ended or fully paid campaigns sit back at 0.72 so live work reads
+      // first. Against the near-white board that turns the tile grey — which
+      // is the signal, and it fires ONLY on `done`. Hover restores it to full.
       animate={{
         opacity: done ? 0.72 : 1,
         y: 0,
@@ -1457,6 +1341,16 @@ const CampCard = forwardRef(function CampCard(
         damping: 28,
       }}
       onClick={onClick}
+      // Inverts against the #F5F5F7 board so brand imagery has a dark ground
+      // to read against.
+      //
+      // `accent` (sampled from the brand's logo) stays low-intensity — a 33%
+      // border and the 10% glow below, nothing more. STAGE is what you act on
+      // and it owns the loud colour: the status pill and the progress bar. A
+      // brand tint competing with those means reading two colour systems.
+      //
+      // Null for logo-less brands, which stay on the plain hairline. Colour
+      // here always means the brand's real colour, never an assigned hue.
       style={{
         position: "relative",
         display: "flex",
@@ -1467,7 +1361,7 @@ const CampCard = forwardRef(function CampCard(
         cursor: "pointer",
         isolation: "isolate",
 
-        background: "#111216",
+        background: DARK_SURFACE,
 
         border: `1px solid ${
           accent
@@ -2031,23 +1925,14 @@ const CampCard = forwardRef(function CampCard(
 const brandInitials=(s="")=>s.split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase()||"?";
 
 // ── BRAND HEADER ──────────────────────────────────────────────────────────────
-// The banner above each brand's group of campaign tiles.
+// The banner above each brand's tiles. Was a 24px chip and a 15px name — the
+// thing you navigate by was the quietest element on the board. Now a proper
+// tile: centred, taller, carrying the brand's logo.
 //
-// It used to be a 24px chip, a 15px name and a hairline rule, all left-aligned
-// and about as prominent as a table caption — on a board carrying several
-// brands, the thing you actually navigate by was the quietest element on the
-// page. It is now a proper tile: centred, taller, and carrying the brand's own
-// logo.
-//
-// The backdrop is that same logo, blown up and heavily blurred. That is what
-// gives each brand a distinct colour field without needing a stored brand
-// colour — the palette comes from the logo itself. Brands with no logo keep the
-// derived accent (brandAccent) so the treatment degrades to something with the
-// same shape rather than to a blank box.
-// The brand's accent colour, sampled from its uploaded logo when there is one
-// and falling back to the name-derived palette colour when there isn't.
-//
-// See useBrandAccent in lib/brandAccent.js.
+// The backdrop is that logo blown up and blurred, which gives each brand a
+// distinct colour field without a stored brand colour. Logo-less brands fall
+// back to the derived accent (lib/brandAccent.js) so the treatment degrades to
+// the same shape rather than a blank box.
 
 function BrandHeader({label,count,logoUrl,onEditLogo}){
   const [broken,setBroken]=useState(false);
@@ -2108,16 +1993,13 @@ function BrandGroup({label,brandId,rows,role,onSelect,brandLogoUrl,onEditLogo,em
   // wasted decodes.
   const accent=useBrandAccent(logoUrl);
   return(
-    // The masthead and its tiles are ONE enclosed object: a single rounded
-    // container ruled down its left edge, white masthead over a faint grey
-    // field.
-    //
-    // Before this they were two free-floating white tiles with the same radius
-    // and the same border — a campaign and the brand it belongs to were
-    // rendered as the same KIND of thing, so the eye had to read text to tell a
-    // heading from a row. Enclosing the group says "these belong to that"
-    // structurally, which is what frees the masthead to be styled as a heading
-    // rather than as another card, and frees colour to mean stage.
+        // Masthead and tiles are ONE enclosed object: a rounded container ruled
+        // down its left edge, white masthead over a faint grey field.
+        //
+        // They used to be two free-floating white tiles with the same radius and
+        // border — a campaign and the brand it belongs to rendered as the same
+        // KIND of thing. Enclosing the group says "these belong to that"
+        // structurally, which frees colour to mean stage.
     <div style={{marginBottom:34,borderRadius:16,overflow:"hidden",border:"1px solid rgba(0,0,0,0.07)",borderLeft:"3px solid rgba(0,0,0,0.14)",background:"rgba(0,0,0,0.018)",boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
       <BrandHeader label={label} count={rows.length} logoUrl={logoUrl}
         onEditLogo={onEditLogo&&brandId?()=>onEditLogo(brandId):undefined}/>
@@ -2196,25 +2078,16 @@ function CampaignGrid({campaigns,role,onSelect,brandName,brandLogoUrl,onEditLogo
 }
 
 // ── VIEWS — the counts ARE the filter ────────────────────────────────────────
-// One control, not two. The grid used to carry a stat strip (All / Active /
-// In Exec / Attention) that counted but could not be clicked, above a pill row
-// (All / Setup / Money / Exec / Done / Ended) that filtered but showed no
-// numbers. The two named different groups, so a number like "3 Active" led
-// nowhere — there was no pill for it — and the strip counted the ALREADY
-// FILTERED list, which collapsed every number to 0 or 1 the moment a pill was
-// picked. Reading a count and acting on it are the same gesture now.
+// One control, not two. A stat strip counted but couldn't be clicked; a pill
+// row filtered but showed no numbers. They named different groups, so "3
+// Active" led nowhere, and the strip counted the ALREADY FILTERED list —
+// collapsing every number to 0 or 1 the moment a pill was picked.
 //
-// "Active" (not draft/paid, not ended) used to sit here too, next to
-// "In Execution" (creators actively posting). Almost every campaign that isn't
-// a draft, isn't fully paid and hasn't ended IS mid-execution — the two
-// predicates target different axes (finance-track health vs. delivery state)
-// but land on the same campaigns often enough that the pair read as one stat
-// counted twice. In Execution is the one with a specific, actionable meaning
-// ("creators are posting right now"), so it's the one that stayed.
+// "Active" (not draft/paid, not ended) was dropped: it lands on nearly the same
+// campaigns as "In Execution", which has the actionable meaning.
 //
-// Predicates rather than stage-id lists, because two of these span the derived
-// execution track: a campaign is in execution when its creators are working and
-// ended when its date has passed, whatever its stored finance stage says.
+// Predicates, not stage-id lists — two of these span the derived execution
+// track, which the stored finance stage doesn't know about.
 const VIEWS=[
   { id:"all",       label:"All",               icon:"grid",  match:()=>true },
   { id:"execution", label:"In Execution",      icon:"pulse", match:c=>executionStageOf(c)==="execution" },
@@ -2296,16 +2169,13 @@ function EndedNotice({count,onDismiss}){
 }
 
 // ── DIALOG ───────────────────────────────────────────────────────────────────
-// One shell for every confirm-or-collect dialog on this page. Six of them had
-// hand-copied the same backdrop, spring, card chrome, serif title and footer,
-// so the look could only be changed in six places — and they had already
-// drifted: Remove Creator had no enter animation at all and no spacer before
-// its destructive button, so its Cancel and Remove sat side by side while every
-// other dialog put them at opposite ends.
+// One shell for every confirm-or-collect dialog here. Six had hand-copied the
+// same chrome and already drifted — Remove Creator had no enter animation and
+// no spacer, so its buttons sat side by side while every other dialog put them
+// at opposite ends.
 //
-// `confirm` is one object rather than four props because the label, the colour
-// and the guard are one decision: a danger button saying "Delete campaign" that
-// is disabled until a reason is picked is a single description of the action.
+// `confirm` is one object, not four props: the label, the colour and the guard
+// are a single description of the action.
 function Dialog({title,sub,width=400,onCancel,confirm,children}){
   return(<div style={{position:"fixed",inset:0,zIndex:600,display:"flex",alignItems:"center",justifyContent:"center"}}>
     <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}}
@@ -2467,15 +2337,13 @@ function ExtendEndModal({camp,onConfirm,onCancel}){
 }
 
 // ── CLIENT PO MODAL ──────────────────────────────────────────────────────────
-// The PO stage used to advance on a bare "Mark Purchase Order Raised" button:
-// an assertion that a PO existed somewhere, creating no record, no number and
-// no amount. Meanwhile Billing had a real PO model that the campaign never
-// touched — which is how client PO records ended up holding *vendor* PO
-// numbers, the only route to one being to staple a number onto an invoice
-// after the fact.
+// The PO stage used to advance on a bare "Mark Purchase Order Raised" — an
+// assertion that a PO existed somewhere, with no record, number or amount.
+// Billing had a real PO model the campaign never touched, which is how client
+// PO records ended up holding *vendor* PO numbers.
 //
-// Now the stage advances because the PO exists. This collects it, writes the
-// client PO, links it to the campaign's invoice, and the transition follows.
+// Now the stage advances because the PO exists: this collects it, writes the
+// client PO, links it to the invoice, and the transition follows.
 function ClientPOModal({camp,invoiceAmount,onConfirm,onCancel}){
   const [poNumber,setPo]=useState("");
   const [amount,setAmount]=useState(String(invoiceAmount||camp.budget||0));
@@ -3023,17 +2891,14 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   </div>);
 }
 
-// ── DRAFT-ON-BLUR MONEY CELL ─────────────────────────────────────────────────
-// Same reasoning as AssetCell below: a free-text field must not commit per
-// keystroke. Typing "1,50,000" through the raw MoneyInput fired six full
-// campaign PATCHes plus — for a locked creator — six expense PATCHes, all
-// racing each other, and every intermediate value ("1", "15", "150"…) was
-// briefly the creator's real committed cost in Billing.
-// Hold a local draft, commit once on blur, and re-sync when the underlying
-// value changes (so switching creators never shows a stale draft). Shared by
-// every free-text cell that writes straight to the campaign — typing "150000"
-// per keystroke fires six PATCHes racing each other, and each intermediate
-// value is briefly real.
+    // ── DRAFT-ON-BLUR MONEY CELL ─────────────────────────────────────────────────
+    // A free-text field must not commit per keystroke. Typing "1,50,000" fired
+    // six campaign PATCHes — plus six expense PATCHes for a locked creator — all
+    // racing, and every intermediate value ("1", "15", "150") was briefly the
+    // creator's real committed cost in Billing.
+    //
+    // Hold a local draft, commit on blur, re-sync when the underlying value
+    // changes so switching creators never shows a stale draft.
 function useDraft(value,onCommit,parse){
   const [draft,setDraft]=useState(String(value ?? ""));
   useEffect(()=>{setDraft(String(value ?? ""));},[value]);
@@ -3059,16 +2924,13 @@ function DelivCell({value,onCommit,style,title}){
     onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}} style={style}/>;
 }
 
-// ── ASSET CELL (Concept / Demo) ──────────────────────────────────────────────
-// The two columns were duplicated blocks differing only by label and patcher.
-//
-// The file link is now always present, at every status — the link IS the
-// deliverable, so hiding the field until the status happened to be Received or
-// Rework meant an approved asset had nowhere to record where it lives.
-//
-// The input holds a local draft and commits on blur rather than on change.
-// Committing per keystroke fired a full campaign PATCH per character — dozens
-// of round trips to type one Drive URL, each racing the last.
+    // ── ASSET CELL (Concept / Demo) ──────────────────────────────────────────────
+    // Concept and Demo were duplicated blocks differing only by label and patcher.
+    //
+    // The file link is present at EVERY status — the link IS the deliverable, so
+    // hiding it unless the status was Received/Rework left an approved asset with
+    // nowhere to record where it lives. Draft-on-blur for the same reason as the
+    // money cell above.
 function AssetCell({label,asset,canEdit,onPatch,style={}}){
   const [draft,setDraft]=useState(asset.fileLink||"");
   // Re-sync when the campaign or creator underneath changes, so the box never
@@ -3191,37 +3053,27 @@ function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
   const totV=wd.reduce((s,c)=>s+(c.tracking.views||0),0);
   const totL=wd.reduce((s,c)=>s+(c.tracking.likes||0),0);
   const totC=wd.reduce((s,c)=>s+(c.tracking.comments||0),0);
-  // Forwards are reported as an AVERAGE PER POST, not a campaign total. A total
-  // says more about how many creators are live than about how shareable the
-  // content is, so it climbed all through execution and could never be compared
-  // against another campaign. The average is the per-post number a creator or a
-  // concept can actually be judged on.
-  //
-  // Denominator counts only posts on platforms that report forwards — YouTube
-  // returns null, and folding those posts in would halve the average of a mixed
-  // roster for no reason other than the platform mix. postsCounted is what the
-  // refresh recorded; ||1 covers rows tracked before it existed.
+      // Forwards are an AVERAGE PER POST, not a campaign total. A total tracks how
+      // many creators are live rather than how shareable the content is, so it
+      // climbed all through execution and couldn't be compared across campaigns.
+      //
+      // Denominator counts only posts on platforms that report forwards —
+      // YouTube returns null, and folding those in would halve a mixed roster's
+      // average for no reason. `||1` covers rows tracked before postsCounted.
   const fw=wd.filter(c=>c.tracking.forwards!=null);
   const totF=fw.reduce((s,c)=>s+c.tracking.forwards,0);
   const fwPosts=fw.reduce((s,c)=>s+(c.tracking.postsCounted||1),0);
   const avgF=fwPosts>0?totF/fwPosts:null;
-  // OVERALL CPV — the campaign's cost per view across every post that has
-  // reported back, which is the number this card exists to give.
-  //
-  // The cost is summed over `wd` (creators WITH view data), not `rows` (every
-  // locked creator), and the difference is the whole correctness of the metric.
-  // Summing over `rows` divided one set by another: the fees of creators who
-  // hadn't posted yet were charged against views only the posted ones had
-  // produced. On a campaign three creators deep with one live, CPV read ~3x its
-  // real value and fell as the others went up — so the number moved most when
-  // nothing about the media buy had changed, and two campaigns could never be
-  // compared unless they happened to be equally far along.
-  //
-  // Matching the sets makes it a true cost-per-view of the measured portion, and
-  // the "Based on N of M creators with live data" line below already states the
-  // scope that qualifies it.
-  //Overall CPV → Creator Cost / Views
-//External CPV → Campaign Budget / Views
+      // OVERALL CPV — cost per view across every post that has reported back.
+      //
+      // Cost is summed over `wd` (creators WITH view data), not `rows` (every
+      // locked creator). Summing over `rows` charged the fees of creators who
+      // hadn't posted against views only the posted ones produced: three deep with
+      // one live, CPV read ~3x and FELL as the others went up, so the number moved
+      // most when nothing about the media buy had changed.
+      //
+      //   Overall CPV  → creator cost / views
+      //   External CPV → campaign budget / views
   const totCost=wd.reduce((s,c)=>s+costOf(c),0);
   // Cost per view runs to five decimals. At agency scale the numerator is
   // lakhs and the denominator is millions, so two decimals rounded almost
@@ -3627,17 +3479,14 @@ function LockBriefModal({camp,onConfirm,onCancel}){
   </div>);
 }
 
-// ── TEAM TAB ─────────────────────────────────────────────────────────────────
-// One rule: slots are freely assignable and re-assignable up to the PO, and
-// frozen from then on. That boundary is the same one the brief uses (beforePO)
-// — once the PO is raised the campaign is committed to the client, and moving
-// it off someone also revokes their access to it (see canSee), so past that
-// point it's a governance decision rather than an inline edit.
-//
-// These slots are also the Draft gate: filling all three moves the campaign to
-// Brief Log on its own (see the assign_* cases in onAction). That's why the
-// form warns before the last slot is saved — the transition is automatic, so
-// there is no confirmation dialog to catch it afterwards.
+    // ── TEAM TAB ─────────────────────────────────────────────────────────────────
+    // Slots are freely re-assignable up to the PO and frozen after — the same
+    // boundary the brief uses (beforePO). Past it the campaign is committed to the
+    // client, and moving it off someone revokes their access (see canSee).
+    //
+    // These slots are also the Draft gate: filling all three advances to Brief Log
+    // on its own, which is why the form warns BEFORE the last slot is saved —
+    // there is no confirmation dialog to catch it afterwards.
 const TEAM_SLOTS=[
   {key:"am",label:"Account Manager", campKey:"amId",action:"assign_am",roles:["am","pcm","founder"]},
   {key:"cm",label:"Category Manager",campKey:"cmId",action:"assign_cm",roles:["cm","pcm"]},
@@ -3982,16 +3831,14 @@ function StepRail({step,onGo}){
 
 function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
   const [step,setStep]=useState(0);
-  // creatorBudgetMode decides which of the two creator-budget inputs is live —
-  // the other is kept around so toggling back doesn't lose what was typed.
-  //
-  // brandId seeds from the active brand filter. Someone working inside one
-  // brand — the whole app is filtered to it, every campaign on screen is
-  // theirs — was still landing on an empty brand picker and re-choosing it,
-  // and picking the wrong one silently files the campaign (and every invoice
-  // and PO that follows) under another client. It stays a normal editable
-  // field; only the default changes. `brands` may not have loaded yet, so the
-  // id is validated against the list before it's trusted.
+      // creatorBudgetMode picks which creator-budget input is live; the other is
+      // kept so toggling back doesn't lose what was typed.
+      //
+      // brandId seeds from the active brand filter — someone working inside one
+      // brand was still landing on an empty picker, and picking wrong silently
+      // files the campaign (and every invoice and PO after it) under another
+      // client. Still editable; only the default changes. Validated against
+      // `brands`, which may not have loaded yet.
   const [f,setF]=useState({name:"",brandId:brands.some(b=>b.id===brandFilter)?brandFilter:"",service:"Influencer Marketing",region:"",niches:[],budget:"",numCreators:5,deliverablesPerCreator:1,creatorBudgetMode:"pct",creatorBudgetPct:60,creatorBudgetAmt:"",objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
   // Staged only — nothing is written to the backend until the campaign is
   // actually submitted, so abandoning this modal never leaves an orphan brand.
@@ -4166,17 +4013,15 @@ export default function InternalCampaigns(){
   useEffect(()=>{
     let cancelled=false;
     CampaignsAPI.list()
-      // Legacy shapes are normalised once, here, so nothing downstream ever
-      // sees a retired 16-stage id (LEGACY_STAGE) or a creator still carrying
-      // `fee`/`negotiatedCost` instead of `cost` (normCreator). Nothing is
-      // written back on load — the mapped values persist with the next save the
-      // campaign makes, which self-heals the collection on its own.
-      //
-      // The creator half matters for release safety: without it, every read of
-      // `cr.cost` depends on scrap/migrate_creator_fee_to_cost.js having already
-      // run against that environment. Deploy the two in the wrong order and
-      // creator invoices render ₹0 and locked creators post an expense of zero
-      // — silently, because 0 is a legal cost.
+          // Legacy shapes are normalised once here, so nothing downstream sees a
+          // retired 16-stage id (LEGACY_STAGE) or a creator carrying
+          // `fee`/`negotiatedCost` instead of `cost` (normCreator). Nothing is
+          // written back on load — mapped values persist with the next save.
+          //
+          // The creator half is release-safety: without it, every read of
+          // `cr.cost` depends on the fee→cost migration having already run in that
+          // environment. Wrong order and creator invoices render ₹0 silently,
+          // because 0 is a legal cost.
       .then(data=>{ if(!cancelled){ setCampaigns(data.map(c=>({...c,stage:normStage(c.stage),creators:(c.creators||[]).map(normCreator)}))); setLoading(false); } })
       .catch(err=>{ if(!cancelled){ setLoadError(err.message); setLoading(false); } });
     return ()=>{ cancelled=true; };
@@ -4232,17 +4077,15 @@ export default function InternalCampaigns(){
         case "assign_am": next=assign("amId",data.amId,"AM");break;
         case "assign_cm": next=assign("cmId",data.cmId,"CM");break;
         case "assign_ea": next=assign("eaId",data.eaId,"EA");break;
-        // Every gated transition re-checks its condition HERE as well as in the
-        // UI. The reducer is the only write path, so guarding it means a stale
-        // render (or a second tab) can't push a campaign through a gate that
-        // has stopped being satisfied.
-        //
-        // Locking the brief lands on Team Assigned directly when the team is
-        // already staffed. That case is normal, not exotic: the wizard stamps
-        // the creator into their own slot, so a campaign raised by an AM only
-        // needs a CM and an EA, and both may well be picked before anyone
-        // writes the brief. Stopping at Brief Locked with nothing left to
-        // assign would strand it on a node it had already satisfied.
+            // Every gated transition re-checks its condition HERE as well as in
+            // the UI. The reducer is the only write path, so a stale render or a
+            // second tab can't push a campaign through a gate that has stopped
+            // being satisfied.
+            //
+            // Locking the brief lands on Team Assigned directly when the team is
+            // already staffed — normal, not exotic: the wizard stamps the creator
+            // into their own slot, so an AM-raised campaign only needs a CM and an
+            // EA, often picked before the brief is written.
         case "lock_brief": {
           const gaps=briefGaps(c);
           if(gaps.length){ blocked=`Brief incomplete — ${gaps.join(", ")} still needed`; next=c; break; }
@@ -4285,20 +4128,18 @@ export default function InternalCampaigns(){
         // PO left no quote and no invoice, the stage moved anyway, and nobody
         // found out until the books were reconciled. `warn` says so instead.
         const warn=what=>()=>showToast(`${what} — campaign moved, but the record wasn't created. Retry from Billing.`);
-        // The lock is the moment the commercials stop being a draft: the budget
-        // and the creator split are agreed and the brief freezes. That is what a
-        // quote is, so it is raised here — with the campaign's real numbers,
-        // not the invented percentages the old auto-quote carried.
-        //
-        // The quote's margin is expressed as a single percentage because that
-        // is the shape quoteMargin() takes, and it resolves back to exactly the
-        // campaign's own split: margin = budget − creator pool, ops = pool.
-        // `updatedCamp`, not `next` — `next` is scoped to the setCampaigns
-        // updater above, so reading it here threw a ReferenceError before the
-        // create could fire. The stage had already been PATCHed on the line
-        // above, so the lock moved the campaign on and silently raised no quote
-        // at all. Caught by walking the UI; an API-level test can't see it,
-        // because the test makes the POST itself.
+            // The lock is where the commercials stop being a draft — budget and
+            // creator split agreed, brief frozen. That is what a quote is, so it
+            // is raised here with the campaign's real numbers rather than the
+            // invented percentages the old auto-quote carried.
+            //
+            // Margin is one percentage because that is quoteMargin()'s shape, and
+            // it resolves back to the campaign's own split: margin = budget −
+            // creator pool, ops = pool.
+            //
+            // `updatedCamp`, not `next` — `next` is scoped to the setCampaigns
+            // updater, so reading it here threw and the lock silently raised no
+            // quote at all. Only visible by walking the UI.
         if(action==="lock_brief"&&briefLocked(updatedCamp)){
           const budget=updatedCamp.budget||0, pool=creatorBudgetOf(updatedCamp);
           if(budget>0) QuotesAPI.create({

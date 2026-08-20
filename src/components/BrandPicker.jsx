@@ -2,29 +2,21 @@ import { useState, useRef, useEffect } from "react";
 import { T } from "../theme/tokens";
 import { zoomOf } from "../lib/zoom";
 
-// Single searchable control for "pick a brand, or create one" — replaces the
-// pattern that had drifted into three near-identical hand-rolled copies
-// (Campaigns' CreateModal, Auth's CredentialModal, Requests' ClientRequestsPanel):
-// a <select> stacked on top of a permanently-visible "+ Add new brand…" input
-// and its own Add button.
+// Single searchable control for "pick a brand, or create one" — replaces three
+// near-identical hand-rolled copies (Campaigns' CreateModal, Auth's
+// CredentialModal, Requests' ClientRequestsPanel).
 //
-// Two explicit modes rather than one input serving both jobs. The first cut
-// only offered "create" by typing a name that happened to match nothing —
-// which works, but nothing in the closed control or the empty dropdown told
-// you that was possible, so the capability was there and undiscoverable. A
-// pinned "+ Add a new brand" row is now always visible under the search
-// results and switches the popover into its own small create form (name
-// field + Cancel/Create), the same shape as every other add-new flow in the
-// app, instead of overloading the search box's Enter key.
+// Two explicit modes, not one input doing both. The first cut only offered
+// "create" by typing a name that matched nothing — it worked, but nothing told
+// you it was possible. A pinned "+ Add a new brand" row now switches the popover
+// into its own create form, rather than overloading the search box's Enter key.
 //
-// Positioning follows DateInput's popover convention (fixed, escapes the
-// modal's own overflow:auto) rather than introducing a new one.
+// Positioning follows DateInput's popover convention (fixed, escapes the modal's
+// overflow:auto).
 //
 // Committed selection stays with the caller — `value` is a brand id or the
-// "__new__" sentinel, `pendingName` is the staged name for that sentinel —
-// exactly the shape all three callers already used, so wiring this in doesn't
-// touch their submit logic. Only the search/open/typed-query state, which was
-// never shared anyway, moves in here.
+// "__new__" sentinel, `pendingName` the staged name — the shape all three
+// callers already used, so wiring this in doesn't touch their submit logic.
 export default function BrandPicker({ brands, value, pendingName, onSelect, onCreate, placeholder = "Select or create a brand…" }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState("search"); // "search" | "create"

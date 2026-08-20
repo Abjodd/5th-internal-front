@@ -85,10 +85,8 @@ export const SECTIONS = [
     color: T.gold,
     roles: ["founder"],
   },
-  // ── AEO / AI Visibility — temporarily hidden from the nav & routes,
-  // matching the original app's state. The page code lives at
-  // src/pages/AEO and is fully migrated/restructured; re-enable by
-  // uncommenting this entry and its <Route> in App.jsx.
+  // AEO / AI Visibility — hidden from nav and routes. Page code lives in
+  // src/pages/AEO; re-enable by uncommenting this entry and its <Route> in App.jsx.
   // {
   //   id: "aeo",
   //   path: "/aeo",

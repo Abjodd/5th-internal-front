@@ -121,22 +121,37 @@ export function accentFromImage(url) {
 }
 
 /**
- * The brand's accent, or null while it is still being decoded and for any brand
- * with no usable logo.
+ * Accents for several logos at once, as a `{ [logoUrl]: hex | null }` map.
  *
- * Starts null rather than at a placeholder colour, so a card is never briefly
- * the wrong colour on the way to the right one — it goes from uncoloured to
+ * The campaign board lists every brand's work in one flat list, so the colours
+ * cannot be resolved a brand at a time — a hook can't be called inside the map
+ * that renders the rows. Resolved together here instead, in one pass over the
+ * distinct URLs, which is also one state update rather than N.
+ *
+ * A URL is absent from the map until it resolves, so a row is never briefly the
+ * wrong colour on the way to the right one — it goes from uncoloured to
  * coloured, which is a much quieter transition than one hue swapping for
  * another.
  */
-export function useBrandAccent(logoUrl) {
-  const [accent, setAccent] = useState(null);
+export function useBrandAccents(logoUrls = []) {
+  // Joined, so the effect keys on the URLs themselves rather than on the
+  // identity of an array the caller rebuilds every render.
+  const key = [...new Set(logoUrls.filter(Boolean))].sort().join("\n");
+  const [accents, setAccents] = useState({});
   useEffect(() => {
     let live = true;
-    setAccent(null);
-    if (!logoUrl) return undefined;
-    accentFromImage(logoUrl).then((c) => { if (live) setAccent(c); });
+    const urls = key ? key.split("\n") : [];
+    Promise.all(
+      urls.map((url) => accentFromImage(url).then((c) => [url, c])),
+    ).then((pairs) => { if (live) setAccents(Object.fromEntries(pairs)); });
     return () => { live = false; };
-  }, [logoUrl]);
-  return accent;
+  }, [key]);
+  return accents;
+}
+
+/** One brand's accent, or null while it decodes and for any brand with no
+ *  usable logo. */
+export function useBrandAccent(logoUrl) {
+  const accents = useBrandAccents(logoUrl ? [logoUrl] : []);
+  return accents[logoUrl] ?? null;
 }

@@ -88,6 +88,26 @@ export const normStage = s => PL_IDS.includes(s) ? s : (LEGACY_STAGE[s] || "draf
 export const stageLabel = s => (PIPELINE.find(p => p.id === normStage(s)) || PIPELINE[0]).label;
 export const stageIdx   = s => PL_IDS.indexOf(normStage(s));
 
+// ── RECENCY ──────────────────────────────────────────────────────────────────
+// When a campaign was created, in ms. Campaign documents carry no createdAt —
+// the Mongoose schema is strict:false and was never timestamped — so this reads
+// the next best record of the same moment, in descending order of precision:
+//
+//   1. the id, which the New Campaign form stamps as `camp_<slug>_<base36 ms>`
+//   2. the "Campaign created" timeline entry, which is day-precision
+//   3. the campaign's start date
+//
+// 0 for anything unreadable, so a campaign with no legible creation date sorts
+// to the BOTTOM of a newest-first list rather than to the top of it.
+export function createdAtOf(camp) {
+  const stamp = parseInt(String(camp?.id || "").split("_").pop(), 36);
+  // Anything before 2010 is a slug fragment that happened to parse, not a date.
+  if (Number.isFinite(stamp) && stamp > 1262304000000) return stamp;
+  const day = camp?.timeline?.[0]?.date || camp?.start;
+  const parsed = Date.parse(`${day}T00:00:00`);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 // Campaign money + creator-shape helpers shared by Campaigns (owns the record)
 // and Billing (derives the P&L and payee registry from it).
 //

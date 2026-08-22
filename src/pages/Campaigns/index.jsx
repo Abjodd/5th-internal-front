@@ -7,18 +7,19 @@
  import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect, forwardRef } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useOutletContext } from "react-router-dom";
-import { motion, AnimatePresence, useSpring, useMotionValueEvent, useReducedMotion } from "motion/react";
+import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
-import { fmtCompact, fmtINR, prettyDate, initials, ISO_DATE, todayISO } from "../../lib/format";
-import { useBrandAccent } from "../../lib/brandAccent";
+import { fmtCompact, fmtINR, prettyDate, initials, ISO_DATE, todayISO, isoDay } from "../../lib/format";
+import { useBrandAccents } from "../../lib/brandAccent";
 import { creatorBudgetOf, numReqOf, perCreatorOf, costOf, normCreator, creatorExpensePlan, isLockedCreator,
          PIPELINE, PL_IDS, COMMON_STAGES, FIN_STAGES, EXEC_STAGES, EXEC_NODES,
          normStage, stageIdx, extUrl, rosterReady, rosterGap, lockedCountOf,
          perCreatorDelivOf, delivTargetOf, totalDelivOf, liveLinksOf, withLiveLinks, delivDoneOf,
          teamComplete, briefLocked, assetIn, execStats, execDone, briefGaps, executionStageOf,
-         expenseIdFor, CREATOR_PAY_STATUSES, creatorPayStatusOf, creatorPayStats } from "../../lib/campaign";
+         CREATOR_PAY_STATUSES, creatorPayStatusOf, creatorPayStats,
+         createdAtOf } from "../../lib/campaign";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
 import PhoneInput from "../../components/PhoneInput";
@@ -29,7 +30,7 @@ import CreatorHandle from "../../components/CreatorHandle";
 import Donut from "../../components/Donut";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
-import { T as BASE_T, DARK_SURFACE } from "../../theme/tokens";
+import { T as BASE_T } from "../../theme/tokens";
 
 // Stage → colour, layered on top of the shared theme. Both tracks are keyed
 // into one map: the fork means a campaign has two live nodes at once, and
@@ -77,23 +78,6 @@ const ROLES = [
 
 // PIPELINE / LEGACY_STAGE / normStage now live in lib/campaign.js — Billing
 // reads a campaign's stage too, and the two must not drift.
-//
-// One hint per node across BOTH tracks, since the header renders them side by
-// side. Each says what is being waited on and who does it — a node the reader
-// can't act on should still tell them whose move it is.
-const STAGE_HINT = {
-  draft:            "Fill the brief in and lock it — Founder or PCM signs it off",
-  brief_locked:     "Brief locked — assign the Account Manager, Category Manager and Exec Associate",
-  team_assigned:    "Team on the campaign — execution can start and the client PO can be recorded",
-  // Finance
-  po_raised:        "Client PO recorded — awaiting the advance payment",
-  advance_received: "Advance received — raise the final invoice when delivery is done",
-  invoice_raised:   "Invoice issued to the client — awaiting payment",
-  payment_done:     "Client has paid in full — the campaign is settled",
-  // Execution
-  execution:        "Creators locked, scripting, shooting and going live",
-  creator_payment:  "Every creator is live — invoice them and settle their fees",
-};
 
 // ── CONSTANTS ────────────────────────────────────────────────────────────────
 const IM_DELIVERABLES = [
@@ -565,18 +549,6 @@ const Chip=({on,onClick,title,children,style={}})=>(
   <button onClick={onClick} title={title} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,
     background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`,...style}}>{children}</button>
 );
-// Overlapping team stack. Only the AM is accented — the slot that owns the
-// campaign — so the colour means something rather than being three different
-// tints you have to decode. Full names sit in the tooltip.
-const AvStack=({people})=>(
-  <div style={{display:"flex",alignItems:"center"}}>
-    {people.map(({m,l},i)=>(
-      <div key={l} title={`${l} · ${m.name}`} style={{marginLeft:i?-5:0,zIndex:people.length-i,borderRadius:6,boxShadow:"0 0 0 1.5px #FFFFFF"}}>
-        <Av init={m.avatar} size={19} muted={l!=="AM"}/>
-      </div>
-    ))}
-  </div>
-);
 const Lbl=({children,color,style={}})=><span style={{fontSize:9.5,fontWeight:600,color:color||"#6E6E73",textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:SF,...style}}>{children}</span>;
 // Caps label over a value. The card's delivery strip and the detail header's
 // meta row are the same object at two sizes — `small` is the card's.
@@ -678,16 +650,6 @@ const EXEC_MILESTONES = [
 ];
 const PAY_COLOR = { pending:"#C7C7CC", invoice_raised:T.amber, paid:T.green };
 
-// Headline percentage, tweened. Initialised at the true value so mounting (or
-// switching campaigns) snaps rather than counting up from zero every time.
-function useCountUp(value){
-  const mv = useSpring(value, { stiffness:140, damping:26 });
-  const [shown,setShown] = useState(value);
-  useEffect(()=>{ mv.set(value); },[value,mv]);
-  useMotionValueEvent(mv,"change",v=>setShown(Math.round(v)));
-  return shown;
-}
-
 // ── HOVER PREVIEW ────────────────────────────────────────────────────────────
 // Anchors a portalled card under an element and KEEPS it anchored. Measuring
 // once on mouseenter isn't enough — the header scrolls, so the card stayed
@@ -700,7 +662,6 @@ function useCountUp(value){
 // The card landed at zoom × x, drifting further right the further right the
 // node sat. Divide the measurement back out — see lib/zoom.js, shared with
 // every position:fixed popover anchored to a rect.
-
 function useAnchor(target, width){
   const [pos,setPos] = useState(null);
   useLayoutEffect(()=>{
@@ -1283,796 +1244,253 @@ function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAge
   </div>);
 }
 
-// ── CAMPAIGN CARD (grid tile) ─────────────────────────────────────────────────
-// Three fixed bands — identity, money, status footer — so a row of tiles lines
-// up even when one campaign has no team and another has a date warning.
+// ── BRAND MARK ────────────────────────────────────────────────────────────────
+// The brand's logo, and the control that sets it. The mark IS the button —
+// that's where someone looking to change it already is, and an empty one is the
+// most legible "nothing here yet" affordance the board can carry. It stops the
+// click from reaching the row it sits in, so editing a logo never also opens a
+// campaign.
+const brandInitials=(s="")=>s.split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase()||"?";
+
+function BrandMark({label,logoUrl,accent,size=38,onEdit}){
+  const [broken,setBroken]=useState(false);
+  const show=!!logoUrl&&!broken;
+  return(
+    <div
+      onClick={onEdit?e=>{e.stopPropagation();onEdit();}:undefined}
+      title={onEdit?(show?`Change ${label}'s logo`:`Set ${label}'s logo`):label}
+      style={{width:size,height:size,borderRadius:Math.round(size*0.29),flexShrink:0,overflow:"hidden",
+        background:show?"#FFFFFF":"rgba(0,0,0,0.05)",
+        // The one place the brand's own colour touches the row's interior — a
+        // ring around its own logo, where it can't be mistaken for a status.
+        border:`1px solid ${accent?`${accent}55`:"rgba(0,0,0,0.09)"}`,
+        display:"flex",alignItems:"center",justifyContent:"center",
+        fontSize:Math.round(size*0.32),fontWeight:700,color:"#86868B",fontFamily:SF,letterSpacing:"-0.02em",
+        cursor:onEdit?"pointer":"inherit"}}
+    >
+      {show
+        ? <img src={logoUrl} alt="" onError={()=>setBroken(true)} style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+        : brandInitials(label)}
+    </div>
+  );
+}
+
+// ── CAMPAIGN CARD ─────────────────────────────────────────────────────────────
+// One campaign, one card, in a flat grid ordered newest-first.
 //
-// The progress bar is the tile's bottom edge, not a hairline in the padding:
-// it's the one element compared ACROSS tiles, so it belongs on a shared
-// baseline. It carries the stage colour, so 90%-and-ended (red) looks nothing
-// like 90%-and-live (amber).
-const CampCard = forwardRef(function CampCard(
-  { camp, onClick, role, accent, logoUrl },
-  ref
-) {
-  const col = viewCol(camp, role);
-  const pl = viewPl(camp, role);
-  
-  const es = endStatus(camp.end, camp.stage);
-  const team = [
-    { m: getM(camp.amId), l: "AM" },
-    { m: getM(camp.cmId), l: "CM" },
-    { m: getM(camp.eaId), l: "EA" },
-  ].filter((x) => x.m);
+// The board used to group 205px tiles under a brand masthead, so reading it
+// meant reading brand-first: six campaigns cost six headers and most of a
+// screen, and the newest campaign could be anywhere on the page. Grouping is
+// gone — recency IS the structure now — and the brand became an attribute of
+// the card it belongs to: its logo, its name, and the colour sampled from that
+// logo along the card's top edge.
+//
+// The ring is the card's centre of gravity because progress is the one thing
+// every campaign has and the one thing worth comparing at a glance. It carries
+// the STAGE colour and the stage names itself underneath it, which is what lets
+// the rest of the card stay uncoloured — a 90%-and-ended card looks nothing
+// like a 90%-and-live one without either of them needing a second chip.
+//
+// Colour still means stage and only stage. The brand accent is confined to the
+// top rule and the ring around its own logo, so a board of six brands never
+// becomes a field of competing hues.
+const CARD_LINE = "1px solid rgba(0,0,0,0.06)";
 
-  const pct = progressOf(camp);
-  const st = execStats(camp);
+// Figure over caption — the figure is what you are scanning for, so it reads
+// first and the caption explains it, rather than the other way round.
+const CardStat = ({label,value}) => (
+  <div style={{padding:"9px 5px",textAlign:"center",minWidth:0}}>
+    <div style={{fontFamily:SF,fontSize:12,fontWeight:600,color:"#1D1D1F",letterSpacing:"-0.02em",
+      fontVariantNumeric:"tabular-nums",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+      {value}
+    </div>
+    <Lbl color="#A0A0A6" style={{display:"block",marginTop:2,fontSize:8.5,letterSpacing:"0.09em"}}>{label}</Lbl>
+  </div>
+);
 
-  const done =
-    hasEnded(camp) || normStage(camp.stage) === "payment_done";
-
-  return (
+// forwardRef because AnimatePresence's popLayout measures the card it is
+// animating out — a plain function component silently loses that ref.
+const CampaignCard = forwardRef(function CampaignCard(
+  {camp,role,accent,logoUrl,brandLabel,onClick,onEditLogo},
+  ref,
+){
+  const col=viewCol(camp,role);
+  const pl=viewPl(camp,role);
+  const es=endStatus(camp.end,camp.stage);
+  const pct=progressOf(camp);
+  const st=execStats(camp);
+  const team=[
+    {m:getM(camp.amId),l:"AM"},
+    {m:getM(camp.cmId),l:"CM"},
+    {m:getM(camp.eaId),l:"EA"},
+  ].filter(x=>x.m);
+  // Ended or fully paid campaigns sit back at 0.72 so live work reads first.
+  // Hover restores them to full.
+  const done=hasEnded(camp)||normStage(camp.stage)==="payment_done";
+  const added=createdAtOf(camp);
+  return(
     <motion.div
       ref={ref}
-      initial={{ opacity: 0, y: 14, scale: 0.97 }}
-      // Ended or fully paid campaigns sit back at 0.72 so live work reads
-      // first. Against the near-white board that turns the tile grey — which
-      // is the signal, and it fires ONLY on `done`. Hover restores it to full.
-      animate={{
-        opacity: done ? 0.72 : 1,
-        y: 0,
-        scale: 1,
-      }}
-      exit={{
-        opacity: 0,
-        scale: 0.96,
-        transition: { duration: 0.12 },
-      }}
-      whileHover={{
-        y: -6,
-        opacity: 1,
-        boxShadow:
-          "0 24px 55px rgba(0,0,0,0.16), 0 4px 14px rgba(0,0,0,0.08)",
-      }}
-      whileTap={{ scale: 0.985 }}
-      transition={{
-        type: "spring",
-        stiffness: 340,
-        damping: 28,
-      }}
+      role="button" tabIndex={0}
       onClick={onClick}
-      // Inverts against the #F5F5F7 board so brand imagery has a dark ground
-      // to read against.
-      //
-      // `accent` (sampled from the brand's logo) stays low-intensity — a 33%
-      // border and the 10% glow below, nothing more. STAGE is what you act on
-      // and it owns the loud colour: the status pill and the progress bar. A
-      // brand tint competing with those means reading two colour systems.
-      //
-      // Null for logo-less brands, which stay on the plain hairline. Colour
-      // here always means the brand's real colour, never an assigned hue.
-      style={{
-        position: "relative",
-        display: "flex",
-        flexDirection: "column",
-        minHeight: 205,
-        borderRadius: 20,
-        overflow: "hidden",
-        cursor: "pointer",
-        isolation: "isolate",
-
-        background: DARK_SURFACE,
-
-        border: `1px solid ${
-          accent
-            ? `${accent}55`
-            : "rgba(255,255,255,0.12)"
-        }`,
-
-        boxShadow:
-          "0 8px 25px rgba(0,0,0,0.07)",
-
-        transition:
-          "border-color .35s ease, box-shadow .35s ease",
-      }}
+      onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();onClick();}}}
+      initial={{opacity:0,y:10,scale:0.985}}
+      animate={{opacity:done?0.72:1,y:0,scale:1}}
+      exit={{opacity:0,scale:0.97,transition:{duration:0.12}}}
+      whileHover={{opacity:1,y:-4,boxShadow:"0 16px 38px rgba(0,0,0,0.11)"}}
+      whileTap={{scale:0.99}}
+      transition={{type:"spring",stiffness:340,damping:30}}
+      style={{position:"relative",display:"flex",flexDirection:"column",
+        borderRadius:16,background:"#FFFFFF",border:"1px solid rgba(0,0,0,0.07)",
+        boxShadow:"0 1px 2px rgba(0,0,0,0.04)",cursor:"pointer",overflow:"hidden",outline:"none"}}
     >
+      {/* BRAND RULE — the brand's own colour, and the only place on the card
+          it appears besides the ring around its logo. */}
+      <div aria-hidden="true" style={{height:3,background:accent||"rgba(0,0,0,0.07)"}}/>
 
-      {/* =========================================================
-          BRAND IMAGE — ATMOSPHERIC BACKGROUND
-      ========================================================= */}
-
-      {logoUrl && (
-        <>
-          <motion.img
-            src={logoUrl}
-            alt=""
-            aria-hidden="true"
-            whileHover={{
-              scale: 1.17,
-            }}
-            transition={{
-              duration: 0.8,
-              ease: [0.22, 1, 0.36, 1],
-            }}
-            style={{
-              position: "absolute",
-              inset: -12,
-              width: "calc(100% + 24px)",
-              height: "calc(100% + 24px)",
-              objectFit: "cover",
-              objectPosition: "center",
-
-              opacity: 0.28,
-
-              filter:
-                "blur(3px) saturate(0.85) contrast(1.05)",
-
-              transform: "scale(1.10)",
-
-              pointerEvents: "none",
-              zIndex: 0,
-            }}
-          />
-
-          {/* LEFT → RIGHT CONTRAST */}
-          <div
-            aria-hidden="true"
-            style={{
-              position: "absolute",
-              inset: 0,
-              background:
-                "linear-gradient(105deg, rgba(10,11,14,0.97) 0%, rgba(10,11,14,0.88) 38%, rgba(10,11,14,0.52) 72%, rgba(10,11,14,0.30) 100%)",
-              pointerEvents: "none",
-              zIndex: 1,
-            }}
-          />
-
-          {/* BOTTOM FADE */}
-          <div
-            aria-hidden="true"
-            style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              bottom: 0,
-              height: "58%",
-              background:
-                "linear-gradient(transparent, rgba(10,11,14,0.96))",
-              pointerEvents: "none",
-              zIndex: 1,
-            }}
-          />
-        </>
-      )}
-
-      {/* =========================================================
-          SUBTLE BRAND GLOW
-      ========================================================= */}
-
-      {accent && (
-        <div
-          aria-hidden="true"
-          style={{
-            position: "absolute",
-            width: 180,
-            height: 180,
-            top: -100,
-            right: -70,
-            borderRadius: "50%",
-            background: accent,
-            opacity: 0.10,
-            filter: "blur(55px)",
-            pointerEvents: "none",
-            zIndex: 1,
-          }}
-        />
-      )}
-
-      {/* =========================================================
-          TOP BAR
-      ========================================================= */}
-
-      <div
-        style={{
-          position: "relative",
-          zIndex: 3,
-
-          display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-
-          padding: "16px 17px 0",
-
-          gap: 12,
-        }}
-      >
-
-        {/* CAMPAIGN INDEX */}
-        <div
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 7,
-
-            padding: "5px 8px",
-
-            borderRadius: 999,
-
-            background:
-              "rgba(255,255,255,0.08)",
-
-            border:
-              "1px solid rgba(255,255,255,0.12)",
-
-            backdropFilter: "blur(12px)",
-            WebkitBackdropFilter: "blur(12px)",
-          }}
-        >
-          <span
-            style={{
-              width: 5,
-              height: 5,
-              borderRadius: "50%",
-              background: col,
-              boxShadow: `0 0 0 3px ${col}22`,
-            }}
-          />
-
-          <span
-            style={{
-              fontFamily: SF,
-              fontSize: 8.5,
-              fontWeight: 800,
-              letterSpacing: "0.10em",
-              textTransform: "uppercase",
-              color: "rgba(255,255,255,0.72)",
-            }}
-          >
-            Campaign
-          </span>
-        </div>
-
-        {/* BUDGET */}
-        {canFin(role) && (
-          <div
-            style={{
-              fontFamily: SF,
-              fontSize: 13,
-              fontWeight: 750,
-              color: "#FFFFFF",
-              letterSpacing: "-0.02em",
-
-              padding: "6px 9px",
-              borderRadius: 8,
-
-              background:
-                "rgba(255,255,255,0.09)",
-
-              border:
-                "1px solid rgba(255,255,255,0.12)",
-
-              backdropFilter: "blur(10px)",
-              WebkitBackdropFilter: "blur(10px)",
-            }}
-          >
+      {/* IDENTITY */}
+      <div style={{display:"flex",alignItems:"center",gap:10,padding:"13px 14px 0"}}>
+        <BrandMark label={brandLabel} logoUrl={logoUrl} accent={accent} size={32} onEdit={onEditLogo}/>
+        <Lbl color="#8E8E93" style={{flex:1,minWidth:0,fontSize:9,letterSpacing:"0.11em",fontWeight:700,
+          whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+          {brandLabel}{camp.region?` · ${camp.region}`:""}
+        </Lbl>
+        {canFin(role)&&(
+          <span style={{flexShrink:0,fontFamily:SF,fontSize:12,fontWeight:700,color:"#1D1D1F",
+            letterSpacing:"-0.02em",fontVariantNumeric:"tabular-nums"}}>
             {fmtINR(camp.budget)}
-          </div>
-        )}
-      </div>
-
-      {/* =========================================================
-          MAIN CONTENT
-      ========================================================= */}
-
-      <div
-        style={{
-          position: "relative",
-          zIndex: 3,
-
-          display: "flex",
-          flexDirection: "column",
-
-          flex: 1,
-
-          padding:
-            "25px 17px 14px",
-        }}
-      >
-
-        {/* CLIENT */}
-        <div
-          style={{
-            fontFamily: SF,
-            fontSize: 9,
-            fontWeight: 700,
-            letterSpacing: "0.11em",
-            textTransform: "uppercase",
-            color: "rgba(255,255,255,0.52)",
-
-            marginBottom: 5,
-
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {camp.client}
-          {camp.region
-            ? ` · ${camp.region}`
-            : ""}
-        </div>
-
-        {/* CAMPAIGN NAME */}
-        <div
-          style={{
-            fontFamily:
-              "'Newsreader', serif",
-
-            fontStyle: "italic",
-
-            fontSize:
-              "clamp(20px, 2vw, 25px)",
-
-            fontWeight: 500,
-
-            lineHeight: 1.02,
-
-            letterSpacing: "-0.025em",
-
-            color: "#FFFFFF",
-
-            maxWidth: "90%",
-
-            display: "-webkit-box",
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: "vertical",
-
-            overflow: "hidden",
-
-            textShadow:
-              "0 2px 20px rgba(0,0,0,0.35)",
-          }}
-        >
-          {camp.name}
-        </div>
-
-        {/* =====================================================
-            INTELLIGENCE STRIP
-        ===================================================== */}
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns:
-              "1fr 1fr 1fr",
-
-            gap: 1,
-
-            marginTop: "auto",
-            marginBottom: 12,
-
-            borderRadius: 12,
-
-            overflow: "hidden",
-
-            background:
-              "rgba(255,255,255,0.10)",
-
-            border:
-              "1px solid rgba(255,255,255,0.13)",
-
-            backdropFilter: "blur(14px)",
-            WebkitBackdropFilter: "blur(14px)",
-          }}
-        >
-          {/* CREATORS */}
-          <div
-            style={{
-              padding: "9px 9px",
-              background:
-                "rgba(0,0,0,0.20)",
-            }}
-          >
-            <div
-              style={{
-                fontFamily: SF,
-                fontSize: 7.5,
-                fontWeight: 700,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                color:
-                  "rgba(255,255,255,0.42)",
-              }}
-            >
-              Creators
-            </div>
-
-            <div
-              style={{
-                marginTop: 3,
-                fontFamily: SF,
-                fontSize: 11,
-                fontWeight: 750,
-                color: "#FFFFFF",
-                fontVariantNumeric:
-                  "tabular-nums",
-              }}
-            >
-              {st.locked} / {st.target}
-            </div>
-          </div>
-
-          {/* POSTS */}
-          <div
-            style={{
-              padding: "9px 9px",
-              background:
-                "rgba(0,0,0,0.20)",
-            }}
-          >
-            <div
-              style={{
-                fontFamily: SF,
-                fontSize: 7.5,
-                fontWeight: 700,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                color:
-                  "rgba(255,255,255,0.42)",
-              }}
-            >
-              Posts
-            </div>
-
-            <div
-              style={{
-                marginTop: 3,
-                fontFamily: SF,
-                fontSize: 11,
-                fontWeight: 750,
-                color: "#FFFFFF",
-                fontVariantNumeric:
-                  "tabular-nums",
-              }}
-            >
-              {st.expected
-                ? `${st.delivered}/${st.expected}`
-                : "—"}
-            </div>
-          </div>
-
-          {/* END */}
-          <div
-            style={{
-              padding: "9px 9px",
-              background:
-                "rgba(0,0,0,0.20)",
-            }}
-          >
-            <div
-              style={{
-                fontFamily: SF,
-                fontSize: 7.5,
-                fontWeight: 700,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                color:
-                  "rgba(255,255,255,0.42)",
-              }}
-            >
-              Ends
-            </div>
-
-            <div
-              style={{
-                marginTop: 3,
-                fontFamily: SF,
-                fontSize: 10,
-                fontWeight: 700,
-                color: "#FFFFFF",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {prettyDate(camp.end) ||
-                "TBD"}
-            </div>
-          </div>
-        </div>
-
-        {/* =====================================================
-            FOOTER
-        ===================================================== */}
-
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 7,
-            minHeight: 25,
-          }}
-        >
-
-          {/* STAGE */}
-          <Pill tone={col}>
-            {pl.label}
-          </Pill>
-
-          {/* END WARNING */}
-          <EndPill es={es} />
-
-          <div style={{ flex: 1 }} />
-
-          {/* TEAM */}
-          <div
-  style={{
-    display: "flex",
-    alignItems: "center",
-    paddingLeft: 4,
-  }}
->
-  {team.slice(0, 3).map((person, i) => {
-    const user = person.m;
-   const url = UsersAPI.avatarUrl({
-  id: user.userId,
-  hasAvatar: user.hasAvatar,
-  avatarUpdatedAt: user.avatarUpdatedAt,
-});
-
-    return (
-      <div
-        key={`${user.id || user._id || i}-${person.l}`}
-        title={`${user.name || person.l} · ${person.l}`}
-        style={{
-          width: 28,
-          height: 28,
-          borderRadius: "50%",
-          overflow: "hidden",
-          marginLeft: i === 0 ? 0 : -8,
-          background: "#FFFFFF",
-          border: "2px solid rgba(17,18,22,0.9)",
-          boxShadow: "0 3px 10px rgba(0,0,0,0.25)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          position: "relative",
-          zIndex: 10 - i,
-          fontFamily: SF,
-          fontSize: 8,
-          fontWeight: 800,
-          color: "#111216",
-        }}
-      >
-        {url ? (
-          <img
-            src={url}
-            alt=""
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-            }}
-          />
-        ) : (
-          initials(user.name)
-        )}
-      </div>
-    );
-  })}
-</div>
-
-          {/* PROGRESS */}
-          <span
-            style={{
-              fontFamily: SF,
-              fontSize: 10,
-              fontWeight: 800,
-              color:
-                "rgba(255,255,255,0.72)",
-              fontVariantNumeric:
-                "tabular-nums",
-            }}
-          >
-            {pct}%
           </span>
+        )}
+      </div>
+
+      {/* CAMPAIGN NAME — clamped to two lines at a fixed height, so every ring
+          on the row sits on the same line however long the names are. */}
+      <div style={{padding:"8px 14px 0",height:52,fontFamily:"'Newsreader',serif",fontStyle:"italic",
+        fontSize:19,fontWeight:500,lineHeight:1.2,letterSpacing:"-0.02em",color:"#1D1D1F",
+        display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>
+        {camp.name}
+      </div>
+
+      {/* PROGRESS */}
+      <div style={{padding:"10px 14px 14px",display:"flex",flexDirection:"column",alignItems:"center",gap:9}}>
+        <Donut size={78} thickness={7} segments={[
+          {value:pct,color:col,label:pl.label},
+          {value:Math.max(0,100-pct),color:"transparent",label:"Remaining"},
+        ]} center={
+          <span style={{display:"flex",alignItems:"baseline"}}>
+            <span style={{fontSize:23,fontWeight:700,letterSpacing:"-0.03em"}}>{pct}</span>
+            <span style={{fontSize:11,fontWeight:600,color:"#A0A0A6"}}>%</span>
+          </span>
+        }/>
+        <Lbl color={col} style={{fontSize:9,fontWeight:700,letterSpacing:"0.10em",textAlign:"center"}}>
+          {pl.label}
+        </Lbl>
+      </div>
+
+      {/* DELIVERY — the date column gets the wider track; equal thirds clipped
+          "22 Aug 2026" to "22 Aug 20…" once three cards fit across a 900px
+          window, and a truncated end date is worse than an uneven grid. */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1.35fr",borderTop:CARD_LINE}}>
+        <CardStat label="Creators" value={`${st.locked}/${st.target}`}/>
+        <CardStat label="Posts" value={st.expected?`${st.delivered}/${st.expected}`:"—"}/>
+        <CardStat label="Ends" value={prettyDate(camp.end)||"TBD"}/>
+      </div>
+
+      {/* FOOTER — the time-sensitive thing about this campaign, and who is
+          carrying it. The end-date nudge when there is one to give; otherwise
+          when the campaign was added, which is the one fact that explains the
+          order the board is in and appears nowhere else on the card. Every
+          campaign here runs under the same service, so naming it was noise. */}
+      <div style={{marginTop:"auto",display:"flex",alignItems:"center",gap:8,minHeight:42,
+        padding:"8px 14px",borderTop:CARD_LINE}}>
+        {es ? <EndPill es={es}/> : added ? (
+          <Lbl color="#A0A0A6" style={{minWidth:0,fontSize:9,whiteSpace:"nowrap",overflow:"hidden",
+            textOverflow:"ellipsis"}}>
+            Added {prettyDate(isoDay(new Date(added)))}
+          </Lbl>
+        ) : null}
+        <div style={{flex:1}}/>
+        <div style={{display:"flex",alignItems:"center",flexShrink:0}}>
+          {team.slice(0,3).map((person,i)=>{
+            const user=person.m;
+            const url=UsersAPI.avatarUrl({id:user.userId,hasAvatar:user.hasAvatar,avatarUpdatedAt:user.avatarUpdatedAt});
+            return(
+              <div key={`${user.id||user._id||i}-${person.l}`} title={`${user.name||person.l} · ${person.l}`}
+                style={{width:24,height:24,borderRadius:"50%",overflow:"hidden",marginLeft:i?-7:0,
+                  background:"#FFFFFF",border:"2px solid #FFFFFF",boxShadow:"0 0 0 1px rgba(0,0,0,0.08)",
+                  display:"flex",alignItems:"center",justifyContent:"center",position:"relative",zIndex:10-i,
+                  fontFamily:SF,fontSize:8,fontWeight:800,color:"#1D1D1F"}}>
+                {url
+                  ? <img src={url} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+                  : initials(user.name)}
+              </div>
+            );
+          })}
         </div>
       </div>
-
-      {/* =========================================================
-          PROGRESS BAR
-      ========================================================= */}
-
-      <div
-        style={{
-          position: "relative",
-          zIndex: 4,
-
-          height: 4,
-
-          background:
-            "rgba(255,255,255,0.09)",
-        }}
-      >
-        <motion.div
-          style={{
-            height: "100%",
-            background: col,
-
-            boxShadow:
-              `0 0 14px ${col}88`,
-          }}
-          animate={{
-            width: `${pct}%`,
-          }}
-          transition={{
-            type: "spring",
-            stiffness: 220,
-            damping: 26,
-          }}
-        />
-      </div>
-
     </motion.div>
   );
 });
 
-// ── BRAND IDENTITY ────────────────────────────────────────────────────────────
-// A brand is identified on the board by its logo and its name, not by a colour.
-// There was a per-brand accent here — hashed from the name, then upgraded to a
-// colour sampled from the uploaded logo — and it did separate the groups, but
-// it filled the board with hues that competed with the one colour that carries
-// meaning: a campaign's stage. Structure does that job instead (see BrandGroup),
-// which leaves colour free to mean status and only status.
-const brandInitials=(s="")=>s.split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase()||"?";
+// ── CAMPAIGN BOARD ────────────────────────────────────────────────────────────
+// The already-filtered, already-sorted `visible` list, one card each. No
+// grouping and no re-sorting here — the page owns the order (newest first, see
+// createdAtOf) so the detail view's prev/next steps through exactly what the
+// board shows.
+function CampaignList({campaigns,role,onSelect,brandName,brandLogoUrl,onEditLogo,brandFilter}){
+  // Every brand on the board resolves its colour in one pass — a hook can't be
+  // called inside the map that renders the cards.
+  const accents=useBrandAccents(campaigns.map(c=>brandLogoUrl(c.brandId)));
+  const labelOf=c=>brandName(c.brandId)||c.client||"Unassigned";
 
-// ── BRAND HEADER ──────────────────────────────────────────────────────────────
-// The banner above each brand's tiles. Was a 24px chip and a 15px name — the
-// thing you navigate by was the quietest element on the board. Now a proper
-// tile: centred, taller, carrying the brand's logo.
-//
-// The backdrop is that logo blown up and blurred, which gives each brand a
-// distinct colour field without a stored brand colour. Logo-less brands fall
-// back to the derived accent (lib/brandAccent.js) so the treatment degrades to
-// the same shape rather than a blank box.
-
-function BrandHeader({label,count,logoUrl,onEditLogo}){
-  const [broken,setBroken]=useState(false);
-  const showLogo=!!logoUrl&&!broken;
-  // The logo mark IS the control for setting the logo — that is where someone
-  // looking to change it already is, and an empty one is the most legible
-  // "nothing here yet" button the page could have.
-  const editable=!!onEditLogo;
-  return(
-    // Sticky, and it must PAINT — the group's field scrolls underneath it, so a
-    // transparent header would let campaign tiles show through the brand name.
-    <div style={{position:"sticky",top:0,zIndex:2}}>
-      <div style={{position:"relative",borderRadius:"15px 15px 0 0",background:"#FFFFFF",borderBottom:"1px solid rgba(0,0,0,0.07)"}}>
-        {/* Deliberately uncoloured. An earlier version tinted this band with a
-            colour sampled from the brand's logo and washed a blurred copy of
-            the logo across it — distinct per brand, but it made the board a
-            field of competing hues and drowned out the one colour that carries
-            meaning here: a campaign's stage. Brand identity is the logo and the
-            name at 27px, which is plenty; colour is reserved for status. */}
-        <div style={{display:"flex",alignItems:"center",gap:14,padding:"18px 22px 17px"}}>
-          {/* Initials keep the original 40px/13px SF treatment — scaling them
-              up with the masthead made the fallback read as a display letterform
-              rather than as a quiet stand-in for a missing logo. */}
-          <div
-            onClick={editable?onEditLogo:undefined}
-            title={editable?(showLogo?`Change ${label}'s logo`:`Set ${label}'s logo`):undefined}
-            style={{width:40,height:40,borderRadius:11,flexShrink:0,overflow:"hidden",background:showLogo?"#FFFFFF":"rgba(0,0,0,0.05)",border:"1px solid rgba(0,0,0,0.08)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:"#86868B",fontFamily:SF,letterSpacing:"-0.02em",boxShadow:showLogo?"0 1px 3px rgba(0,0,0,0.08)":"none",cursor:editable?"pointer":"default",transition:"box-shadow 0.15s"}}
-            onMouseOver={e=>{if(editable)e.currentTarget.style.boxShadow="0 0 0 3px rgba(0,0,0,0.07)";}}
-            onMouseOut={e=>{if(editable)e.currentTarget.style.boxShadow=showLogo?"0 1px 3px rgba(0,0,0,0.08)":"none";}}
-          >
-            {showLogo
-              ? <img src={logoUrl} alt="" onError={()=>setBroken(true)} style={{width:"100%",height:"100%",objectFit:"cover"}}/>
-              : brandInitials(label)}
-          </div>
-          <div style={{minWidth:0,flex:1}}>
-            {/* 27px against the tiles' 14.5px. The brand is the thing you
-                navigate by, so it outranks every campaign name under it rather
-                than competing with them at a near-equal weight. */}
-            <div style={{fontFamily:"'Newsreader',serif",fontSize:27,fontStyle:"italic",fontWeight:600,color:"#1D1D1F",letterSpacing:"-0.015em",lineHeight:1.1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{label}</div>
-            <div style={{marginTop:3,fontSize:10,fontWeight:600,letterSpacing:"0.09em",textTransform:"uppercase",color:"#86868B",fontFamily:SF}}>
-              {count} campaign{count===1?"":"s"}
-            </div>
-          </div>
+  if(!campaigns.length){
+    // Scoped to one brand with nothing to show: still name that brand, and keep
+    // its logo editable. Dropping straight to bare grey text was reported as
+    // "the colour goes when I add the brand filter" — worse than colourless, it
+    // removes the only on-page confirmation of WHICH brand you're scoped to, so
+    // an empty board is indistinguishable from a broken one.
+    const label=brandFilter?brandName(brandFilter):null;
+    return(
+      <div style={{padding:"48px 28px",display:"flex",flexDirection:"column",alignItems:"center",gap:12}}>
+        {label&&<BrandMark label={label} logoUrl={brandLogoUrl(brandFilter)}
+          accent={accents[brandLogoUrl(brandFilter)]} size={46}
+          onEdit={onEditLogo?()=>onEditLogo(brandFilter):undefined}/>}
+        <div style={{fontSize:13,color:"#86868B",fontFamily:SF,textAlign:"center"}}>
+          {label?`No campaigns for ${label} in this view.`:"No campaigns match"}
         </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
-// One brand's header plus its campaign tiles, as a single visually bounded
-// block. Split out of CampaignGrid so the accent can be resolved per brand —
-// hooks cannot be called inside the `.map()` that renders the groups.
-function BrandGroup({label,brandId,rows,role,onSelect,brandLogoUrl,onEditLogo,empty}){
-  const logoUrl=brandLogoUrl?.(brandId);
-  // Null unless this brand has uploaded a logo we can read a colour out of —
-  // see lib/brandAccent. Resolved once here rather than per card: every tile in
-  // the group shares a brand, so decoding the same image N times would be N-1
-  // wasted decodes.
-  const accent=useBrandAccent(logoUrl);
   return(
-        // Masthead and tiles are ONE enclosed object: a rounded container ruled
-        // down its left edge, white masthead over a faint grey field.
-        //
-        // They used to be two free-floating white tiles with the same radius and
-        // border — a campaign and the brand it belongs to rendered as the same
-        // KIND of thing. Enclosing the group says "these belong to that"
-        // structurally, which frees colour to mean stage.
-    <div style={{marginBottom:34,borderRadius:16,overflow:"hidden",border:"1px solid rgba(0,0,0,0.07)",borderLeft:"3px solid rgba(0,0,0,0.14)",background:"rgba(0,0,0,0.018)",boxShadow:"0 1px 2px rgba(0,0,0,0.04)"}}>
-      <BrandHeader label={label} count={rows.length} logoUrl={logoUrl}
-        onEditLogo={onEditLogo&&brandId?()=>onEditLogo(brandId):undefined}/>
-      {empty&&!rows.length
-        ? <div style={{padding:"34px 16px",textAlign:"center",color:"#86868B",fontSize:12.5,fontFamily:SF}}>{empty}</div>
-        : null}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(250px,1fr))",gap:12,padding:rows.length?"14px":0}}>
+    <div style={{padding:"18px 28px 40px"}}>
+      {/* Says what the board is showing and in what order — the one thing a
+          flat grid can't say for itself. */}
+      <Lbl color="#A0A0A6" style={{display:"block",marginBottom:12,fontSize:9.5,letterSpacing:"0.09em"}}>
+        {campaigns.length} campaign{campaigns.length===1?"":"s"} · newest first
+      </Lbl>
+      {/* auto-fill, not auto-fit: a board with two campaigns keeps them at card
+          width instead of stretching them across the whole screen. */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",
+        gap:14,alignItems:"stretch"}}>
         <AnimatePresence mode="popLayout">
-          {rows.map(c=>(
-  <CampCard
-    key={c.id}
-    camp={c}
-    role={role}
-    accent={accent}
-    logoUrl={logoUrl}
-    onClick={()=>onSelect(c.id)}
-  />
-))}
+          {campaigns.map(c=>{
+            const logoUrl=brandLogoUrl(c.brandId);
+            return(
+              <CampaignCard
+                key={c.id}
+                camp={c}
+                role={role}
+                brandLabel={labelOf(c)}
+                logoUrl={logoUrl}
+                accent={accents[logoUrl]}
+                onClick={()=>onSelect(c.id)}
+                onEditLogo={onEditLogo&&c.brandId?()=>onEditLogo(c.brandId):undefined}
+              />
+            );
+          })}
         </AnimatePresence>
       </div>
-    </div>
-  );
-}
-
-// ── CAMPAIGN GRID ─────────────────────────────────────────────────────────────
-// Groups the already-filtered `visible` list by brand (same grouping rule the
-// old sidebar used) and lays each group out as a responsive card grid.
-function CampaignGrid({campaigns,role,onSelect,brandName,brandLogoUrl,onEditLogo,brandFilter}){
-  if(campaigns.length===0){
-    // Scoped to one brand with nothing to show: still render that brand's
-    // header. Dropping straight to bare grey text was reported as "the colour
-    // goes when I add the brand filter" — and it is worse than colourless, it
-    // removes the only on-page confirmation of WHICH brand you are scoped to,
-    // so an empty board is indistinguishable from a broken one.
-    const label=brandFilter?brandName(brandFilter):null;
-    if(label){
-      return(
-        <div style={{padding:"20px 28px 40px"}}>
-          <BrandGroup label={label} brandId={brandFilter} rows={[]} role={role}
-            onSelect={onSelect} brandLogoUrl={brandLogoUrl} onEditLogo={onEditLogo}
-            empty="No campaigns for this brand yet."/>
-        </div>
-      );
-    }
-    return <div style={{padding:"64px 16px",textAlign:"center",color:"#86868B",fontSize:13,fontFamily:SF}}>No campaigns match</div>;
-  }
-  // Grouped by brand NAME (the display label), but the logo has to be looked up
-  // by brandId — so the id of the first campaign in each group is carried
-  // alongside. Every campaign in a group shares a brand by construction, so any
-  // one of them identifies it.
-  const groups={};
-  campaigns.forEach(c=>{
-    const label=brandName(c.brandId)||"Unassigned";
-    (groups[label]=groups[label]||{brandId:c.brandId,rows:[]}).rows.push(c);
-  });
-  const labels=Object.keys(groups).sort((a,b)=>a==="Unassigned"?1:b==="Unassigned"?-1:a.localeCompare(b));
-  return(
-    <div style={{padding:"20px 28px 40px"}}>
-      {/* One BrandGroup per brand — a component rather than inline JSX because
-          each group resolves its own accent colour with a hook, and hooks can't
-          be called inside a map body. Grid layout comment lives there too. */}
-      {labels.map(label=>(
-        <BrandGroup
-          key={label}
-          label={label}
-          brandId={groups[label].brandId}
-          rows={groups[label].rows}
-          role={role}
-          onSelect={onSelect}
-          brandLogoUrl={brandLogoUrl}
-          onEditLogo={onEditLogo}
-        />
-      ))}
     </div>
   );
 }
@@ -2106,6 +1524,11 @@ const VIEW_ICON_PATHS={
   alert: <><path d="M7.5 1.5 L14 13 H1 Z"/><line x1="7.5" y1="6" x2="7.5" y2="9"/><circle cx="7.5" cy="11.2" r="0.6" fill="currentColor" stroke="none"/></>,
   check: <><circle cx="7.5" cy="7.5" r="6"/><polyline points="4.7,7.6 6.6,9.5 10.5,5.2"/></>,
   flag:  <><path d="M3.5 1.5 V14"/><path d="M3.5 2.5 H11.5 L9.5 5 L11.5 7.5 H3.5"/></>,
+  // Search sits in the same row as the views, so it is drawn on the same grid
+  // at the same stroke. It used to be "⌕" (U+2315) set as text — a glyph whose
+  // weight and size come from whatever font resolves it, which is why it never
+  // matched the icons beside it.
+  search:<><circle cx="6.6" cy="6.6" r="4.6"/><line x1="10.1" y1="10.1" x2="13.6" y2="13.6"/></>,
 };
 const ViewIcon=({id,color})=>(
   <svg width="13" height="13" viewBox="0 0 15 15" fill="none" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -2113,30 +1536,52 @@ const ViewIcon=({id,color})=>(
   </svg>
 );
 
+// A tab rail, not a row of pills — and the rail is the header's OWN bottom
+// border, so the line that ends the header does a second job instead of sitting
+// under a separate band of chrome.
+//
+// Two earlier shapes were wrong in the same way. A segmented slab stretched five
+// equal columns across the full width with icon over count over label stacked in
+// each: 54px of heavier material than anything below it. Pills fixed the weight
+// but not the geometry — fully-round chips beside a 10px-radius search field are
+// two shapes doing one job, which is what still read as off.
+//
+// Tabs also say the right thing: these five views are mutually exclusive, which
+// is what a tab rail means. If a filter is ever added that COMBINES with another,
+// this shape will be lying and should go back to chips.
+//
+// The count still rides inside the tab, because the counts ARE the filter: a view
+// you can read the size of before clicking it is the whole point of the control.
 function ViewBar({counts,value,onChange}){
   return(
-    <div style={{display:"flex",background:"rgba(0,0,0,0.03)",borderRadius:12,padding:3,border:"1px solid rgba(0,0,0,0.06)",gap:2}}>
+    // Scrolls rather than wraps: a wrapped tab would leave the rail behind on
+    // the line above it.
+    <div style={{display:"flex",alignItems:"center",overflowX:"auto"}}>
       {VIEWS.map(v=>{
         const on=value===v.id, n=counts[v.id]||0;
         // A tone only fires when there is something to look at — a red 0 under
-        // "Ended" is an alarm about nothing.
+        // "Ended" is an alarm about nothing. On a tab the tone rides the COUNT,
+        // never the rule: the rule means "this is the view you are in", and one
+        // meaning per element is what keeps the rail readable.
         const hot=v.tone&&n>0;
-        const numCol=hot?v.tone:"#1D1D1F";
-        const iconCol=on?numCol:hot?v.tone:"#ADADB2";
         return(
           <button key={v.id} onClick={()=>onChange(v.id)} aria-pressed={on} title={`Show ${v.label.toLowerCase()}`}
-            style={{position:"relative",flex:1,minWidth:0,padding:"10px 6px 9px",borderRadius:9,border:"none",
-              // A hot-but-unselected view (something needs looking at) gets a
-              // faint tint of its own — a red "Ended" pill shouldn't look
-              // identical to an empty one just because it isn't clicked yet.
-              background:on?"transparent":hot?`${v.tone}0C`:"transparent",cursor:"pointer",fontFamily:SF}}>
-            {on&&<motion.div layoutId="viewPill" transition={{type:"spring",stiffness:500,damping:38}}
-              style={{position:"absolute",inset:0,background:"#FFFFFF",borderRadius:9,boxShadow:`0 1px 3px rgba(0,0,0,0.10)${hot?`, inset 0 0 0 1px ${v.tone}30`:""}`,zIndex:0}}/>}
-            <span style={{position:"relative",zIndex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-              <ViewIcon id={v.icon} color={iconCol}/>
-              <span style={{fontSize:17,fontWeight:700,letterSpacing:"-0.03em",lineHeight:1,color:numCol}}>{n}</span>
-              <span style={{fontSize:9.5,whiteSpace:"nowrap",color:on?"#1D1D1F":"#86868B",fontWeight:on?600:400}}>{v.label}</span>
-            </span>
+            style={{position:"relative",display:"inline-flex",alignItems:"center",gap:7,flexShrink:0,
+              height:38,padding:"0 2px",marginRight:24,border:"none",background:"none",
+              cursor:"pointer",fontFamily:SF}}>
+            <ViewIcon id={v.icon} color={on?T.accent:hot?v.tone:"#B8B8BE"}/>
+            <span style={{fontSize:12.5,fontWeight:on?600:500,letterSpacing:"-0.01em",
+              color:on?"#1D1D1F":"#6E6E73",whiteSpace:"nowrap"}}>{v.label}</span>
+            <span style={{minWidth:17,padding:"1px 5px",borderRadius:999,textAlign:"center",
+              fontSize:10,fontWeight:700,fontVariantNumeric:"tabular-nums",
+              background:hot?`${v.tone}1A`:on?`${T.accent}1A`:"rgba(0,0,0,0.05)",
+              color:hot?v.tone:on?T.accent:"#6E6E73"}}>{n}</span>
+            {/* One element that TRAVELS between tabs, so switching views reads as
+                movement along the rail rather than two rules swapping in place.
+                Sits on -1px to cover the header's border, which is the rail. */}
+            {on&&<motion.div layoutId="viewRule" transition={{type:"spring",stiffness:500,damping:38}}
+              style={{position:"absolute",left:0,right:0,bottom:-1,height:2,
+                borderRadius:"2px 2px 0 0",background:T.accent}}/>}
           </button>
         );
       })}
@@ -4356,12 +3801,17 @@ export default function InternalCampaigns(){
   // see under the current brand and search — that is what the view counts are
   // measured against, so picking a view never rewrites the other five numbers.
   // `visible` is that list narrowed to the chosen view, and is what renders.
+  //
+  // Sorted newest-first here rather than in the list, so the order the board
+  // shows is the order the detail view's prev/next walks — and so a campaign
+  // created a minute ago is the first thing on the page. See createdAtOf for
+  // what stands in for the createdAt the documents don't carry.
   const inScope=useMemo(()=>campaigns.filter(c=>{
     if(!canSee(c,role,currentUser.teamId))return false;
     if(brandFilter&&c.brandId!==brandFilter)return false;
     if(search){const s=search.toLowerCase();if(!c.name.toLowerCase().includes(s)&&!c.client.toLowerCase().includes(s))return false;}
     return true;
-  }),[campaigns,role,currentUser.teamId,search,brandFilter]);
+  }).sort((a,b)=>createdAtOf(b)-createdAtOf(a)),[campaigns,role,currentUser.teamId,search,brandFilter]);
   const viewCounts=useMemo(()=>Object.fromEntries(VIEWS.map(v=>[v.id,inScope.filter(v.match).length])),[inScope]);
   const visible=useMemo(()=>{
     const view=VIEWS.find(v=>v.id===stageFilter)||VIEWS[0];
@@ -4404,23 +3854,33 @@ export default function InternalCampaigns(){
         <motion.div key="grid" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.18}}
           style={{display:"flex",flexDirection:"column",flex:1,minHeight:0,overflow:"hidden"}}>
           {/* Header */}
-          <div style={{padding:"16px 20px 14px",borderBottom:"1px solid rgba(0,0,0,0.07)",flexShrink:0,background:"#FFFFFF"}}>
-            <div style={{display:"flex",alignItems:"center",marginBottom:14}}>
-              <div>
-                <h1 style={{fontFamily:"'Newsreader',serif",fontSize:20,fontWeight:600,color:"#1D1D1F",margin:0,fontStyle:"italic",letterSpacing:"-0.02em"}}>IM Campaigns</h1>
-                <div style={{fontSize:10.5,color:"#86868B",fontFamily:SF,marginTop:2}}>5th Avenue · Influencer Marketing</div>
+          <div style={{padding:"20px 24px 0",borderBottom:"1px solid rgba(0,0,0,0.07)",flexShrink:0,background:"#FFFFFF"}}>
+            {/* What this page IS and the controls that act on the whole of it,
+                then the view rail sitting on the header's bottom border. Search
+                rides up here with the create button rather than holding a band
+                of its own — it narrows what the rail counts, but it is one field,
+                not a row of chrome. */}
+            <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:16,marginBottom:14}}>
+              <div style={{minWidth:0}}>
+                <h1 style={{fontFamily:"'Newsreader',serif",fontSize:21,fontWeight:600,color:"#1D1D1F",margin:0,fontStyle:"italic",letterSpacing:"-0.02em"}}>IM Campaigns</h1>
+                <div style={{fontSize:10.5,color:"#86868B",fontFamily:SF,marginTop:3}}>5th Avenue · Influencer Marketing</div>
               </div>
-              <div style={{flex:1}}/>
-              {canCreate(role)&&<Btn variant="primary" onClick={()=>setCreate(true)} style={{padding:"8px 16px",fontSize:12}}>+ New</Btn>}
-            </div>
-            {/* Search sits ABOVE the views, because it narrows what they count:
-                every number in the bar is a count of the searched set. */}
-            <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:12}}>
-              <div style={{position:"relative",flex:"1 1 320px",maxWidth:380}}>
-                <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search campaigns or clients…" style={{width:"100%",padding:"8px 12px 8px 30px",borderRadius:9,background:"rgba(0,0,0,0.04)",border:"1px solid rgba(0,0,0,0.08)",color:"#1D1D1F",fontSize:12,fontFamily:SF,outline:"none",boxSizing:"border-box"}}/>
-                <span style={{position:"absolute",left:11,top:"50%",transform:"translateY(-50%)",fontSize:13,color:"#86868B",pointerEvents:"none"}}>⌕</span>
+              <div style={{flex:1,minWidth:16}}/>
+              {/* White on a hairline — the same material as every card on the
+                  board below, rather than a grey fill belonging to nothing. */}
+              <div style={{position:"relative",flexShrink:0,width:280}}>
+                <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search campaigns or clients…"
+                  style={{width:"100%",height:36,padding:"0 12px 0 33px",borderRadius:10,background:"#FFFFFF",
+                    border:"1px solid rgba(0,0,0,0.10)",color:"#1D1D1F",fontSize:12,fontFamily:SF,
+                    outline:"none",boxSizing:"border-box"}}/>
+                <span style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",
+                  display:"flex",pointerEvents:"none"}}>
+                  <ViewIcon id="search" color="#A0A0A6"/>
+                </span>
               </div>
-              <div style={{flex:1}}/>
+              {/* Says what it makes. "+ New" on its own left the one button on
+                  the page to be read off its position. */}
+              {canCreate(role)&&<Btn variant="primary" onClick={()=>setCreate(true)} style={{flexShrink:0,padding:"10px 17px",fontSize:12}}>+ New campaign</Btn>}
             </div>
             <ViewBar counts={viewCounts} value={stageFilter} onChange={setStageF}/>
           </div>
@@ -4430,7 +3890,7 @@ export default function InternalCampaigns(){
           </AnimatePresence>
           {/* Grid */}
           <div style={{flex:1,minHeight:0,overflowY:"auto"}}>
-            <CampaignGrid campaigns={visible} role={role} onSelect={setSelId} brandName={brandName} brandLogoUrl={brandLogoUrl} onEditLogo={canEditBrand?setLogoBrandId:undefined} brandFilter={brandFilter}/>
+            <CampaignList campaigns={visible} role={role} onSelect={setSelId} brandName={brandName} brandLogoUrl={brandLogoUrl} onEditLogo={canEditBrand?setLogoBrandId:undefined} brandFilter={brandFilter}/>
           </div>
         </motion.div>
       )}

@@ -355,7 +355,7 @@ function performanceFrom({ invoices, campaigns }, colors) {
     {
       key: "revenue",
       label: "Revenue (₹L)",
-      color: colors.forest,
+      color: colors.green,
       data: seriesFrom(
         (invoices || []).filter(isRevenueInvoice),
         (i) => i.raisedDate,
@@ -366,7 +366,7 @@ function performanceFrom({ invoices, campaigns }, colors) {
     {
       key: "delivery",
       label: "Delivery %",
-      color: colors.navy,
+      color: colors.blue,
       data: seriesFrom(
         campaigns,
         (c) => c.start,
@@ -384,6 +384,8 @@ function performanceFrom({ invoices, campaigns }, colors) {
  *
  * `colors` is passed in rather than imported so this module stays free of the
  * page's design tokens — it computes numbers, the page decides how they look.
+ * Only the performance lines take a colour, and they only ever draw on the
+ * page's dark panel, so what arrives here is its on-navy accent set.
  */
 export function buildSummary(sources = {}, colors = {}) {
   const {
@@ -447,6 +449,15 @@ export function buildSummary(sources = {}, colors = {}) {
    invent collapses that never happened. Carrying each creator's last known
    value forward keeps the series monotonic, which a cumulative metric must be.
 
+   `byPost` splits that same carried-forward basis one line per post, so the
+   panel's breakdown can never add up to something other than the curve above
+   it. Wide format — one row per day, one KEY per post — because that is what
+   the breakdown reads a single day out of. Keys are positional (`p0`, `p1`, …)
+   rather than names: two creators can share a display name, and a duplicate key
+   would silently collapse two posts into one. A post with no reading yet on a
+   day is left UNSET rather than 0, which is what lets the breakdown leave it
+   out instead of listing it at zero.
+
    The two apps quote the same brands the same numbers, so if this rule changes
    it changes in both. */
 export function growthFrom(campaigns = []) {
@@ -455,7 +466,14 @@ export function growthFrom(campaigns = []) {
     if (c?.deleted) continue;
     for (const cr of c.creators || []) {
       const points = cr?.tracking?.history;
-      if (Array.isArray(points) && points.length) tracked.push(points);
+      if (Array.isArray(points) && points.length) {
+        tracked.push({
+          key: `p${tracked.length}`,
+          name: cr.name || `Creator ${tracked.length + 1}`,
+          campaign: c.name || null,
+          points,
+        });
+      }
     }
   }
   // Counted once, up front, so the "not enough readings yet" return below
@@ -465,12 +483,17 @@ export function growthFrom(campaigns = []) {
   const campaignsWithHistory = (campaigns || []).filter(
     (c) => !c?.deleted && (c.creators || []).some((cr) => cr?.tracking?.history?.length),
   ).length;
-  const totals = { creators: tracked.length, campaigns: campaignsWithHistory };
+  const empty = {
+    points: [],
+    byPost: { rows: [], series: [] },
+    creators: tracked.length,
+    campaigns: campaignsWithHistory,
+  };
 
-  if (!tracked.length) return { points: [], ...totals };
+  if (!tracked.length) return empty;
 
   const dayOf = (iso) => String(iso).slice(0, 10);
-  const byDay = tracked.map((points) => {
+  const byDay = tracked.map(({ points }) => {
     const m = new Map();
     for (const p of [...points].sort((a, b) => String(a.at).localeCompare(String(b.at)))) {
       m.set(dayOf(p.at), p);
@@ -480,20 +503,35 @@ export function growthFrom(campaigns = []) {
 
   const days = [...new Set(byDay.flatMap((m) => [...m.keys()]))].sort();
   // A growth chart needs two points; one day is a number, not a trajectory.
-  if (days.length < 2) return { points: [], ...totals };
+  if (days.length < 2) return empty;
 
   const carried = byDay.map(() => null);
+  const rows = [];
   const points = days.map((date) => {
     let views = 0, engagements = 0;
+    const row = { date };
     byDay.forEach((m, i) => {
       if (m.has(date)) carried[i] = m.get(date);
       const p = carried[i];
       if (!p) return;
-      views += Number(p.views) || 0;
-      engagements += (Number(p.likes) || 0) + (Number(p.comments) || 0) + (Number(p.forwards) || 0);
+      const v = Number(p.views) || 0;
+      const e = (Number(p.likes) || 0) + (Number(p.comments) || 0) + (Number(p.forwards) || 0);
+      views += v;
+      engagements += e;
+      row[`${tracked[i].key}_views`] = v;
+      row[`${tracked[i].key}_engagements`] = e;
     });
+    rows.push(row);
     return { date, views, engagements };
   });
 
-  return { points, ...totals };
+  return {
+    points,
+    byPost: {
+      rows,
+      series: tracked.map(({ key, name, campaign }) => ({ key, name, campaign })),
+    },
+    creators: tracked.length,
+    campaigns: campaignsWithHistory,
+  };
 }

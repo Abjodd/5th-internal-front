@@ -18,14 +18,15 @@ export function parseINR(str) {
 // dates like "May 30, 2026") passes through unchanged.
 export const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-// Today as "YYYY-MM-DD" in LOCAL time. Deliberately not `toISOString()`, which
+// A Date as "YYYY-MM-DD" in LOCAL time. Deliberately not `toISOString()`, which
 // is UTC and rolls the date over early evening in IST — an invoice raised at
-// 6pm would be dated tomorrow. Campaigns and Billing both need this; keeping
-// one copy is what stops the two pages disagreeing about what day it is.
-export const todayISO = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
+// 6pm would be dated tomorrow, and a campaign created after 5:30am would be
+// dated yesterday. Campaigns and Billing both need this; keeping one copy is
+// what stops the two pages disagreeing about what day it is.
+export const isoDay = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+export const todayISO = () => isoDay(new Date());
 
 export function prettyDate(s) {
   return ISO_DATE.test(s || "")

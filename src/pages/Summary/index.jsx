@@ -28,16 +28,24 @@ import {
 } from "../../lib/api";
 import { buildSummary } from "../../lib/summaryMetrics";
 import { useBrandAccent } from "../../lib/brandAccent";
-import { DARK_SURFACE } from "../../theme/tokens";
 
 
 /* ────────────────────────────────────────────────────────────────
  * DESIGN TOKENS + PHOTOGRAPHY
  * ──────────────────────────────────────────────────────────────── */
 
+/* Two surfaces, and only two. The page used to run white, cream AND a dark
+   wash — three materials, so it read as three unrelated documents stapled
+   together. Sections now alternate between `surface` and `navySurface`, and
+   both are flat: the dark one used to be a radial gradient whose hue shifted
+   across the band, which made the top of every dark section look like a
+   fourth colour. Anything that needs to sit *on* navy tints it with
+   `navyWash`/`navyLine` rather than introducing a colour of its own. */
 const F = {
-  paper: "#FAFAF9",
   surface: "#FFFFFF",
+  navySurface: "#1B2333",
+  navyWash: "rgba(27,35,51,0.05)",
+  navyLine: "rgba(27,35,51,0.10)",
   ink: "#14151A",
   inkSoft: "#6E7077",
   muted: "#9C9EA6",
@@ -53,7 +61,20 @@ const F = {
   plumTint: "#F3EDF0",
   rust: "#8C3B2E",
   rustTint: "#F7ECE9",
-  cream: "#F1ECE1",
+};
+
+/* Accents that only ever ride on the navy surface. F's inks are mixed to sit
+   on paper and go muddy against it, so the five health signals, the revenue
+   delta and the overdue figure were each carrying a loose hex — and the same
+   two hexes had started appearing in more than one place. Named by hue rather
+   than by meaning: the health ring uses them categorically, and only two of
+   them ever stand for good and bad. */
+const ON_NAVY = {
+  green: "#8FBBA8",
+  blue: "#9DB4D9",
+  gold: "#E4C77B",
+  pink: "#D2A6C0",
+  coral: "#E0A08F",
 };
 
 const T = { display: "'Newsreader', serif", ui: "'Sora', sans-serif" };
@@ -100,6 +121,18 @@ function fmtINR(n) {
   return Number((n / 100000).toFixed(1));
 }
 function pct(n) { return n === null || n === undefined ? null : `${n > 0 ? "+" : ""}${n}%`; }
+
+// "A real number, or nothing." The page's one rule — never render a plausible
+// stand-in — turns into this same three-line ternary at every value it reads,
+// and Financials alone had six copies of it.
+function numOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// `${n} ${plural(n, "post")}` — the inline `n === 1 ? "x" : "xs"` ternary shows
+// up wherever a count is written into a sentence.
+function plural(n, one, many = `${one}s`) { return n === 1 ? one : many; }
 
 // Compact counts for audience figures — views run into the millions, and
 // "8478414" on a headline is a number nobody reads.
@@ -157,35 +190,6 @@ function GrainOverlay() {
   );
 }
 
-// Soft drifting dots used behind the radial diagrams so those sections
-// never feel like an empty canvas with a single SVG floating on it.
-function DriftParticles({ color = F.navy, count = 10, area = 520 }) {
-  const reduce = useReducedMotion();
-  const dots = useMemo(
-    () => Array.from({ length: count }, (_, i) => ({
-      id: i,
-      x: Math.random() * area,
-      y: Math.random() * area,
-      r: 1.4 + Math.random() * 2.2,
-      dur: 10 + Math.random() * 10,
-      delay: Math.random() * -10,
-    })),
-    [count, area]
-  );
-  if (reduce) return null;
-  return (
-    <svg aria-hidden width="100%" height="100%" viewBox={`0 0 ${area} ${area}`}
-      style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
-      {dots.map((d) => (
-        <motion.circle
-          key={d.id} cx={d.x} cy={d.y} r={d.r} fill={color} opacity={0.16}
-          animate={{ cy: [d.y, d.y - 26, d.y], opacity: [0.06, 0.22, 0.06] }}
-          transition={{ duration: d.dur, delay: d.delay, repeat: Infinity, ease: "easeInOut" }}
-        />
-      ))}
-    </svg>
-  );
-}
 
 function Marquee({ items, color = F.inkSoft }) {
   const reduce = useReducedMotion();
@@ -230,11 +234,13 @@ const Eyebrow = ({ children, color = F.navy }) => (
 function SectionHeader({ eyebrow, eyebrowColor, title, center = true, sub, dark = false, gap = 56 }) {
   return (
     <div style={{ marginBottom: gap, textAlign: center ? "center" : "left" }}>
-      <Reveal>
-        <div style={{ display: "flex", justifyContent: center ? "center" : "flex-start" }}>
-          <Eyebrow color={dark ? "rgba(255,255,255,0.85)" : eyebrowColor}>{eyebrow}</Eyebrow>
-        </div>
-      </Reveal>
+      {eyebrow && (
+        <Reveal>
+          <div style={{ display: "flex", justifyContent: center ? "center" : "flex-start" }}>
+            <Eyebrow color={dark ? "rgba(255,255,255,0.85)" : eyebrowColor}>{eyebrow}</Eyebrow>
+          </div>
+        </Reveal>
+      )}
       <MaskReveal delay={0.08} style={{ display: "flex", justifyContent: center ? "center" : "flex-start" }}>
         <h2 style={{ fontFamily: T.display, fontStyle: "italic", fontWeight: 500, fontSize: "clamp(30px, 3.6vw, 46px)", color: dark ? "#FFFFFF" : F.ink, margin: 0, lineHeight: 1.22 }}>
           {title}
@@ -317,44 +323,6 @@ function BigNumber({ value, prefix = "", suffix = "", decimals = 0, size = 56 })
   return <span ref={ref} style={{ fontFamily: T.display, fontSize: size, color: F.ink, fontWeight: 500 }}>{prefix}{(0).toFixed(decimals)}{suffix}</span>;
 }
 
-function EditorialLine({ data, height = 220, color = F.forest, thick = 2 }) {
-  const reduce = useReducedMotion();
-  const id = useRef("grad-" + Math.round(Math.random() * 1e6)).current;
-  const width = 560;
-  if (!data || data.length < 2) {
-    return (
-      <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-        <line x1={0} y1={height - 1} x2={width} y2={height - 1} stroke={F.hairline} strokeDasharray="3 6" />
-      </svg>
-    );
-  }
-  const min = Math.min(...data), max = Math.max(...data), span = max - min || 1;
-  const pts = data.map((v, i) => [
-    (i / (data.length - 1)) * width,
-    height - ((v - min) / span) * (height - 20) - 10,
-  ]);
-  const d = pts.map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
-  const area = d + ` L${width} ${height} L0 ${height} Z`;
-  return (
-    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ overflow: "visible" }}>
-      <defs>
-        <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.18" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={area} fill={`url(#${id})`} />
-      <motion.path
-        d={d} fill="none" stroke={color} strokeWidth={thick} strokeLinecap="round" strokeLinejoin="round"
-        initial={reduce ? false : { pathLength: 0 }}
-        whileInView={{ pathLength: 1 }}
-        viewport={{ once: true, amount: 0.4 }}
-        transition={{ duration: 1.6, ease: EASE }}
-      />
-      {pts.map((p, i) => <circle key={i} cx={p[0]} cy={p[1]} r={2} fill={color} opacity={0.7} />)}
-    </svg>
-  );
-}
 
 // Small filled card used to keep otherwise-sparse sections from reading
 // as empty — a value, a label, and a one-line note, with a hover lift.
@@ -383,6 +351,82 @@ function InsightCard({ label, value, note, color = F.navy, delay = 0, dark = fal
   );
 }
 
+// An explainer attached to a single figure. Every score on this page is a
+// DERIVED share — "Team 45%" is a fraction of a roster, not a grade — and the
+// first question any reader has is what the denominator is. That answer used
+// to live only in a caption, or nowhere.
+//
+// The trigger is a real <button>, not a hover-only span: pointer opens it,
+// tap toggles it (hover does not exist on touch, and this page is read on
+// phones), Tab reaches it and Escape closes it.
+function InfoTip({ label, hint }) {
+  const [open, setOpen] = useState(false);
+  const reduce = useReducedMotion();
+
+  return (
+    <span
+      style={{ position: "relative", display: "inline-flex", verticalAlign: "middle" }}
+      onPointerEnter={() => setOpen(true)}
+      onPointerLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        // The hint IS the button's accessible name, so a screen reader gets the
+        // explanation without the popover having to open at all — which is why
+        // the popover itself is aria-hidden rather than a described-by target
+        // that only exists half the time.
+        aria-label={`${label}: ${hint}`}
+        onClick={() => setOpen((v) => !v)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
+        style={{
+          width: 15, height: 15, padding: 0, borderRadius: "50%", cursor: "help",
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          fontFamily: T.display, fontStyle: "italic", fontSize: 10, lineHeight: 1,
+          transition: "background 0.18s ease, color 0.18s ease, border-color 0.18s ease",
+          background: open ? F.navyWash : "transparent",
+          border: `1px solid ${open ? F.hairlineStrong : F.hairline}`,
+          color: open ? F.ink : F.muted,
+        }}
+      >
+        i
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.span
+            aria-hidden="true"
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: reduce ? 0 : 0.18, ease: EASE }}
+            style={{
+              position: "absolute", top: "calc(100% + 9px)", left: -8, zIndex: 20,
+              width: 244, padding: "11px 13px", borderRadius: 12,
+              background: F.navySurface,
+              border: "1px solid rgba(255,255,255,0.10)",
+              boxShadow: "0 16px 40px rgba(20,21,26,0.28)",
+              fontFamily: T.ui, fontSize: 10.5, lineHeight: 1.55,
+              color: "rgba(255,255,255,0.78)",
+              textAlign: "left", pointerEvents: "none",
+            }}
+          >
+            <span style={{
+              display: "block", marginBottom: 4,
+              fontSize: 8.5, fontWeight: 700, letterSpacing: "0.13em",
+              textTransform: "uppercase", color: "rgba(255,255,255,0.42)",
+            }}>
+              {label}
+            </span>
+            {hint}
+          </motion.span>
+        )}
+      </AnimatePresence>
+    </span>
+  );
+}
+
 // Deterministic colour badge — used in place of unreliable keyword-photo
 // thumbnails for client / decision tiles.
 function InitialsBadge({ seed, size = 40, radius = 10 }) {
@@ -398,32 +442,116 @@ function InitialsBadge({ seed, size = 40, radius = 10 }) {
   );
 }
 
-// A thin, quiet divider between two sections that would otherwise share the
-// exact same background colour. Used between the studio PhotoInterlude and
-// Agency Health (both F.ink), between Decisions and Performance (both
-// F.cream), and between Team and Decisions (also both F.cream) — three
-// consecutive same-colour joins that previously had no seam at all, which is
-// what made the page read as one long run instead of distinct chapters. This
-// doesn't try to look like a section of its own — no eyebrow, no title —
-// just enough breathing room and a faint gradient line to mark where one
-// ends and the next begins.
-function SectionSeam({ tone = "light" }) {
-  const dark = tone === "dark";
+/* A chapter that opens on demand.
+ *
+ * The three sections the founder opens this page FOR — the portfolio,
+ * financials, agency health — always render. Everything after them is
+ * reference: true, worth having, but not worth three screens of scrolling
+ * past every visit. Those are wrapped in one of these.
+ *
+ * The bar is deliberately not a second title: the section inside keeps its own
+ * editorial header, so this carries the chapter name and a one-line summary
+ * that stays useful while the chapter is shut — a collapsed row that says only
+ * "Trajectory" makes the reader open it to find out whether they need it.
+ *
+ * Bars alternate between the page's two surfaces, which is what gives the tail
+ * of the page its rhythm now that there is no third colour to separate
+ * chapters with.
+ */
+// The two materials a bar can wear, as data rather than as the same
+// `dark ? … : …` ternary repeated at every property.
+const CHAPTER_TONES = {
+  light: { bg: F.surface, line: F.hairline, ink: F.ink, sub: F.inkSoft, chevron: F.inkSoft },
+  dark: {
+    bg: F.navySurface, line: "rgba(255,255,255,0.12)", ink: "#FFFFFF",
+    sub: "rgba(255,255,255,0.55)", chevron: "rgba(255,255,255,0.7)",
+  },
+};
+
+function CollapsibleSection({ eyebrow, summary, accent = F.navy, tone = "light", children }) {
+  const [open, setOpen] = useState(false);
+  const reduce = useReducedMotion();
+  const c = CHAPTER_TONES[tone];
+
   return (
-    <div
-      aria-hidden
-      style={{
-        position: "relative", height: dark ? 72 : 56,
-        background: dark ? F.ink : F.cream,
-      }}
-    >
-      <div style={{
-        position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)",
-        width: 120, height: 1,
-        background: dark
-          ? "linear-gradient(90deg, transparent, rgba(255,255,255,0.22), transparent)"
-          : `linear-gradient(90deg, transparent, ${F.hairlineStrong}, transparent)`,
-      }} />
+    <div style={{ background: c.bg }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        style={{
+          display: "block", width: "100%", padding: "26px 44px", cursor: "pointer",
+          background: "transparent", textAlign: "left",
+          border: "none", borderTop: `1px solid ${c.line}`,
+          borderBottom: open ? `1px solid ${c.line}` : "none",
+          font: "inherit", color: "inherit",
+        }}
+      >
+        <div style={{
+          maxWidth: 1180, margin: "0 auto",
+          display: "flex", alignItems: "center", gap: 18,
+        }}>
+          <span style={{
+            width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+            background: accent,
+          }} />
+
+          <span style={{
+            fontFamily: T.ui, fontSize: 10.5, fontWeight: 700,
+            letterSpacing: "0.16em", textTransform: "uppercase",
+            color: c.ink, flexShrink: 0,
+          }}>
+            {eyebrow}
+          </span>
+
+          {summary && (
+            <span style={{
+              fontFamily: T.ui, fontSize: 12, lineHeight: 1.5,
+              color: c.sub,
+              flex: 1, minWidth: 0,
+            }}>
+              {summary}
+            </span>
+          )}
+
+          <motion.span
+            aria-hidden="true"
+            animate={{ rotate: open ? 180 : 0 }}
+            transition={{ duration: reduce ? 0 : 0.3, ease: EASE }}
+            style={{
+              marginLeft: "auto", flexShrink: 0,
+              width: 28, height: 28, borderRadius: "50%",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              border: `1px solid ${c.line}`,
+              color: c.chevron,
+            }}
+          >
+            <svg width="11" height="7" viewBox="0 0 11 7" fill="none">
+              <path d="M1 1L5.5 5.5L10 1" stroke="currentColor" strokeWidth="1.4"
+                strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </motion.span>
+        </div>
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            className="fs-chapter"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: reduce ? 0 : 0.42, ease: EASE }}
+            // Stays hidden after the expansion too, not just during it: every
+            // section inside already clips its own content, so there is
+            // nothing to release, and toggling overflow mid-animation
+            // re-renders the element and strands the height part-way open.
+            style={{ overflow: "hidden" }}
+          >
+            {children}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -489,7 +617,6 @@ function Hero({ asOfLabel }) {
    * This is frontend-only, so the key is visible to users.
    * Fine for a prototype/internal dashboard.
    */
-
 
 
   /*
@@ -734,7 +861,7 @@ function Hero({ asOfLabel }) {
         position: "relative",
         minHeight: "94vh",
         overflow: "hidden",
-        background: F.cream,
+        background: F.surface,
         color: F.ink,
         paddingTop: 105,
       }}
@@ -859,40 +986,6 @@ function Hero({ asOfLabel }) {
         }
 
       `}</style>
-
-      {/* ======================================================
-          DECORATIVE BACKGROUND
-      ======================================================= */}
-
-      <div
-        aria-hidden="true"
-        style={{
-          position: "absolute",
-          width: 650,
-          height: 650,
-          borderRadius: "50%",
-          top: -390,
-          right: -190,
-          background:
-            "radial-gradient(circle, rgba(169,145,94,.14), transparent 68%)",
-          pointerEvents: "none",
-        }}
-      />
-
-      <div
-        aria-hidden="true"
-        style={{
-          position: "absolute",
-          width: 500,
-          height: 500,
-          borderRadius: "50%",
-          left: -330,
-          top: 260,
-          background:
-            "radial-gradient(circle, rgba(90,105,130,.07), transparent 70%)",
-          pointerEvents: "none",
-        }}
-      />
 
       {/* ======================================================
           TOP BAR
@@ -1345,7 +1438,7 @@ function Hero({ asOfLabel }) {
                           overflow:
                             "hidden",
                           background:
-                            F.paper,
+                            F.surface,
                           border:
                             `1px solid ${F.hairline}`,
                           boxShadow:
@@ -1789,28 +1882,27 @@ function ExecutiveStatement() {
 }
 
 /* ────────────────────────────────────────────────────────────────
- * 3 — THE BIG NUMBERS
- * ──────────────────────────────────────────────────────────────── */
+ * AT A GLANCE — the four standing counts, first thing on the page
+ * ────────────────────────────────────────────────────────────────
+ * This used to lead with ₹XX.XL and "+n% vs previous period" above the
+ * counts, which was the same `revenue.total` the Financials panel states at
+ * 56px a screen later — the page reported its headline number twice, from one
+ * field, in two different formats. The figure stays in Financials, where the
+ * collection rate and the trend that explain it live; the delta moved with
+ * it. What is left here is what is genuinely only here: the four standing
+ * counts, which is why this is short enough to sit straight off the hero
+ * rather than being a chapter of its own.
+ */
 
-function BigNumbers({ revenue = {}, bigNumbers = {} }) {
+function AtAGlance({ bigNumbers = {} }) {
   return (
-    <section style={{ padding: "40px 44px 100px", background: F.surface }}>
+    <section style={{ padding: "96px 44px 0", background: F.surface }}>
       <div style={{ maxWidth: 1000, margin: "0 auto" }}>
-        <Reveal>
-          <div style={{ textAlign: "center", marginBottom: 8 }}>
-            <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.forest, letterSpacing: "0.14em", textTransform: "uppercase" }}>Revenue</span>
-          </div>
-          <div style={{ textAlign: "center", marginBottom: 6 }}>
-            <BigNumber value={fmtINR(revenue.total)} prefix="₹" suffix={revenue.total != null ? "L" : ""} decimals={1} size={76} />
-          </div>
-          <div style={{ textAlign: "center", fontFamily: T.ui, fontSize: 12, color: revenue.deltaPct != null ? F.forest : F.muted, fontWeight: 600, marginBottom: 64 }}>
-            {revenue.deltaPct != null ? `${pct(revenue.deltaPct)} vs previous period` : "Awaiting data"}
-          </div>
-        </Reveal>
-
-        <div style={{ height: 1, background: F.hairline, marginBottom: 64 }} />
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "48px 40px" }}>
+        {/* Centred in the cell, not just as a block: the row sits under a
+            centred hero and above a centred statement, and four left-aligned
+            columns inside a centred grid read as the whole strip being pushed
+            off to the left. */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "48px 40px", textAlign: "center" }}>
           {[
             { label: "Campaigns", value: bigNumbers.campaigns, color: F.navy },
             { label: "Clients", value: bigNumbers.clients, color: F.rust },
@@ -1868,11 +1960,6 @@ function HealthOrbitArc({ pct: value, color, cx, cy, r, stroke = 3 }) {
   );
 }
 
-// Both columns of the Agency Health spread are pinned to this, so the ring
-// panel and the photograph beside it are the same height at every breakpoint
-// rather than each sizing to its own content.
-const PANEL_H = 480;
-
 function AgencyHealth({ health = {} }) {
   const reduce = useReducedMotion();
 
@@ -1890,27 +1977,32 @@ function AgencyHealth({ health = {} }) {
     {
       key: "revenue",
       label: "Revenue",
-      color: "#8FBBA8",
+      color: ON_NAVY.green,
+      hint: "Revenue invoiced as a share of what the period was meant to bring in. Not scored: nothing stored holds a target to divide by.",
     },
     {
       key: "delivery",
       label: "Delivery",
-      color: "#9DB4D9",
+      color: ON_NAVY.blue,
+      hint: "Mean completion across every campaign in flight. Each campaign's progress advances with its pipeline stage, so this tracks the work rather than the calendar.",
     },
     {
       key: "clients",
       label: "Clients",
-      color: "#E4C77B",
+      color: ON_NAVY.gold,
+      hint: "Share of the book with a campaign running right now. It reads engagement, not satisfaction — a happy client between campaigns still counts against it.",
     },
     {
       key: "team",
       label: "Team",
-      color: "#D2A6C0",
+      color: ON_NAVY.pink,
+      hint: "Share of the roster carrying at least one live campaign. Low means capacity is idle; high means there is little slack left to take on new work.",
     },
     {
       key: "growth",
       label: "Growth",
-      color: "#E0A08F",
+      color: ON_NAVY.coral,
+      hint: "Movement against the period before. Not scored: no prior-period figure is stored to measure the change from.",
     },
   ];
 
@@ -1954,13 +2046,11 @@ function AgencyHealth({ health = {} }) {
     };
   });
 
-  const measuredCount = measured.length;
+  const hasSignals = measured.length > 0;
 
-  const average =
-    measuredCount > 0
-      ? measured.reduce((sum, item) => sum + item.value, 0) /
-        measuredCount
-      : null;
+  const average = hasSignals
+    ? measured.reduce((sum, item) => sum + item.value, 0) / measured.length
+    : null;
 
   const ref = useRef(null);
 
@@ -1982,26 +2072,9 @@ function AgencyHealth({ health = {} }) {
         padding: "110px 44px 100px",
         position: "relative",
         overflow: "hidden",
-        // The wash that used to be an absolutely positioned overlay child here
-        // is now the shared DARK_SURFACE token, so the growth panel and the
-        // client cards wear the same material rather than approximating it.
-        background: DARK_SURFACE,
+        background: F.navySurface,
       }}
     >
-      <div
-        style={{
-          position: "absolute",
-          width: 500,
-          height: 500,
-          right: -220,
-          top: -220,
-          borderRadius: "50%",
-          background:
-            "radial-gradient(circle, rgba(143,187,168,0.12), transparent 68%)",
-          pointerEvents: "none",
-        }}
-      />
-
       <div
         style={{
           maxWidth: 1240,
@@ -2013,106 +2086,49 @@ function AgencyHealth({ health = {} }) {
             HEADER
         ===================================================== */}
 
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-end",
-            justifyContent: "space-between",
-            gap: 30,
-            marginBottom: 38,
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <div
-              style={{
-                fontFamily: T.ui,
-                fontSize: 9.5,
-                fontWeight: 700,
-                letterSpacing: "0.16em",
-                textTransform: "uppercase",
-                color: F.cream,
-                opacity: 0.75,
-                marginBottom: 10,
-              }}
-            >
-              Live measurement
-            </div>
-
-            <h2
-              style={{
-                margin: 0,
-                fontFamily: T.display,
-                fontStyle: "italic",
-                fontSize: "clamp(42px, 5vw, 66px)",
-                fontWeight: 400,
-                lineHeight: 0.95,
-                letterSpacing: "-0.035em",
-                color: "#FFFFFF",
-              }}
-            >
-              Agency health.
-            </h2>
-
-            <p
-              style={{
-                maxWidth: 590,
-                margin: "16px 0 0",
-                fontFamily: T.ui,
-                fontSize: 12.5,
-                lineHeight: 1.7,
-                color: "rgba(255,255,255,0.48)",
-              }}
-            >
-              A view of the signals the system can actually measure right
-              now. Unavailable metrics are deliberately omitted.
-            </p>
-          </div>
-
-          {/* MEASUREMENT COUNT */}
-
+        <div style={{ marginBottom: 38 }}>
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: "9px 13px",
-              borderRadius: 999,
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.10)",
-              backdropFilter: "blur(12px)",
-              WebkitBackdropFilter: "blur(12px)",
+              fontFamily: T.ui,
+              fontSize: 9.5,
+              fontWeight: 700,
+              letterSpacing: "0.16em",
+              textTransform: "uppercase",
+              color: "rgba(255,255,255,0.75)",
+              marginBottom: 10,
             }}
           >
-            <span
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background:
-                  measuredCount > 0
-                    ? "#8FBBA8"
-                    : "rgba(255,255,255,0.25)",
-                boxShadow:
-                  measuredCount > 0
-                    ? "0 0 0 4px rgba(143,187,168,0.12)"
-                    : "none",
-              }}
-            />
-
-            <span
-              style={{
-                fontFamily: T.ui,
-                fontSize: 10,
-                fontWeight: 700,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                color: "rgba(255,255,255,0.65)",
-              }}
-            >
-              {measuredCount} measured
-            </span>
+            Live measurement
           </div>
+
+          <h2
+            style={{
+              margin: 0,
+              fontFamily: T.display,
+              fontStyle: "italic",
+              fontSize: "clamp(42px, 5vw, 66px)",
+              fontWeight: 400,
+              lineHeight: 0.95,
+              letterSpacing: "-0.035em",
+              color: "#FFFFFF",
+            }}
+          >
+            Agency health.
+          </h2>
+
+          <p
+            style={{
+              maxWidth: 590,
+              margin: "16px 0 0",
+              fontFamily: T.ui,
+              fontSize: 12.5,
+              lineHeight: 1.7,
+              color: "rgba(255,255,255,0.48)",
+            }}
+          >
+            A view of the signals the system can actually measure right
+            now. Unavailable metrics are deliberately omitted.
+          </p>
         </div>
 
         {/* =====================================================
@@ -2123,7 +2139,7 @@ function AgencyHealth({ health = {} }) {
           style={{
             display: "grid",
             gridTemplateColumns:
-              measuredCount > 0
+              hasSignals
                 ? "minmax(420px, 1.1fr) minmax(320px, 0.9fr)"
                 : "1fr",
             gap: 18,
@@ -2141,8 +2157,7 @@ function AgencyHealth({ health = {} }) {
                 borderRadius: 24,
                 overflow: "hidden",
 
-                background:
-                  "linear-gradient(145deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018))",
+                background: "rgba(255,255,255,0.04)",
 
                 border:
                   "1px solid rgba(255,255,255,0.10)",
@@ -2155,26 +2170,8 @@ function AgencyHealth({ health = {} }) {
                 justifyContent: "center",
               }}
             >
-              {measuredCount > 0 ? (
+              {hasSignals ? (
                 <>
-                  {/* AMBIENT GLOW */}
-
-                  <div
-                    style={{
-                      position: "absolute",
-                      width: 250,
-                      height: 250,
-                      left: "50%",
-                      top: "50%",
-                      transform:
-                        "translate(-50%, -50%)",
-                      borderRadius: "50%",
-                      background:
-                        "radial-gradient(circle, rgba(255,255,255,0.06), transparent 68%)",
-                      filter: "blur(10px)",
-                    }}
-                  />
-
                   <svg
                     viewBox={`0 0 ${size} ${size}`}
                     width="100%"
@@ -2438,14 +2435,14 @@ function AgencyHealth({ health = {} }) {
               RIGHT — MEASURED DATA
           ================================================= */}
 
-          {measuredCount > 0 && (
+          {hasSignals && (
             <Reveal delay={0.15}>
               <div
                 style={{
                   minHeight: 500,
                   borderRadius: 24,
                   overflow: "hidden",
-                  background: "#F7F4EE",
+                  background: F.surface,
                   border:
                     "1px solid rgba(255,255,255,0.12)",
                   display: "flex",
@@ -2457,8 +2454,7 @@ function AgencyHealth({ health = {} }) {
                 <div
                   style={{
                     padding: "25px 25px 20px",
-                    borderBottom:
-                      "1px solid rgba(20,21,26,0.08)",
+                    borderBottom: `1px solid ${F.hairline}`,
                   }}
                 >
                   <div
@@ -2468,7 +2464,7 @@ function AgencyHealth({ health = {} }) {
                       fontWeight: 700,
                       letterSpacing: "0.14em",
                       textTransform: "uppercase",
-                      color: "#77736C",
+                      color: F.muted,
                     }}
                   >
                     Measured signals
@@ -2481,7 +2477,7 @@ function AgencyHealth({ health = {} }) {
                       fontStyle: "italic",
                       fontSize: 28,
                       lineHeight: 1,
-                      color: "#15161A",
+                      color: F.ink,
                     }}
                   >
                     What each reading counts.
@@ -2508,7 +2504,7 @@ function AgencyHealth({ health = {} }) {
                         padding: "16px 2px",
                         borderBottom:
                           index < measured.length - 1
-                            ? "1px solid rgba(20,21,26,0.07)"
+                            ? `1px solid ${F.hairline}`
                             : "none",
                       }}
                     >
@@ -2528,20 +2524,26 @@ function AgencyHealth({ health = {} }) {
                         <div
                           style={{
                             display: "flex",
-                            alignItems: "baseline",
+                            alignItems: "center",
                             justifyContent: "space-between",
                             gap: 10,
                           }}
                         >
                           <span
                             style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
                               fontFamily: T.ui,
                               fontSize: 11,
                               fontWeight: 650,
-                              color: "#24252A",
+                              color: F.ink,
                             }}
                           >
                             {item.label}
+                            {item.hint && (
+                              <InfoTip label={item.label} hint={item.hint} />
+                            )}
                           </span>
 
                           {item.basis && (
@@ -2550,13 +2552,13 @@ function AgencyHealth({ health = {} }) {
                                 fontFamily: T.ui,
                                 fontSize: 15,
                                 fontWeight: 700,
-                                color: "#15161A",
+                                color: F.ink,
                                 fontVariantNumeric: "tabular-nums",
                                 flexShrink: 0,
                               }}
                             >
                               {item.basis.count}
-                              <span style={{ color: "#9A958C", fontWeight: 500 }}>
+                              <span style={{ color: F.muted, fontWeight: 500 }}>
                                 {" / "}
                                 {item.basis.total}
                               </span>
@@ -2565,7 +2567,7 @@ function AgencyHealth({ health = {} }) {
                                   marginLeft: 5,
                                   fontSize: 10,
                                   fontWeight: 500,
-                                  color: "#9A958C",
+                                  color: F.muted,
                                 }}
                               >
                                 {item.basis.unit}
@@ -2576,10 +2578,10 @@ function AgencyHealth({ health = {} }) {
 
                         <div
                           style={{
-                            marginTop: 6,
-                            height: 4,
+                            marginTop: 8,
+                            height: 9,
                             borderRadius: 999,
-                            background: "rgba(20,21,26,0.07)",
+                            background: F.navyWash,
                             overflow: "hidden",
                           }}
                         >
@@ -2605,7 +2607,7 @@ function AgencyHealth({ health = {} }) {
                               fontFamily: T.ui,
                               fontSize: 10.5,
                               lineHeight: 1.45,
-                              color: "#7B766E",
+                              color: F.inkSoft,
                             }}
                           >
                             {item.basis.note}
@@ -2625,7 +2627,7 @@ function AgencyHealth({ health = {} }) {
                       margin: "0 22px 22px",
                       padding: "15px 17px",
                       borderRadius: 14,
-                      background: "#EDE8DE",
+                      background: F.navyWash,
                     }}
                   >
                     <div
@@ -2635,7 +2637,7 @@ function AgencyHealth({ health = {} }) {
                         fontWeight: 700,
                         textTransform: "uppercase",
                         letterSpacing: "0.1em",
-                        color: "#858078",
+                        color: F.muted,
                       }}
                     >
                       Not measured yet
@@ -2656,7 +2658,7 @@ function AgencyHealth({ health = {} }) {
                             fontFamily: T.display,
                             fontStyle: "italic",
                             fontSize: 14,
-                            color: "#17181C",
+                            color: F.ink,
                             flexShrink: 0,
                           }}
                         >
@@ -2667,7 +2669,7 @@ function AgencyHealth({ health = {} }) {
                             fontFamily: T.ui,
                             fontSize: 10.5,
                             lineHeight: 1.45,
-                            color: "#7B766E",
+                            color: F.inkSoft,
                           }}
                         >
                           {u.reason}
@@ -2680,51 +2682,16 @@ function AgencyHealth({ health = {} }) {
             </Reveal>
           )}
         </div>
-
-        {/* =====================================================
-            DATA NOTE
-        ===================================================== */}
-
-        {measuredCount > 0 && (
-          <div
-            style={{
-              marginTop: 15,
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              fontFamily: T.ui,
-              fontSize: 9.5,
-              color:
-                "rgba(255,255,255,0.30)",
-            }}
-          >
-            <span
-              style={{
-                width: 5,
-                height: 5,
-                borderRadius: "50%",
-                background: "#8FBBA8",
-              }}
-            />
-
-            Showing {measuredCount} live{" "}
-            {measuredCount === 1
-              ? "signal"
-              : "signals"}{" "}
-            supplied by the system. Unavailable
-            measurements are hidden.
-          </div>
-        )}
       </div>
     </section>
   );
 }
 
 /* ────────────────────────────────────────────────────────────────
- * 5 — REVENUE
+ * FINANCIALS — every revenue reading on the page, in one place
  * ──────────────────────────────────────────────────────────────── */
 
-function RevenueSection({ data = {} }) {
+function Financials({ data = {} }) {
   const reduce = useReducedMotion();
   const [hover, setHover] = useState(null);
 
@@ -2737,30 +2704,12 @@ function RevenueSection({ data = {} }) {
    * Everything comes directly from `data`.
    */
 
-  const total =
-    Number.isFinite(Number(data.total))
-      ? Number(data.total)
-      : null;
-
-  const collected =
-    Number.isFinite(Number(data.collected))
-      ? Number(data.collected)
-      : null;
-
-  const outstanding =
-    Number.isFinite(Number(data.outstanding))
-      ? Number(data.outstanding)
-      : null;
-
-  const overdue =
-    Number.isFinite(Number(data.overdue))
-      ? Number(data.overdue)
-      : null;
-
-  const renewals =
-    Number.isFinite(Number(data.renewalsDue))
-      ? Number(data.renewalsDue)
-      : null;
+  const total = numOrNull(data.total);
+  const collected = numOrNull(data.collected);
+  const outstanding = numOrNull(data.outstanding);
+  const overdue = numOrNull(data.overdue);
+  const renewals = numOrNull(data.renewalsDue);
+  const deltaPct = numOrNull(data.deltaPct);
 
   /*
    * Collection percentage is DERIVED ONLY from real
@@ -2971,7 +2920,7 @@ function RevenueSection({ data = {} }) {
     {
       label: "Overdue",
       value: overdue,
-      color: "#C97867",
+      color: ON_NAVY.coral,
     },
     {
       label: "Renewals",
@@ -3010,9 +2959,7 @@ function RevenueSection({ data = {} }) {
         ====================================================== */}
 
         <SectionHeader
-          eyebrow="Financial"
-          eyebrowColor={F.forest}
-          title="Revenue."
+          title="Financials."
           center={false}
           sub={
             hasRevenueData
@@ -3033,7 +2980,7 @@ function RevenueSection({ data = {} }) {
                 borderRadius: 26,
                 overflow: "hidden",
 
-                background: "#111216",
+                background: F.navySurface,
 
                 border:
                   "1px solid rgba(255,255,255,0.08)",
@@ -3104,6 +3051,22 @@ function RevenueSection({ data = {} }) {
                         ? `₹${fmtINR(total)}L`
                         : "—"}
                     </div>
+
+                    {/* Period-on-period movement, which used to sit above the
+                        counts a screen earlier, orphaned from the figure it
+                        qualifies. */}
+                    {deltaPct != null && (
+                      <div
+                        style={{
+                          fontFamily: T.ui,
+                          fontSize: 11.5,
+                          fontWeight: 600,
+                          color: deltaPct < 0 ? ON_NAVY.coral : ON_NAVY.green,
+                        }}
+                      >
+                        {pct(deltaPct)} vs previous period
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -3565,7 +3528,7 @@ function RevenueSection({ data = {} }) {
                                 : 2.5
                             }
                             fill={F.forest}
-                            stroke="#111216"
+                            stroke={F.navySurface}
                             strokeWidth={2}
                           />
                         )
@@ -3755,7 +3718,7 @@ function RevenueSection({ data = {} }) {
                             borderRadius:
                               "50%",
                             background:
-                              "#111216",
+                              F.navySurface,
                             display: "flex",
                             alignItems:
                               "center",
@@ -3794,7 +3757,7 @@ function RevenueSection({ data = {} }) {
                 borderRadius: 24,
                 border:
                   `1px solid ${F.hairline}`,
-                background: F.paper,
+                background: F.surface,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -3846,7 +3809,7 @@ function RevenueSection({ data = {} }) {
 function CampaignFlow({ stages = [] }) {
   const reduce = useReducedMotion();
   return (
-    <section style={{ padding: "140px 44px", background: F.cream }}>
+    <section style={{ padding: "140px 44px", background: F.surface }}>
       <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 56, alignItems: "stretch" }}>
         <div>
           <SectionHeader eyebrow="Campaign operations" eyebrowColor={F.navy} title="The campaign journey." center={false} />
@@ -4014,7 +3977,7 @@ function ClientCard({ client, delay = 0 }) {
             {...faceAnim(false)}
             style={{
               ...face,
-              background: DARK_SURFACE, // shared with Agency Health + growth panel
+              background: F.navySurface,
               boxShadow:
                 "0 18px 45px rgba(20,21,26,0.10)",
             }}
@@ -4321,7 +4284,7 @@ function ClientCard({ client, delay = 0 }) {
             <div
               style={{
                 padding: "12px 14px",
-                background: F.paper,
+                background: F.surface,
                 borderBottom: `1px solid ${F.hairline}`,
                 display: "flex",
                 alignItems: "center",
@@ -4553,7 +4516,7 @@ function ClientCard({ client, delay = 0 }) {
             <div
               style={{
                 padding: "8px 14px",
-                background: F.paper,
+                background: F.surface,
                 borderTop: `1px solid ${F.hairline}`,
                 fontFamily: T.ui,
                 fontSize: 8.5,
@@ -4680,12 +4643,12 @@ function TeamField({ team = {} }) {
   const busiestLoad = busiest?.activeProjects ?? 0;
 
   return (
-    <section style={{ position: "relative", background: F.cream, overflow: "hidden" }}>
+    <section style={{ position: "relative", background: F.surface, overflow: "hidden" }}>
       {/* A slim photo band gives this section presence up top instead of
           opening straight into a flat field like before. */}
       <div style={{ position: "relative", height: 220, overflow: "hidden" }}>
         <img src={PHOTOS.team} alt="" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", filter: "grayscale(0.3) brightness(0.55)" }} />
-        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(20,21,26,0.35) 0%, rgba(241,236,225,1) 96%)" }} />
+        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(20,21,26,0.35) 0%, rgba(255,255,255,1) 96%)" }} />
         <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "flex-end", justifyContent: "center", paddingBottom: 34 }}>
           <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: "#FFFFFF", letterSpacing: "0.2em" }}>THE TEAM, IN THE FIELD</span>
         </div>
@@ -4833,7 +4796,7 @@ function DecisionBadge({ decision }) {
 
 function DecisionsHorizon({ items = [] }) {
   return (
-    <section style={{ padding: "140px 44px", background: F.cream }}>
+    <section style={{ padding: "140px 44px", background: F.surface }}>
       <div style={{ maxWidth: 1100, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 56, alignItems: "stretch" }}>
         <div>
           <SectionHeader eyebrow="Ahead" eyebrowColor={F.gold} title="Decisions on the horizon." center={false} />
@@ -5102,43 +5065,11 @@ function PerformanceGraph({ lines = [] }) {
     <section
       style={{
         padding: "130px 44px 150px",
-        background: F.cream,
+        background: F.surface,
         position: "relative",
         overflow: "hidden",
       }}
     >
-
-      {/* ========================================================
-          BACKGROUND DETAIL
-      ======================================================== */}
-
-      <div
-        style={{
-          position: "absolute",
-          width: 520,
-          height: 520,
-          borderRadius: "50%",
-          background:
-            `radial-gradient(circle, ${F.forest}12 0%, transparent 70%)`,
-          top: -180,
-          right: -120,
-          pointerEvents: "none",
-        }}
-      />
-
-      <div
-        style={{
-          position: "absolute",
-          width: 420,
-          height: 420,
-          borderRadius: "50%",
-          background:
-            `radial-gradient(circle, ${F.navy}10 0%, transparent 70%)`,
-          bottom: -220,
-          left: -140,
-          pointerEvents: "none",
-        }}
-      />
 
       <div
         style={{
@@ -5176,7 +5107,7 @@ function PerformanceGraph({ lines = [] }) {
               marginTop: 42,
               borderRadius: 28,
               overflow: "hidden",
-              background: "#111216",
+              background: F.navySurface,
               border:
                 "1px solid rgba(255,255,255,0.08)",
               boxShadow:
@@ -5218,11 +5149,11 @@ function PerformanceGraph({ lines = [] }) {
                     borderRadius: "50%",
                     background:
                       hasData
-                        ? F.forest
+                        ? ON_NAVY.green
                         : "rgba(255,255,255,0.25)",
                     boxShadow:
                       hasData
-                        ? `0 0 14px ${F.forest}`
+                        ? `0 0 14px ${ON_NAVY.green}66`
                         : "none",
                   }}
                 />
@@ -5382,8 +5313,8 @@ function PerformanceGraph({ lines = [] }) {
                           fontSize: 29,
                           color:
                             rising.pct >= 0
-                              ? F.forest
-                              : F.rust,
+                              ? ON_NAVY.green
+                              : ON_NAVY.coral,
                         }}
                       >
                         {rising.pct >= 0
@@ -5922,7 +5853,7 @@ function PerformanceGraph({ lines = [] }) {
                                     fill={
                                       line.color
                                     }
-                                    stroke="#111216"
+                                    stroke={F.navySurface}
                                     strokeWidth={
                                       2
                                     }
@@ -6516,13 +6447,17 @@ function PerformanceGraph({ lines = [] }) {
 
 // Tooltip box, in viewBox units. Named because the clamp maths below needs
 // both, and a magic 130 in three places is how a tooltip ends up half off-panel.
-const TIP_W = 190;
-const TIP_H = 92;
+const TIP_W = 132;
+const TIP_H = 48;
 
 function LivePostGrowth({ growth }) {
   const reduce = useReducedMotion();
   const [metric, setMetric] = useState("views");
   const [hover, setHover] = useState(null);
+  // Which reading the breakdown beside the curve describes. Hover previews it,
+  // a click pins it so the list can be read without holding the cursor on the
+  // chart, and with neither it reports the most recent reading.
+  const [pinned, setPinned] = useState(null);
 
   const points = growth?.points || [];
   const W = 1000;
@@ -6542,7 +6477,7 @@ function LivePostGrowth({ growth }) {
   const first = series[0] ?? 0;
   const gained = latest - first;
 
-  const color = metric === "views" ? F.navy : F.plum;
+  const color = metric === "views" ? ON_NAVY.blue : ON_NAVY.pink;
 
   const growthPct =
     first > 0
@@ -6649,32 +6584,40 @@ function LivePostGrowth({ growth }) {
     setHover(closest);
   };
 
-  // Date + running total is barely more than the axis says, so the tooltip
-  // carries the STEP over the previous reading. First point has no
-  // predecessor and says so rather than showing a fabricated +0.
-  const hoverPoint = hover !== null ? pts[hover] : null;
+  // The reading under the cursor, or the pinned one — the only point that gets
+  // a marker, so an unmarked curve means "nothing selected" rather than "the
+  // last point is special".
+  const marked = hover ?? pinned;
+  const markedPoint = marked !== null && pts[marked] ? pts[marked] : null;
 
-  const hoverDetail = useMemo(() => {
-    if (hover === null || !pts[hover]) return null;
+  // The day the breakdown describes. Falls back to the latest reading, and is
+  // clamped because a pin survives a metric switch (same days, same indices)
+  // but must not survive the data shrinking under it.
+  const at = has ? Math.min(marked ?? series.length - 1, series.length - 1) : 0;
 
-    const point = pts[hover];
-    const previous = hover > 0 ? pts[hover - 1] : null;
-    const step = previous ? point.value - previous.value : null;
+  const { rows: postRows = [], series: posts = [] } = growth?.byPost || {};
+  const row = postRows[at] || {};
+  const prevRow = at > 0 ? postRows[at - 1] || {} : null;
+  const dayTotal = series[at] ?? 0;
+  // First point has no predecessor and says so rather than showing a
+  // fabricated +0.
+  const dayStep = at > 0 ? dayTotal - (series[at - 1] ?? 0) : null;
 
-    return {
-      date: label(point.date),
-      value: point.value,
-      step,
-      stepPct:
-        previous && previous.value > 0
-          ? (step / previous.value) * 100
-          : null,
-      sharePct: latest > 0 ? (point.value / latest) * 100 : null,
-      isFirst: hover === 0,
-    };
-    // `label` is pure; `pts` already changes when metric or data does.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hover, pts, latest]);
+  // One line per post, biggest first. A post with no reading yet on this day is
+  // left out rather than listed at zero — the same rule the curve follows.
+  const breakdown = posts
+    .map((post) => {
+      const value = row[`${post.key}_${metric}`];
+      const previous = prevRow?.[`${post.key}_${metric}`];
+      return {
+        ...post,
+        value,
+        gain: value != null && previous != null ? value - previous : null,
+        share: dayTotal > 0 && value != null ? (value / dayTotal) * 100 : 0,
+      };
+    })
+    .filter((p) => p.value != null)
+    .sort((a, b) => b.value - a.value);
 
   // Replaced a "Peak" tile, which on a cumulative curve is always the latest
   // reading — i.e. the headline restated.
@@ -6726,7 +6669,7 @@ function LivePostGrowth({ growth }) {
               marginTop: 42,
               borderRadius: 28,
               overflow: "hidden",
-              background: DARK_SURFACE,
+              background: F.navySurface,
               boxShadow:
                 "0 30px 80px rgba(20,21,26,0.14)",
               border:
@@ -6788,7 +6731,7 @@ function LivePostGrowth({ growth }) {
                         fontFamily: T.ui,
                         fontSize: 11,
                         fontWeight: 600,
-                        color: "#9FD6B5",
+                        color: ON_NAVY.green,
                       }}
                     >
                       +{growthPct.toFixed(1)}%
@@ -6846,7 +6789,7 @@ function LivePostGrowth({ growth }) {
                           : "transparent",
                       color:
                         metric === id
-                          ? "#111216"
+                          ? F.navySurface
                           : "rgba(255,255,255,0.48)",
                       transition:
                         "all 0.25s ease",
@@ -6948,12 +6891,33 @@ function LivePostGrowth({ growth }) {
               ))}
             </div>
 
-            {/* ───────── CHART ───────── */}
+            {/* ───────── CHART + BREAKDOWN ───────── */}
 
+            {/* The curve alone was a wash with a line pinned along the top: a
+                cumulative total nine-tenths of the way up a zero-based axis has
+                nowhere left to go, and the panel spent its width on the part of
+                the plot nothing ever enters. The breakdown answers what that
+                space never did — which post is carrying this — and reads
+                whichever day the cursor is on, so both halves describe one
+                moment. Same split the client portal's Audience panel uses.
+
+                Flex-wrap rather than a breakpoint: these are inline styles, so
+                on a narrow viewport the breakdown drops below the chart instead
+                of being squeezed to nothing. */}
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "flex-start",
+                gap: 18,
+                padding: "24px 22px 20px",
+              }}
+            >
             <div
               style={{
                 position: "relative",
-                padding: "28px 22px 20px",
+                flex: "1 1 420px",
+                minWidth: 0,
               }}
             >
               {/* Scales uniformly. preserveAspectRatio="none" + a fixed height
@@ -6969,6 +6933,11 @@ function LivePostGrowth({ growth }) {
                 }}
                 onMouseMove={handleMove}
                 onMouseLeave={() => setHover(null)}
+                onClick={() => {
+                  if (hover !== null) {
+                    setPinned((cur) => (cur === hover ? null : hover));
+                  }
+                }}
               >
                 <defs>
                   <linearGradient
@@ -7112,12 +7081,12 @@ function LivePostGrowth({ growth }) {
                         cx={p.x}
                         cy={p.y}
                         r={
-                          hover === i
+                          marked === i
                             ? 6
-                            : 2.5
+                            : 4
                         }
                         fill={color}
-                        stroke="#111216"
+                        stroke={F.navySurface}
                         strokeWidth="2"
                         style={{
                           transition:
@@ -7126,24 +7095,24 @@ function LivePostGrowth({ growth }) {
                       />
                     ))}
 
-                    {/* HOVER */}
+                    {/* MARKED READING */}
 
-                    {hoverPoint && (
+                    {markedPoint && (
                       <g
                         pointerEvents="none"
                       >
                         <line
-                          x1={hoverPoint.x}
+                          x1={markedPoint.x}
                           y1={top}
-                          x2={hoverPoint.x}
+                          x2={markedPoint.x}
                           y2={top + chartH}
                           stroke="rgba(255,255,255,0.20)"
                           strokeDasharray="4 6"
                         />
 
                         <circle
-                          cx={hoverPoint.x}
-                          cy={hoverPoint.y}
+                          cx={markedPoint.x}
+                          cy={markedPoint.y}
                           r="8"
                           fill={color}
                           opacity="0.20"
@@ -7151,63 +7120,50 @@ function LivePostGrowth({ growth }) {
                         />
 
                         <circle
-                          cx={hoverPoint.x}
-                          cy={hoverPoint.y}
+                          cx={markedPoint.x}
+                          cy={markedPoint.y}
                           r="5"
                           fill={color}
                           stroke="#FFFFFF"
                           strokeWidth="2"
                         />
 
-                        {/* Clamped to the plot area, and flipped below the
-                            curve when the point sits too high to fit above. */}
+                        {/* Date and reading only — the step, the share and the
+                            per-post split are all in the breakdown beside the
+                            chart, which describes this same day. Clamped to the
+                            plot area, and flipped below the curve when the point
+                            sits too high to fit above. */}
                         <g
                           transform={`translate(${Math.min(
-                            Math.max(hoverPoint.x - TIP_W / 2, left),
+                            Math.max(markedPoint.x - TIP_W / 2, left),
                             W - right - TIP_W
                           )}, ${
-                            hoverPoint.y - TIP_H - 16 < 0
-                              ? hoverPoint.y + 18
-                              : hoverPoint.y - TIP_H - 16
+                            markedPoint.y - TIP_H - 16 < 0
+                              ? markedPoint.y + 18
+                              : markedPoint.y - TIP_H - 16
                           })`}
                         >
                           <rect
                             width={TIP_W}
                             height={TIP_H}
-                            rx="12"
+                            rx="10"
                             fill="#FFFFFF"
                           />
 
-                          <text x="14" y="21" fontFamily={T.ui} fontSize="9.5" fill="#8A8A90">
-                            {hoverDetail.date} · {metric === "views" ? "Views" : "Engagements"}
+                          <text x="12" y="18" fontFamily={T.ui} fontSize="9" fill="#8A8A90">
+                            {label(markedPoint.date)}
                           </text>
 
                           <text
-                            x="14"
-                            y="46"
+                            x="12"
+                            y="38"
                             fontFamily={T.ui}
-                            fontSize="19"
+                            fontSize="16"
                             fontWeight="700"
-                            fill="#111216"
+                            fill={F.navySurface}
                           >
-                            {fmtCompact(hoverDetail.value)}
+                            {fmtCompact(markedPoint.value)}
                           </text>
-
-                          <text x="14" y="65" fontFamily={T.ui} fontSize="10" fill="#5C5C63">
-                            {hoverDetail.isFirst
-                              ? "first recorded reading"
-                              : `+${fmtCompact(hoverDetail.step)} since previous${
-                                  hoverDetail.stepPct != null
-                                    ? ` · +${hoverDetail.stepPct.toFixed(1)}%`
-                                    : ""
-                                }`}
-                          </text>
-
-                          {hoverDetail.sharePct != null && (
-                            <text x="14" y="81" fontFamily={T.ui} fontSize="10" fill="#9A9AA1">
-                              {hoverDetail.sharePct.toFixed(0)}% of the total to date
-                            </text>
-                          )}
                         </g>
                       </g>
                     )}
@@ -7256,6 +7212,227 @@ function LivePostGrowth({ growth }) {
                   </>
                 )}
               </svg>
+            </div>
+
+            {/* ───────── PER-POST BREAKDOWN ───────── */}
+
+            {has && (
+              <div
+                style={{
+                  flex: "1 1 250px",
+                  maxWidth: 300,
+                  minWidth: 0,
+                  borderRadius: 18,
+                  background: "rgba(255,255,255,0.035)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  padding: "16px 16px 18px",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    justifyContent: "space-between",
+                    gap: 8,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: T.ui,
+                      fontSize: 9.5,
+                      fontWeight: 700,
+                      letterSpacing: "0.12em",
+                      textTransform: "uppercase",
+                      color: "rgba(255,255,255,0.42)",
+                    }}
+                  >
+                    {label(points[at].date)}
+                  </span>
+
+                  {pinned !== null ? (
+                    <button
+                      onClick={() => setPinned(null)}
+                      style={{
+                        border: "none",
+                        background: "none",
+                        padding: 0,
+                        cursor: "pointer",
+                        fontFamily: T.ui,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color,
+                      }}
+                    >
+                      unpin
+                    </button>
+                  ) : (
+                    <span
+                      style={{
+                        fontFamily: T.ui,
+                        fontSize: 10,
+                        color: "rgba(255,255,255,0.30)",
+                      }}
+                    >
+                      {hover !== null ? "click to pin" : "latest"}
+                    </span>
+                  )}
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontFamily: T.display,
+                    fontStyle: "italic",
+                    fontSize: 30,
+                    lineHeight: 1,
+                    color,
+                  }}
+                >
+                  {fmtCompact(dayTotal)}
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontFamily: T.ui,
+                    fontSize: 10.5,
+                    color: "rgba(255,255,255,0.38)",
+                  }}
+                >
+                  {dayStep === null
+                    ? "first recorded reading"
+                    : `+${fmtCompact(dayStep)} since the previous reading`}
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 3,
+                    fontFamily: T.ui,
+                    fontSize: 10.5,
+                    color: "rgba(255,255,255,0.38)",
+                  }}
+                >
+                  {breakdown.length} {plural(breakdown.length, "post")} measured
+                  by this day
+                </div>
+
+                {/* Scrolls rather than growing: a roster of thirty posts would
+                    otherwise set the height of the whole panel. */}
+                <div
+                  style={{
+                    marginTop: 13,
+                    paddingTop: 13,
+                    borderTop: "1px solid rgba(255,255,255,0.08)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 11,
+                    maxHeight: 268,
+                    overflowY: "auto",
+                  }}
+                >
+                  {breakdown.map((post) => (
+                    <div key={post.key}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "baseline",
+                          justifyContent: "space-between",
+                          gap: 8,
+                        }}
+                      >
+                        <span
+                          style={{
+                            minWidth: 0,
+                            fontFamily: T.ui,
+                            fontSize: 11.5,
+                            fontWeight: 600,
+                            color: "rgba(255,255,255,0.88)",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {post.name}
+                        </span>
+
+                        <span
+                          style={{
+                            flexShrink: 0,
+                            fontFamily: T.ui,
+                            fontSize: 11.5,
+                            fontWeight: 700,
+                            color: "#FFFFFF",
+                          }}
+                        >
+                          {fmtCompact(post.value)}
+                        </span>
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 2,
+                          display: "flex",
+                          alignItems: "baseline",
+                          justifyContent: "space-between",
+                          gap: 8,
+                        }}
+                      >
+                        <span
+                          style={{
+                            minWidth: 0,
+                            fontFamily: T.ui,
+                            fontSize: 9.5,
+                            color: "rgba(255,255,255,0.34)",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {post.campaign || "—"}
+                        </span>
+
+                        {/* The day's gain, not the running total — the one
+                            number that says whether this post is still moving. */}
+                        {post.gain > 0 && (
+                          <span
+                            style={{
+                              flexShrink: 0,
+                              fontFamily: T.ui,
+                              fontSize: 9.5,
+                              fontWeight: 700,
+                              color: ON_NAVY.green,
+                            }}
+                          >
+                            +{fmtCompact(post.gain)}
+                          </span>
+                        )}
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 6,
+                          height: 4,
+                          borderRadius: 999,
+                          background: "rgba(255,255,255,0.08)",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${post.share}%`,
+                            borderRadius: 999,
+                            background: color,
+                            opacity: 0.75,
+                            transition: "width 0.3s ease",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             </div>
 
             {/* ───────── FOOTER ───────── */}
@@ -7389,7 +7566,6 @@ function BigPicture() {
  * ──────────────────────────────────────────────────────────────── */
 
 
-
 /* ────────────────────────────────────────────────────────────────
  * 13 — FOOTER
  * Reuses the same dark full-bleed-photo treatment as the closing
@@ -7469,7 +7645,7 @@ function Footer() {
                 <p style={{ fontFamily: T.ui, fontSize: 13, color: "rgba(255,255,255,0.6)", lineHeight: 1.8, maxWidth: 320, marginBottom: 20 }}>
                   Full-service marketing, engineered. Influencer, AI-search, performance and regional creator campaigns across India.
                 </p>
-                <a href="mailto:contact@fifth-avenue.in" style={{ fontFamily: T.ui, fontSize: 13, fontWeight: 600, color: F.cream, textDecoration: "none", borderBottom: "1px solid rgba(241,236,225,0.4)", paddingBottom: 2 }}>
+                <a href="mailto:contact@fifth-avenue.in" style={{ fontFamily: T.ui, fontSize: 13, fontWeight: 600, color: "#FFFFFF", textDecoration: "none", borderBottom: "1px solid rgba(255,255,255,0.4)", paddingBottom: 2 }}>
                   contact@fifth-avenue.in
                 </a>
               </div>
@@ -7554,7 +7730,10 @@ export default function FounderSummary() {
           clientRequests,
           creatorRequests,
         },
-        F,
+        // The performance lines are the only thing here that takes a colour and
+        // they only ever draw on the navy panel, so they get the on-navy
+        // accents. F's inks are mixed for paper and went invisible against it.
+        ON_NAVY,
       );
 
       const rawClients = brandFilter
@@ -7613,47 +7792,119 @@ export default function FounderSummary() {
     return d.toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" }).toUpperCase();
   }, [data.asOf]);
 
+  /* The chapters below the fold, in reading order.
+   *
+   * `summary` is the line the bar shows while the chapter is shut, so it is
+   * built from the same data the chapter contains rather than being a static
+   * caption — a collapsed row that reports "6 waiting on a decision" is worth
+   * reading on its own, and one that says only "Ahead" is not. Anything the
+   * database cannot answer falls back to what the chapter IS, never to a zero.
+   */
+  const chapters = useMemo(() => {
+    const lines = data.performance?.lines || [];
+    const growth = data.growth || {};
+    const members = data.team?.members || [];
+    const staffed = members.filter((m) => m.activeProjects > 0).length;
+    const stages = data.campaigns?.stages || [];
+    const decisions = data.decisions || [];
+    const inPipeline = stages.reduce((sum, st) => sum + (numOrNull(st.count) ?? 0), 0);
+
+    return [
+      {
+        eyebrow: "Trajectory",
+        accent: F.forest,
+        summary: lines.length
+          ? "How the numbers on the books have moved across the recorded history."
+          : "Fills in as operating history accumulates.",
+        node: <PerformanceGraph lines={lines} />,
+      },
+      {
+        eyebrow: "Audience",
+        accent: F.plum,
+        summary: growth.creators
+          ? `What the work did once it was live — ${growth.creators} tracked ${plural(growth.creators, "post")}.`
+          : "What the work did once it was live.",
+        node: <LivePostGrowth growth={growth} />,
+      },
+      {
+        eyebrow: "People",
+        accent: F.plum,
+        summary: members.length
+          ? `${staffed} of ${members.length} carrying a live campaign.`
+          : "Everyone carrying the work.",
+        node: <TeamField team={data.team} />,
+      },
+      {
+        eyebrow: "Campaign operations",
+        accent: F.navy,
+        summary: inPipeline
+          ? `${inPipeline} ${plural(inPipeline, "campaign")} across the pipeline.`
+          : "Where every campaign sits across the pipeline.",
+        node: <CampaignFlow stages={stages} />,
+      },
+      {
+        eyebrow: "Ahead",
+        accent: F.gold,
+        summary: decisions.length
+          ? `${decisions.length} ${plural(decisions.length, "item")} waiting on a decision.`
+          : "Nothing currently waiting on a decision.",
+        node: <DecisionsHorizon items={decisions} />,
+      },
+    ];
+  }, [data]);
+
   return (
-    <div style={{ background: F.paper, fontFamily: T.ui, color: F.ink, position: "relative" }}>
+    <div style={{ background: F.surface, fontFamily: T.ui, color: F.ink, position: "relative" }}>
       <GrainOverlay />
 
+      {/* Every section on this page sets its own generous top padding inline,
+          which is right when it opens straight out of the section above it and
+          wrong when a chapter bar is sitting immediately on top of it — 140px
+          of empty paper between the bar and the header it announces. Trimmed
+          here rather than by threading a padding prop through six components;
+          `!important` is what it takes to beat an inline style. */}
+      <style>{`
+        .fs-chapter > section { padding-top: 54px !important; }
+      `}</style>
+
       {/* ── SECTION ORDER ──
-          Revenue is now followed immediately by Trajectory (PerformanceGraph)
-          and then by the internal roster (TeamField): the money, how it is
-          moving, and who is moving it, read as one continuous argument instead
-          of being separated by three other chapters.
+          The standing counts land straight off the hero, ahead of the
+          statement they set up, and then come the three things the founder
+          came for — who is on the books, what the money is doing, and whether
+          the agency is coping. All of that always renders.
 
-          The four full-bleed photo interludes ("What the work looks like",
-          "Behind the work", "Momentum", "Craft") and the ContentMosaic tile
-          grid are gone. They were stock photography carrying no data — pure
-          page furniture between sections that DO carry data — and at ~480px
-          each they added roughly two screens of scrolling to a report whose
-          whole point is density. The dark SectionSeam went with them: it
-          existed only to separate the studio interlude from Agency Health, and
-          with the interlude gone it was a 72px gap before a section that now
-          follows the Big Numbers directly. */}
-     <Hero
-  asOfLabel={asOfLabel}
+          Everything after them is reference. It is true and worth having, but
+          it is not worth three screens of scrolling past on every visit, so it
+          is shut by default behind a chapter bar that still states what is
+          inside. Nothing is hidden that the reader cannot open in one click,
+          and nothing was deleted to shorten the page.
 
-/>
+          The bars alternate between the page's two surfaces. That alternation
+          is now the ONLY thing separating chapters: the cream band and the
+          SectionSeam rules that used to do that job were a third colour and a
+          decoration respectively, and both are gone. */}
+      <Hero asOfLabel={asOfLabel} />
+      <AtAGlance bigNumbers={data.bigNumbers} />
       <ExecutiveStatement />
-      <BigNumbers revenue={data.revenue} bigNumbers={data.bigNumbers} />
-      <AgencyHealth health={data.health} />
-      <RevenueSection data={data.revenue} />
-      <PerformanceGraph lines={data.performance.lines} />
-      {/* Directly after Trajectory, and on F.surface rather than F.cream so the
-          two alternate: Trajectory is what was invoiced and delivered, this is
-          what the delivered work went on to do once it was live. Reading them
-          as a pair is the point, so no seam between them. */}
-      <LivePostGrowth growth={data.growth} />
-      {/* Growth and Team would otherwise run together as one long section. */}
-      <SectionSeam tone="light" />
-      <TeamField team={data.team} />
-      {/* Team and Campaign Flow are both F.cream too. */}
-      <SectionSeam tone="light" />
-      <CampaignFlow stages={data.campaigns.stages} />
+
       <ClientPortfolio clients={data.clients} />
-      <DecisionsHorizon items={data.decisions} />
+      <Financials data={data.revenue} />
+      <AgencyHealth health={data.health} />
+
+      {chapters.map((chapter, i) => (
+        <CollapsibleSection
+          key={chapter.eyebrow}
+          eyebrow={chapter.eyebrow}
+          summary={chapter.summary}
+          accent={chapter.accent}
+          // Agency Health closes on navy, so the first bar is paper and the
+          // alternation carries on from there unbroken.
+          tone={i % 2 === 0 ? "light" : "dark"}
+        >
+          {chapter.node}
+        </CollapsibleSection>
+      ))}
+
       <BigPicture />
 
       <Footer />

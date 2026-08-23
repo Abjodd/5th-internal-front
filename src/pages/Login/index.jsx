@@ -10,11 +10,22 @@
  * white highlights — no gold, no purple. The rotating gradient ring
  * that used to frame the card has been removed; the card now sits on
  * a plain hairline border so the gem stays the only moving frame.
+ *
+ * Brand mark: swap FAVICON_SRC below for the actual file in /public
+ * (e.g. "/favicon.svg", "/favicon.png", "/logo.svg") if it isn't
+ * literally "/favicon.ico".
  */
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import * as THREE from "three";
 import { useAuth } from "../../context/AuthContext";
+
+const FAVICON_SRC = "/favicon.svg";
+
+// One typeface for the whole scene — the wordmark, the "Sign in" title,
+// and the form now all read as Sora instead of mixing in a serif italic
+// that didn't match the brand mark up top.
+const FONT_BRAND = "'Sora', sans-serif";
 
 // ── Local dark-blue / white palette for this design ──────────────────
 const C = {
@@ -317,7 +328,7 @@ export default function LoginPage() {
     <div style={{
       position: "relative", height: "100%", width: "100%",
       background: "radial-gradient(120% 120% at 50% 0%, #0A1638 0%, #03060F 62%)",
-      fontFamily: "'Sora', sans-serif", overflow: "hidden",
+      fontFamily: FONT_BRAND, overflow: "hidden",
     }}>
       <style>{`
         @keyframes letterIn { from { opacity: 0; transform: translateY(24px) rotateX(70deg); } to { opacity: 1; transform: translateY(0) rotateX(0); } }
@@ -362,10 +373,14 @@ export default function LoginPage() {
         display: "flex", alignItems: "center", gap: 10,
         animation: "riseIn 0.7s cubic-bezier(0.16,1,0.3,1) both",
       }}>
-        <svg width="16" height="16" viewBox="0 0 16 16" style={{ filter: `drop-shadow(0 0 4px ${C.accent}80)` }}>
-          <polygon points="8,0 16,8 8,16 0,8" fill="none" stroke={C.accent} strokeWidth="1.4" />
-        </svg>
-        <span style={{ fontSize: 13, color: C.text, letterSpacing: "0.24em", textTransform: "uppercase", fontWeight: 400, textShadow: "0 1px 8px rgba(0,0,0,0.6)" }}>
+        <img
+          src={FAVICON_SRC}
+          alt="Fifth Avenue"
+          width={18}
+          height={18}
+          style={{ display: "block", filter: `drop-shadow(0 0 4px ${C.accent}80)` }}
+        />
+        <span style={{ fontFamily: FONT_BRAND, fontSize: 13, color: C.text, letterSpacing: "0.24em", textTransform: "uppercase", fontWeight: 400, textShadow: "0 1px 8px rgba(0,0,0,0.6)" }}>
           Fifth Avenue
         </span>
       </div>
@@ -402,8 +417,8 @@ export default function LoginPage() {
           }}>
             <div style={{ marginBottom: 30 }}>
               <div className="kinetic" style={{
-                fontFamily: "'Newsreader', serif", fontSize: 30, fontStyle: "italic",
-                fontWeight: 600, letterSpacing: "-0.02em", marginBottom: 8,
+                fontFamily: FONT_BRAND, fontSize: 28,
+                fontWeight: 700, letterSpacing: "-0.01em", marginBottom: 8,
               }}>
                 <KineticText
                   text="Sign in"
@@ -433,7 +448,7 @@ export default function LoginPage() {
                   style={{
                     width: "100%", padding: "12px 14px", fontSize: 13, color: C.text,
                     background: C.inputBg, border: `1.5px solid ${err ? C.red : C.glassBorder}`,
-                    borderRadius: 12, outline: "none", fontFamily: "'Sora', sans-serif", boxSizing: "border-box",
+                    borderRadius: 12, outline: "none", fontFamily: FONT_BRAND, boxSizing: "border-box",
                   }}
                 />
               </div>
@@ -450,7 +465,7 @@ export default function LoginPage() {
                   style={{
                     width: "100%", padding: "12px 14px", fontSize: 13, color: C.text,
                     background: C.inputBg, border: `1.5px solid ${err ? C.red : C.glassBorder}`,
-                    borderRadius: 12, outline: "none", fontFamily: "'Sora', sans-serif", boxSizing: "border-box",
+                    borderRadius: 12, outline: "none", fontFamily: FONT_BRAND, boxSizing: "border-box",
                   }}
                 />
               </div>
@@ -477,7 +492,7 @@ export default function LoginPage() {
                   background: loading ? "rgba(255,255,255,0.12)" : `linear-gradient(120deg, ${C.accent}, ${C.accent2})`,
                   color: loading ? C.sub : "#050914",
                   border: "none", borderRadius: 999, fontSize: 13, fontWeight: 700,
-                  fontFamily: "'Sora', sans-serif", cursor: loading ? "not-allowed" : "pointer",
+                  fontFamily: FONT_BRAND, cursor: loading ? "not-allowed" : "pointer",
                   letterSpacing: "0.01em",
                   transform: `translate(${btnOffset.x}px, ${btnOffset.y}px)`,
                   transition: "transform 0.12s ease-out, box-shadow 0.15s",

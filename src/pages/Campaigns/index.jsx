@@ -15,7 +15,7 @@ import { fmtCompact, fmtINR, prettyDate, initials, ISO_DATE, todayISO, isoDay } 
 import { useBrandAccents } from "../../lib/brandAccent";
 import { creatorBudgetOf, numReqOf, perCreatorOf, costOf, normCreator, creatorExpensePlan, isLockedCreator,
          PIPELINE, PL_IDS, COMMON_STAGES, FIN_STAGES, EXEC_STAGES, EXEC_NODES,
-         normStage, stageIdx, extUrl, rosterReady, rosterGap, lockedCountOf,
+         normStage, stageIdx, extUrl, rosterReady, rosterGap, poGaps, hasBudget, budgetPending, lockedCountOf,
          perCreatorDelivOf, delivTargetOf, totalDelivOf, liveLinksOf, withLiveLinks, delivDoneOf,
          teamComplete, briefLocked, assetIn, execStats, execDone, briefGaps, executionStageOf,
          CREATOR_PAY_STATUSES, creatorPayStatusOf, creatorPayStats,
@@ -103,6 +103,12 @@ const REMOVE_REASONS = [
   {id:"backed_off",label:"Backed Off",desc:"Creator declined or unresponsive"},
 ];
 const PAYMENT_TYPES = [{id:"",label:"— Select —"},{id:"vendor",label:"To Vendor"},{id:"net_banking",label:"Net Banking"},{id:"upi",label:"UPI"}];
+// Whether the post goes up as a paid collaboration (the brand co-authors it and
+// it carries their handle) or on the creator's own account alone. Deliberately
+// has no default: the blank "— Select —" is the honest state for a creator
+// nobody has decided about yet, and defaulting either way would silently answer
+// a question the brand actually has to be asked.
+const COLLAB_TYPES = [{id:"",label:"— Select —"},{id:"collab",label:"Collab"},{id:"non_collab",label:"Non-Collab"}];
 // Full names — stored as-is on creator.state and matched by name in the
 // client portal's STATES_META (5th-client-front/src/lib/geo.js).
 const INDIAN_STATES = [
@@ -171,7 +177,7 @@ const CREATOR_COLS = [
   {key:"name",label:"Creator",cv:true,w:190},{key:"platform",label:"Platform",cv:true,w:90},
   {key:"followers",label:"Followers",cv:true,w:78},{key:"avgER",label:"Avg ER%",cv:true,w:65},
   {key:"niche",label:"Niche",cv:true,w:85},{key:"state",label:"State",cv:true,w:100},
-  {key:"status",label:"Status",cv:true,w:120},
+  {key:"status",label:"Status",cv:true,w:120},{key:"collab",label:"Collab",cv:true,w:110},
   // Concept/Demo deliberately absent: this table is the shortlist, and an
   // asset status is meaningless before the creator is locked. Both live on the
   // Deliverables tab, which only renders locked creators.
@@ -266,6 +272,8 @@ const mkCreator = (src={}, cost) => ({
   igFetched: src.igFetched || null, // raw auto-fetched snapshot (bio, posts, fetchedAt, etc.)
   status:   "shortlisted",
   state:    src.state   || null,
+  // Unset until someone chooses — see COLLAB_TYPES.
+  collab:   src.collab  || null,
   payType:  src.payType || null,
   payId:    src.payId   || null,
   concept:  {status:"yet_to_receive",fileLink:null},
@@ -292,14 +300,16 @@ const mkCreator = (src={}, cost) => ({
 
 // ── WORKFLOW ACTION LABELS ───────────────────────────────────────────────────
 // Shared by the confirmation modal and the post-action toast.
-const ACTION_MSGS={assign_am:"Assign Account Manager",assign_cm:"Assign Category Manager",assign_ea:"Assign Executive Associate",lock_brief:"Lock the brief",raise_po:"Record the client Purchase Order",advance_received:"Confirm advance received",raise_invoice:"Raise the client invoice",payment_done:"Confirm payment received",extend_end_date:"Campaign end date extended"};
+const ACTION_MSGS={assign_am:"Assign Account Manager",assign_cm:"Assign Category Manager",assign_ea:"Assign Executive Associate",lock_brief:"Lock the brief",raise_po:"Record the client Purchase Order",advance_received:"Confirm advance received",raise_invoice:"Raise the client invoice",payment_done:"Confirm payment received",extend_end_date:"Campaign end date extended",allocate_budget:"Budget allocated"};
 // Actions that don't get the generic "Confirm stage change" dialog, because
 // each already HAS a step that names what is about to happen:
 //   extend_end_date / raise_po / lock_brief — their own modals collect the data
 //   assign_* — completing the team auto-advances Brief Locked → Team Assigned,
 //     and a dialog after a dropdown pick would read as a manual stage change.
 //     TabTeam warns before the fact instead.
-const NO_CONFIRM_ACTIONS=new Set(["assign_am","assign_cm","assign_ea","extend_end_date","raise_po","lock_brief"]);
+//   allocate_budget — AllocateBudgetModal states the consequences and collects
+//     the split, and it moves no stage of its own.
+const NO_CONFIRM_ACTIONS=new Set(["assign_am","assign_cm","assign_ea","extend_end_date","raise_po","lock_brief","allocate_budget"]);
 const needsConfirm=action=>!NO_CONFIRM_ACTIONS.has(action);
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -430,6 +440,11 @@ function generateInvoiceHTML(creator, camp, invoiceNo, dated) {
 // Per spec: AM sees execution budget but NOT revenue/margins in billing.
 // In campaigns: AM sees campaign budget (needed for execution). CM/EA: no financials.
 const canFin    = r => can(r, "seeCampaignBudget");  // budget in campaign card/detail
+// Which of the two pipeline rails a role gets. Not a role string: the split was
+// hardcoded to "ea", so CM — who has exactly the same standing on the finance
+// track — was shown four nodes they can't act on, on a forked rail. One list,
+// in rbac.js with every other access rule.
+const canFinTrack = r => can(r, "seeFinanceTrack");
 // Creator-side money — the creator budget pot + per-creator fees. Wider than
 // canFin on purpose: CM/AM/EA run the shortlist and the negotiation, so they
 // need the pot they're spending against, while the client-facing total budget,
@@ -510,8 +525,16 @@ function syncCreatorExpenses(camp,prevCreators,nextCreators,onError){
 // is the stage the chip beside it names. It used to interpolate through a wide
 // "execution" stage; the delivery half now has its own rail with its own
 // percentage (execStats().pct), so this is a flat step lookup again.
-function progressOf(c){
-  return (PIPELINE[stageIdx(c?.stage)]||PIPELINE[0]).p;
+// How far along the campaign is, on the track the ROLE is actually reading.
+// The stored stage's `p` is a FINANCE figure — every post live but the invoice
+// unpaid reads 80% — so a role with no finance rail gets the execution track's
+// own progress instead. The stage LABEL beside this number is already derived
+// that way (viewPl); the number wasn't, so an EA read "Creator Payment · 80%"
+// with a rail underneath saying 100% live. Three readings of one campaign.
+function progressOf(c, role){
+  return canFinTrack(role)
+    ? (PIPELINE[stageIdx(c?.stage)]||PIPELINE[0]).p
+    : execStats(c).pct;
 }
 // extUrl / profileUrl now live in lib/campaign.js — the creators directory and
 // the creator-applications inbox render handles too, and all three screens have
@@ -577,6 +600,13 @@ const Field=({label,hint,optional,children,style={}})=>(
   </div>
 );
 const Hr=({style={}})=><div style={{height:"0.5px",background:"rgba(0,0,0,0.08)",...style}}/>;
+// "You have to fill this in", under the field it belongs to. Only ever rendered
+// once someone has actually tried to move on (see `tried` in CreateModal): a
+// form that flags empty fields before you have typed in any of them is
+// scolding you for not having started yet.
+const Req=({show,children})=>show
+  ? <div style={{fontSize:9.5,color:T.red,marginTop:5,fontFamily:SF}}>{children||"Mandatory field — this can't be left empty."}</div>
+  : null;
 function Btn({children,onClick,variant="ghost",disabled,style={}}){
   const b={padding:"7px 14px",borderRadius:8,fontSize:11,fontWeight:500,cursor:disabled?"not-allowed":"pointer",fontFamily:SF,border:"none",display:"inline-flex",alignItems:"center",gap:5,opacity:disabled?0.35:1,letterSpacing:"-0.01em",transition:"all 0.15s",...style};
   const v={primary:{background:T.accent,color:"#FFFFFF",fontWeight:600},success:{background:T.green,color:"#FFFFFF",fontWeight:600},ghost:{background:"rgba(0,0,0,0.05)",color:"#1D1D1F",border:"none"},danger:{background:"transparent",color:T.red,border:`1px solid ${T.red}22`},subtle:{background:"transparent",color:"#6E6E73",border:"1px solid rgba(0,0,0,0.1)"}};
@@ -592,9 +622,9 @@ const INP={width:"100%",padding:"9px 12px",borderRadius:9,background:"rgba(0,0,0
 // alternative was what shipped before: their chip said "Brief Log" while the
 // campaign was really parked at PO, because three commercial stages were
 // collapsed into one node they could see. Now they simply see the other rail.
-const viewPl  = (camp,role) => role==="ea"
-  ? (EXEC_NODES.find(n=>n.id===executionStageOf(camp))||EXEC_NODES[0])
-  : (PIPELINE.find(p=>p.id===normStage(camp?.stage))||PIPELINE[0]);
+const viewPl  = (camp,role) => canFinTrack(role)
+  ? (PIPELINE.find(p=>p.id===normStage(camp?.stage))||PIPELINE[0])
+  : (EXEC_NODES.find(n=>n.id===executionStageOf(camp))||EXEC_NODES[0]);
 const viewCol = (camp,role) => T.sc[viewPl(camp,role).id]||T.sub;
 
 // ── PIPELINE ─────────────────────────────────────────────────────────────────
@@ -638,6 +668,14 @@ const RAIL = {
   common: `M ${cx(0)} ${MID_Y} H ${cx(FORK-1)}`,
   exec:   branch(TOP_Y, EXEC_STAGES.length),
   fin:    branch(BOT_Y, FIN_STAGES.length),
+};
+// A role without the finance rail has nothing to fork AWAY from — the curve was
+// drawing a detour around a branch that isn't rendered, which read as a kink in
+// the track. One straight line instead, with the common head sitting on the
+// execution row.
+const RAIL_ONE = {
+  common: `M ${cx(0)} ${TOP_Y} H ${cx(FORK-1)}`,
+  exec:   `M ${cx(FORK-1)} ${TOP_Y} H ${cx(FORK+EXEC_STAGES.length-1)}`,
 };
 
 // Milestone palette — one colour per thing, reused by the rail badges, the
@@ -891,7 +929,14 @@ function Rail({d,frac,stroke,flowing,reduce}){
 function TrackPipeline({camp,role,expenseById,onOpen,onFinNode,onGoTeam}){
   const reduce = useReducedMotion();
   const [preview,setPreview] = useState(null);   // {id, el}
-  const eaOnly = role==="ea";                    // no commercial rail for an EA
+  const oneRail = !canFinTrack(role);            // no commercial rail — see rbac.js
+  // With one rail there is no fork: the common head drops onto the execution
+  // row, its labels hang below like the rest of the branch, and the canvas is
+  // only as wide and tall as the five nodes that remain.
+  const rail  = oneRail ? RAIL_ONE : RAIL;
+  const headY = oneRail ? TOP_Y : MID_Y;
+  const pipeW = GUTTER + (oneRail ? EXEC_NODES.length : N_COLS) * NODE_W;
+  const pipeH = oneRail ? 76 : PIPE_H;
 
   const si   = stageIdx(camp.stage);                       // stored-track index
   const es   = execStats(camp);
@@ -901,13 +946,18 @@ function TrackPipeline({camp,role,expenseById,onOpen,onFinNode,onGoTeam}){
   // Team Assigned is stored but drawn on the execution branch, so the finance
   // branch starts one stage later than the common head ends.
   const finIdx  = si - (FORK + 1);                         // -1 before the PO
+  // Which node the COMMON head stands on. A one-rail role reads the DERIVED
+  // track end to end; the stored stage put Brief Locked back to "not reached" on
+  // a campaign whose brief is signed off but whose PO hasn't been raised —
+  // exactly the case the two tracks exist to tell apart.
+  const headIdx = oneRail ? Math.max(0, EXEC_NODES.findIndex(n=>n.id===exId)) : si;
   const paidOut = pay.total>0 && pay.paid===pay.total;
   const settled = si === PL_IDS.length-1;
 
   // How far each rail is drawn. The fork counts as one step of the branch it
   // belongs to, which is why each denominator is the branch's node count and
   // reaching node i costs i+1 steps.
-  const commonFrac = Math.min(si,FORK-1)/(FORK-1);
+  const commonFrac = Math.min(headIdx,FORK-1)/(FORK-1);
   const execFrac   = execIdx<0 ? 0
     // Inside Execution the fill advances with the work rather than sitting
     // still through the longest node on the branch.
@@ -926,8 +976,8 @@ function TrackPipeline({camp,role,expenseById,onOpen,onFinNode,onGoTeam}){
 
   return(
     <div style={{overflowX:"auto",overflowY:"hidden",padding:"6px 0 2px"}}>
-      <div style={{position:"relative",width:PIPE_W,minWidth:PIPE_W,height:PIPE_H}}>
-        <svg width={PIPE_W} height={PIPE_H} style={{position:"absolute",inset:0,pointerEvents:"none"}} aria-hidden>
+      <div style={{position:"relative",width:pipeW,minWidth:pipeW,height:pipeH}}>
+        <svg width={pipeW} height={pipeH} style={{position:"absolute",inset:0,pointerEvents:"none"}} aria-hidden>
           <defs>
             {/* Each branch starts on the colour the common head ends on, so the
                 fork curves read as that line continuing rather than as two new
@@ -936,25 +986,35 @@ function TrackPipeline({camp,role,expenseById,onOpen,onFinNode,onGoTeam}){
             <RailGradient id="railExec" x0={cx(FORK-1)} x1={cx(FORK+EXEC_STAGES.length-1)} from={T.sc.brief_locked} to={execCol}/>
             <RailGradient id="railFin"  x0={cx(FORK-1)} x1={cx(FORK+FIN_STAGES.length-1)}  from={T.sc.brief_locked} to={finCol}/>
           </defs>
-          <Rail d={RAIL.common} frac={commonFrac} stroke="url(#railCommon)" flowing={flowing} reduce={reduce}/>
-          <Rail d={RAIL.exec}   frac={execFrac}   stroke="url(#railExec)"   flowing={flowing} reduce={reduce}/>
-          {!eaOnly&&<Rail d={RAIL.fin} frac={finFrac} stroke="url(#railFin)" flowing={flowing} reduce={reduce}/>}
+          <Rail d={rail.common} frac={commonFrac} stroke="url(#railCommon)" flowing={flowing} reduce={reduce}/>
+          <Rail d={rail.exec}   frac={execFrac}   stroke="url(#railExec)"   flowing={flowing} reduce={reduce}/>
+          {!oneRail&&<Rail d={RAIL.fin} frac={finFrac} stroke="url(#railFin)" flowing={flowing} reduce={reduce}/>}
         </svg>
 
         {/* Track tags, in the gutter the fork leaves empty. They say which rail
             is which without a legend, and carry each track's own headline. */}
         <TrackTag y={TOP_Y} label="Execution" col={execCol}
           sub={es.locked?`${es.live}/${es.locked} live · ${es.pct}%`:"no creators locked"}/>
-        {!eaOnly&&<TrackTag y={BOT_Y} label="Finance" col={finCol}
+        {!oneRail&&<TrackTag y={BOT_Y} label="Finance" col={finCol}
           sub={finIdx<0?"not started":FIN_STAGES[finIdx].label}/>}
 
         {/* Common head — labels ABOVE the markers, into the space the fork
-            leaves free, so they can't collide with the finance rail below. */}
-        {COMMON_STAGES.map((n,i)=>(
-          <TrackNode key={n.id} node={n} x={cx(i)} y={MID_Y} labelAbove reduce={reduce}
-            state={stateOf(si,i,false)} col={T.sc[n.id]}
-            badge={si===i?"NOW":null}/>
-        ))}
+            leaves free, so they can't collide with the finance rail below.
+            With no fork there is no such space and nothing below to collide
+            with, so they hang under the line like every other node. */}
+        {COMMON_STAGES.map((n,i)=>{
+          const st = stateOf(headIdx,i,false);
+          return(
+            <TrackNode key={n.id} node={n} x={cx(i)} y={headY} labelAbove={!oneRail} reduce={reduce}
+              state={st} col={T.sc[n.id]}
+              // The travelling ring belongs to a single rail, so it runs
+              // the head too. On the forked view it stays on the
+              // execution branch — the head is shared, and a ring there would
+              // claim it for one of the two tracks.
+              marker={oneRail&&st==="now"}
+              badge={headIdx===i?"NOW":null}/>
+          );
+        })}
 
         {/* Execution rail. Only the last two open a breakdown — Team Assigned
             has no donut to preview, it's three names on the Team tab. */}
@@ -972,7 +1032,7 @@ function TrackPipeline({camp,role,expenseById,onOpen,onFinNode,onGoTeam}){
 
         {/* Finance rail — hidden from an EA, who neither runs these steps nor
             can see the numbers behind them. */}
-        {!eaOnly&&FIN_STAGES.map((n,i)=>(
+        {!oneRail&&FIN_STAGES.map((n,i)=>(
           <TrackNode key={n.id} node={n} x={cx(FORK+i)} y={BOT_Y} reduce={reduce}
             state={stateOf(finIdx,i,n.id==="payment_done")} col={T.sc[n.id]} interactive
             badge={finIdx===i&&n.id!=="payment_done"?"NOW":null}
@@ -1182,6 +1242,12 @@ function NicheSelect({value=[],onChange}){
 // has already carved it out — so the field accepts either and always shows the
 // other, plus the per-head split the shortlist will be built against.
 const clampPct = v => Math.min(100, Math.max(0, parseFloat(v) || 0));
+// One segmented-control button. Module-level rather than inside the field that
+// first needed it: the wizard's "set the budget now / decide later" switch is
+// the same control doing the same job, and two hand-rolled copies of a segment
+// style drift the first time either is touched.
+const segBtn = on => ({padding:"4px 12px",borderRadius:6,fontSize:10,fontWeight:600,fontFamily:SF,cursor:"pointer",border:"none",transition:"all 0.15s",background:on?T.surface:"transparent",color:on?T.text:T.label,boxShadow:on?"0 1px 2px rgba(0,0,0,0.08)":"none"});
+const SEG_WRAP = {display:"flex",gap:2,padding:2,borderRadius:8,background:T.mute};
 // Resolve the two input modes down to the one number that gets stored.
 const resolveCreatorBudget = (f, budget) =>
   f.creatorBudgetMode === "amount"
@@ -1198,11 +1264,11 @@ function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAge
   // One slice per creator up to 12 — past that the hairlines read as noise,
   // so the bar collapses to a single block and the "× N" label carries it.
   const slices = numCreators > 0 && numCreators <= 12 ? numCreators : 1;
-  const seg = on => ({padding:"4px 12px",borderRadius:6,fontSize:10,fontWeight:600,fontFamily:SF,cursor:"pointer",border:"none",transition:"all 0.15s",background:on?T.surface:"transparent",color:on?T.text:T.label,boxShadow:on?"0 1px 2px rgba(0,0,0,0.08)":"none"});
+  const seg = segBtn;
   return(<div style={{marginBottom:14}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
       <Lbl>Creator budget</Lbl>
-      <div style={{display:"flex",gap:2,padding:2,borderRadius:8,background:T.mute}}>
+      <div style={SEG_WRAP}>
         <button onClick={()=>onChange({creatorBudgetMode:"pct"})}    style={seg(isPct)}>% of budget</button>
         <button onClick={()=>onChange({creatorBudgetMode:"amount"})} style={seg(!isPct)}>₹ amount</button>
       </div>
@@ -1240,7 +1306,7 @@ function CreatorBudgetField({budget,numCreators,mode,pct,amount,onChange,showAge
       </div>
     </div>}
     {over&&<div style={{fontSize:9.5,color:T.red,marginTop:6}}>Creator budget can't exceed the total budget of {fmtINR(budget)}.</div>}
-    {budget>0&&!over&&value===0&&<div style={{fontSize:9.5,color:T.red,marginTop:6}}>Set how much of the budget goes to creators.</div>}
+    {budget>0&&!over&&value===0&&<div style={{fontSize:9.5,color:T.red,marginTop:6}}>Mandatory field — set how much of the budget goes to creators.</div>}
   </div>);
 }
 
@@ -1317,7 +1383,7 @@ const CampaignCard = forwardRef(function CampaignCard(
   const col=viewCol(camp,role);
   const pl=viewPl(camp,role);
   const es=endStatus(camp.end,camp.stage);
-  const pct=progressOf(camp);
+  const pct=progressOf(camp,role);
   const st=execStats(camp);
   const team=[
     {m:getM(camp.amId),l:"AM"},
@@ -1355,11 +1421,19 @@ const CampaignCard = forwardRef(function CampaignCard(
           whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
           {brandLabel}{camp.region?` · ${camp.region}`:""}
         </Lbl>
-        {canFin(role)&&(
-          <span style={{flexShrink:0,fontFamily:SF,fontSize:12,fontWeight:700,color:"#1D1D1F",
-            letterSpacing:"-0.02em",fontVariantNumeric:"tabular-nums"}}>
-            {fmtINR(camp.budget)}
-          </span>
+        {/* "TBC", not the em dash fmtINR would give: on a board of cards each
+            showing a rupee figure here, a dash reads as a number that failed
+            to load rather than as a campaign that hasn't got one yet. */}
+        {canFin(role)&&(budgetPending(camp)
+          ? <span title="No budget allocated yet" style={{flexShrink:0,fontFamily:SF,fontSize:9,fontWeight:700,
+              letterSpacing:"0.06em",color:T.amber,background:`${T.amber}14`,
+              border:`1px solid ${T.amber}33`,borderRadius:5,padding:"2px 6px"}}>
+              BUDGET TBC
+            </span>
+          : <span style={{flexShrink:0,fontFamily:SF,fontSize:12,fontWeight:700,color:"#1D1D1F",
+              letterSpacing:"-0.02em",fontVariantNumeric:"tabular-nums"}}>
+              {fmtINR(camp.budget)}
+            </span>
         )}
       </div>
 
@@ -1777,6 +1851,62 @@ function ExtendEndModal({camp,onConfirm,onCancel}){
       <textarea value={reason} onChange={e=>setReason(e.target.value)} rows={2}
         placeholder="e.g. two creators re-shooting after client revision"
         style={{...INP,fontSize:11,marginBottom:14}}/>
+    </Dialog>
+  );
+}
+
+// ── ALLOCATE BUDGET MODAL ────────────────────────────────────────────────────
+// The second half of raising a campaign without a budget: the client has come
+// back with a number, and this is where it lands.
+//
+// It asks for exactly what the wizard's Commercial step asks for — the total
+// and the creator split — through the same CreatorBudgetField, so the campaign
+// ends up in a state indistinguishable from one that had a budget all along.
+// Deliberately not a bare "total budget" input: a total with no split leaves
+// creatorBudgetOf() falling back to its 60% guess, and a guess is what the
+// split field exists to replace.
+//
+// The two notes at the bottom are the reason this is a modal rather than an
+// inline field. Allocating is not editing a number — it unparks the finance
+// track (the PO becomes recordable, the quote that was skipped at brief-lock
+// gets raised), and if creators were locked while the campaign had no pool,
+// their committed fees are already spent against the number being set here.
+function AllocateBudgetModal({camp,role,onConfirm,onCancel}){
+  const [budget,setBudget]=useState("");
+  const [split,setSplit]=useState({creatorBudgetMode:"pct",creatorBudgetPct:60,creatorBudgetAmt:""});
+  const budgetNum=parseInt(budget)||0;
+  const creatorBudget=resolveCreatorBudget(split,budgetNum);
+  const ok=budgetNum>0&&creatorBudget>0&&creatorBudget<=budgetNum;
+  // Fees already committed by locking creators before a pool existed. Nothing
+  // stopped that — the roster is not the client's money — but the number being
+  // typed now has to cover it, and only this screen can say so.
+  const committed=(camp.creators||[]).filter(isLockedCreator).reduce((s,c)=>s+costOf(c),0);
+  const short=ok&&committed>creatorBudget;
+  const willQuote=briefLocked(camp);
+  return(
+    <Dialog title="Allocate budget" width={470} onCancel={onCancel}
+      sub={<><strong style={{color:T.text}}>{camp.name}</strong> was raised without a budget. Setting one here is logged on the timeline and unblocks the finance track.</>}
+      confirm={{label:"Allocate budget",disabled:!ok,onClick:()=>ok&&onConfirm(budgetNum,creatorBudget)}}>
+      <Lbl style={{display:"block",marginBottom:5}}>Total budget (₹)</Lbl>
+      <MoneyInput value={budget} onChange={setBudget} placeholder="e.g. 12,50,000" style={{...INP,resize:"none",marginBottom:4}}/>
+      <div style={{fontSize:9.5,color:T.sub,marginBottom:14}}>What the client is billed. The PO and the invoice are both raised from this.</div>
+      <CreatorBudgetField
+        budget={budgetNum} numCreators={numReqOf(camp)}
+        mode={split.creatorBudgetMode} pct={split.creatorBudgetPct} amount={split.creatorBudgetAmt}
+        onChange={p=>setSplit(x=>({...x,...p}))} showAgency={canFF(role)}/>
+      <div style={{display:"flex",flexDirection:"column",gap:8,padding:"12px 14px",background:T.raised,border:`1px solid ${T.border}`,borderRadius:8,marginBottom:4}}>
+        {[["The finance track opens","The client PO becomes recordable, and the invoice follows it."],
+          ...(willQuote?[["The client quote is raised now","It was skipped when the brief was locked, because there was no number to quote."]]:[]),
+          ...(committed>0?[["Creator fees already committed",`${fmtINR(committed)} is locked in against this pool.`]]:[])].map(([h,d])=>(
+          <div key={h} style={{display:"flex",gap:8,alignItems:"flex-start"}}>
+            <Dot color={short?T.amber:T.green} size={5}/>
+            <div><div style={{fontSize:11,color:T.text,fontWeight:500}}>{h}</div><div style={{fontSize:10,color:T.sub,marginTop:1}}>{d}</div></div>
+          </div>
+        ))}
+      </div>
+      {short&&<div style={{fontSize:9.5,color:T.amber,marginTop:8,lineHeight:1.5}}>
+        {fmtINR(committed)} is already committed to locked creators — {fmtINR(committed-creatorBudget)} more than this creator pool. You can still allocate; the Financials tab will read over budget until the pool or the fees change.
+      </div>}
     </Dialog>
   );
 }
@@ -2221,7 +2351,24 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const thS={fontSize:9,fontWeight:600,color:T.label,textTransform:"uppercase",letterSpacing:"0.07em",padding:"8px 10px",whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`,textAlign:"left",background:T.raised};
   const tdS={padding:"8px 10px",borderBottom:`1px solid ${T.border}`,fontSize:11,color:T.sub,verticalAlign:"middle",whiteSpace:"nowrap"};
   return(<div>
-    {canCrFin(role)&&<div style={{marginBottom:18}}>
+    {/* Building the roster is NOT gated on the budget — shortlisting, agreeing
+        fees and locking creators all go ahead without one, which is the point
+        of raising a campaign this way. What changes is that there is no pool to
+        measure the fees against, so the bar states the running total and says
+        plainly that nothing is capping it. Drawn as "₹4L of ₹0" in red, it
+        accused the team of an overspend on a budget nobody had set. */}
+    {canCrFin(role)&&(budgetPending(camp)
+      ? <div style={{marginBottom:18}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+            <Lbl>Creator Budget</Lbl>
+            <span style={{fontSize:10.5,color:T.sub}}>{fmtINR(totalFee)} committed</span>
+          </div>
+          <div style={{height:2,background:T.mute,borderRadius:1}}/>
+          <div style={{marginTop:4,fontSize:9.5,color:T.amber}}>
+            No creator pool set — this campaign has no budget yet. Fees agreed now are committed against whatever is allocated later.
+          </div>
+        </div>
+      : <div style={{marginBottom:18}}>
       <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}><Lbl>Creator Budget</Lbl><span style={{fontSize:10.5,color:over?T.red:T.sub}}>{fmtINR(totalFee)} of {fmtINR(cb)}</span></div>
       <div style={{height:2,background:T.mute,borderRadius:1}}><div style={{height:2,borderRadius:1,background:over?T.red:T.green,width:`${cb>0?Math.min((totalFee/cb)*100,100):0}%`,transition:"width 0.3s"}}/></div>
       {/* The per-head target set at creation — what a shortlister needs in view
@@ -2230,7 +2377,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
         <span style={{color:T.label}}>≈ {fmtINR(perCr)} per creator target · {required} required</span>
         <span style={{color:over?T.red:T.sub}}>{over?`${fmtINR(totalFee-cb)} over budget`:`${fmtINR(cb-totalFee)} left`}</span>
       </div>
-    </div>}
+    </div>)}
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
       {/* Both scope numbers in one line: how many creators, and how many posts
           the roster owes in total (see totalDelivOf — per-creator overrides
@@ -2245,7 +2392,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
     </div>
     {flagged&&<div style={{padding:"8px 10px",borderRadius:5,border:`1px solid ${T.red}22`,fontSize:10,color:T.red,marginBottom:12,background:T.raised}}>{genRounds}× the required count generated. Founder approval required to continue.</div>}
     <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}>
-      <table style={{width:"100%",borderCollapse:"collapse",minWidth:1080}}>
+      <table style={{width:"100%",borderCollapse:"collapse",minWidth:1190}}>
         <thead><tr>
           {CREATOR_COLS.filter(c=>c.key!=="cost"||canCrFin(role)).filter(c=>!["payType","payId"].includes(c.key)||canFin(role)).map(col=>(
             <th key={col.key} title={col.cv?undefined:"Internal only"} style={{...thS,width:col.w,minWidth:col.w}}>{col.label}</th>
@@ -2253,7 +2400,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
           {(canEdit||canFin(role))&&<th style={{...thS,width:130}}></th>}
         </tr></thead>
         <tbody>
-          {creators.length===0&&<tr><td colSpan={12} style={{...tdS,textAlign:"center",color:T.label,padding:"24px"}}>No creators yet. Generate or add manually.</td></tr>}
+          {creators.length===0&&<tr><td colSpan={13} style={{...tdS,textAlign:"center",color:T.label,padding:"24px"}}>No creators yet. Generate or add manually.</td></tr>}
           {creators.map((cr,i)=>{
             const stCol=CR_COLOR[cr.status]||T.sub;
             return(<tr key={cr._id} style={{background:i%2===0?"transparent":T.hover}}>
@@ -2288,6 +2435,21 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
                       ...(canEdit&&isLocked(cr)?{background:`${stCol}12`,border:`1px solid ${stCol}40`,borderRadius:20,padding:"3px 10px",cursor:"default"}:{})}}>
                     {CR_JOURNEY.find(s=>s.id===cr.status)?.label}{canEdit&&isLocked(cr)&&<span style={{fontSize:8}}>🔒</span>}
                   </span>}</td>
+              {/* Not gated on the lock, unlike Cost and Status: this is how the
+                  post is published, not money committed to Billing, and it is
+                  routinely settled with the brand after the fee is agreed. */}
+              <td style={tdS}>{canEdit
+                ? <span style={{position:"relative",display:"inline-block"}}>
+                    <select value={cr.collab||""} onChange={e=>patch(cr._id,{collab:e.target.value||null})}
+                      title="Is this a paid collaboration post?"
+                      style={{appearance:"none",WebkitAppearance:"none",cursor:"pointer",outline:"none",
+                        background:"transparent",border:`1px solid ${T.border}`,borderRadius:4,
+                        color:cr.collab?T.text:T.label,fontSize:10,fontFamily:"'Sora'",padding:"3px 20px 3px 7px"}}>
+                      {COLLAB_TYPES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+                    </select>
+                    <span style={{position:"absolute",right:7,top:"50%",transform:"translateY(-50%)",pointerEvents:"none",fontSize:7,color:cr.collab?T.sub:T.label}}>▼</span>
+                  </span>
+                : <span style={{fontSize:10,color:T.text}}>{(cr.collab&&COLLAB_TYPES.find(c=>c.id===cr.collab)?.label)||"—"}</span>}</td>
               {/* Locking a creator is what posts their cost to Billing as a
                   committed expense. Editing it afterwards silently re-prices a
                   commitment the books have already recorded — and, once an
@@ -2301,7 +2463,22 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
                     style={{color:T.text,...(canEdit&&isLocked(cr)?{cursor:"not-allowed"}:{})}}>
                     {fmtINR(costOf(cr))}{canEdit&&isLocked(cr)&&<span style={{fontSize:9,color:T.label,marginLeft:5}}>🔒</span>}
                   </span>}</td>}
-              {canFin(role)&&<td style={tdS}>{canEdit?<select value={cr.payType||""} onChange={e=>patch(cr._id,{payType:e.target.value||null,payId:null})} style={{background:"transparent",border:`1px solid ${T.border}`,color:cr.payType?T.text:T.label,fontSize:10,fontFamily:"'Sora'",outline:"none",cursor:"pointer",borderRadius:4,padding:"3px 5px"}}>{PAYMENT_TYPES.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select>:<span style={{fontSize:10,color:T.text}}>{PAYMENT_TYPES.find(p=>p.id===cr.payType)?.label||"—"}</span>}</td>}
+              {/* Carries its own caret. The app strips the native one from every
+                  select (index.css), so a bordered box with a value in it was
+                  indistinguishable from the plain text in the cells either side
+                  — nobody could tell the pay type was theirs to choose. */}
+              {canFin(role)&&<td style={tdS}>{canEdit
+                ? <span style={{position:"relative",display:"inline-block"}}>
+                    <select value={cr.payType||""} onChange={e=>patch(cr._id,{payType:e.target.value||null,payId:null})}
+                      title="How this creator gets paid"
+                      style={{appearance:"none",WebkitAppearance:"none",cursor:"pointer",outline:"none",
+                        background:"transparent",border:`1px solid ${T.border}`,borderRadius:4,
+                        color:cr.payType?T.text:T.label,fontSize:10,fontFamily:"'Sora'",padding:"3px 20px 3px 7px"}}>
+                      {PAYMENT_TYPES.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}
+                    </select>
+                    <span style={{position:"absolute",right:7,top:"50%",transform:"translateY(-50%)",pointerEvents:"none",fontSize:7,color:cr.payType?T.sub:T.label}}>▼</span>
+                  </span>
+                : <span style={{fontSize:10,color:T.text}}>{PAYMENT_TYPES.find(p=>p.id===cr.payType)?.label||"—"}</span>}</td>}
               {(canEdit||canFin(role))&&<td style={{...tdS,textAlign:"right"}}><div style={{display:"flex",gap:5,justifyContent:"flex-end"}}>
                 {can(role,"editCreatorDetails")&&<button onClick={()=>setEditTarget(cr)} title="Edit all creator details" style={{fontSize:9,color:T.sub,background:"transparent",border:`1px solid ${T.borderMid}`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Edit</button>}
                 {canFin(role)&&(cr.invoiceNo
@@ -2662,7 +2839,7 @@ const externalCpv = totV > 0 && campaignBudget > 0
 }
 
 // ── BRIEF TAB ────────────────────────────────────────────────────────────────
-function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction,onGoTab}){
+function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction,onGoTab,onAllocate}){
   const [locking,setLocking]=useState(false);
   // One field is editable at a time. `edit` holds the field key being edited
   // and `draft` its working value — editing the whole brief at once made it
@@ -2717,7 +2894,10 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction,onG
       if(Object.keys(patch).length) onSaveCampaign(patch);
     } else if(key==="budget"){
       const n=parseInt(draft)||0;
-      if(n<creatorBudgetOf(camp)) return;          // guarded by the button too
+      // `|| 0` because creatorBudgetOf is null on a campaign with no budget —
+      // `n < null` is false for every n, so without it a blank total would
+      // save as 0 and read as "agreed at nothing" ever after.
+      if(n<=0||n<(creatorBudgetOf(camp)||0)) return;   // guarded by the button too
       // `brief.budget` is the FORMATTED string the client portal renders in the
       // brief. It was written once at creation and never again, so it went
       // stale the moment anyone touched the budget. Kept in step here rather
@@ -2811,9 +2991,19 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction,onG
         The floor is the creator budget — this is the same constraint the
         creator-budget row enforces from the other side, so the two can't be
         crossed from either end. */}
-    {canFin(role)&&<>{field({fieldKey:"budget",label:"Total budget",editable:canEditCommercials,
+    {/* When there is no budget, this row does not offer Edit. Allocation is
+        not the same act as changing a figure — it raises the quote the brief
+        lock skipped and unblocks the PO — so it goes through the modal that
+        collects the creator split and states those consequences, rather than
+        through a bare MoneyInput that would leave the split to a 60% guess. */}
+    {canFin(role)&&<>{field({fieldKey:"budget",label:"Total budget",editable:canEditCommercials&&hasBudget(camp),
       value:String(camp.budget||0),invalid:tbUnder,
-      render:<div style={{fontSize:12,color:camp.budget?T.text:T.label}}>{camp.budget?fmtINR(camp.budget):"—"}</div>,
+      render:hasBudget(camp)
+        ? <div style={{fontSize:12,color:T.text}}>{fmtINR(camp.budget)}</div>
+        : <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <span style={{fontSize:12,color:T.label,fontStyle:"italic"}}>Not allocated — raised before the client agreed a number</span>
+            {onAllocate&&<Btn variant="primary" onClick={onAllocate} style={{fontSize:10,padding:"4px 10px"}}>Allocate budget</Btn>}
+          </div>,
       children:<>
         <MoneyInput value={draft||""} onChange={setDraft} placeholder="e.g. 12,50,000" style={{...INP,resize:"none",maxWidth:180}}/>
         <div style={{fontSize:9.5,color:tbUnder?T.red:T.sub,marginTop:4}}>
@@ -2823,8 +3013,14 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction,onG
         </div>
       </>})}<Hr/></>}
     {canCrFin(role)&&<>
-      {field({fieldKey:"creatorBudget",label:"Creator budget",value:String(creatorBudgetOf(camp)),invalid:cbOver,
-        render:<div style={{fontSize:12,color:T.text}}>{fmtINR(creatorBudgetOf(camp))} <span style={{fontSize:10,color:T.label}}>· ≈ {fmtINR(perCreatorOf(camp))} per creator × {numReqOf(camp)}</span></div>,
+      {field({fieldKey:"creatorBudget",label:"Creator budget",value:String(creatorBudgetOf(camp)||0),invalid:cbOver,
+        // Not editable while the total is unset: a creator pool is a SHARE of
+        // the total, and one typed against nothing is a number with no
+        // denominator. Both are set together, in the allocate modal.
+        editable:canEditBrief&&hasBudget(camp),
+        render:hasBudget(camp)
+          ? <div style={{fontSize:12,color:T.text}}>{fmtINR(creatorBudgetOf(camp))} <span style={{fontSize:10,color:T.label}}>· ≈ {fmtINR(perCreatorOf(camp))} per creator × {numReqOf(camp)}</span></div>
+          : <div style={{fontSize:12,color:T.label,fontStyle:"italic"}}>Set when the budget is allocated</div>,
         children:<>
           <MoneyInput value={draft||""} onChange={setDraft} placeholder="e.g. 7,50,000" style={{...INP,resize:"none",maxWidth:180}}/>
           <div style={{fontSize:9.5,color:cbOver?T.red:T.sub,marginTop:4}}>
@@ -2865,7 +3061,9 @@ function TabBrief({camp,role,currentUser,onSaveBrief,onSaveCampaign,onAction,onG
       <Hr style={{marginBottom:16}}/>
       <Lbl style={{display:"block",marginBottom:6}}>Brief sign-off</Lbl>
       <div style={{fontSize:11.5,color:T.sub,lineHeight:1.55,marginBottom:10}}>
-        Locking freezes the brief text and raises the client quote. Scope, budget and dates stay editable until the client PO is recorded; the brief itself can't be edited afterwards.
+        {budgetPending(camp)
+          ? "Locking freezes the brief text. No quote is raised — there is no budget to price yet; that follows when one is allocated. Scope and dates stay editable until the client PO is recorded; the brief itself can't be edited afterwards."
+          : "Locking freezes the brief text and raises the client quote. Scope, budget and dates stay editable until the client PO is recorded; the brief itself can't be edited afterwards."}
       </div>
       {gaps.length>0&&<div style={{fontSize:10.5,color:T.amber,lineHeight:1.5,marginBottom:10}}>
         Still needed before the brief can be locked: {gaps.join(", ")}.
@@ -2906,7 +3104,13 @@ function LockBriefModal({camp,onConfirm,onCancel}){
       <div style={{border:"1px solid rgba(0,0,0,0.06)",borderRadius:12,overflow:"hidden",marginBottom:14}}>
         {[
           ["Brief text",  "frozen — objective, audience, messages and deliverables can't be edited again"],
-          ["Client quote","raised in Billing from the campaign's own budget split"],
+          // A quote is a price. With no budget there is nothing to price, so
+          // the lock genuinely raises no document — and saying it does would
+          // send someone to Billing looking for one that isn't there. It gets
+          // raised when the budget is allocated instead (see raiseQuote).
+          ["Client quote", budgetPending(camp)
+            ? "not raised — this campaign has no budget yet. It goes to Billing when one is allocated"
+            : "raised in Billing from the campaign's own budget split"],
           ["Next",        staffed?"the team is already assigned, so execution opens immediately":"assign the AM, CM and Exec Associate — that's the blocker into execution"],
         ].map(([l,d],i)=>(
           <div key={l} style={{display:"flex",gap:12,padding:"10px 13px",borderTop:i?"1px solid rgba(0,0,0,0.05)":"none"}}>
@@ -3009,10 +3213,34 @@ function TabTeam({camp,role,onAction}){
 //   canCrFin — creator budget, per-head target, committed/remaining (CM/AM/EA)
 //   canFin   — the client-facing total budget on top of that
 //   canFF    — agency fee and margin (founder only)
-function TabFinancials({camp,role}){
-  const cb=creatorBudgetOf(camp),af=(camp.budget||0)-cb;
+function TabFinancials({camp,role,onAllocate}){
+  const cb=creatorBudgetOf(camp),af=(camp.budget||0)-(cb||0);
   const cmt=(camp.creators||[]).reduce((s,c)=>s+costOf(c),0);
   const marginPct=camp.budget>0?(af/camp.budget)*100:0;
+  // Nothing to lay out yet. The rows below would each read ₹0 — a total of
+  // zero, a pool of zero, a margin of 0.0% — which is a set of claims about
+  // this campaign's economics rather than the absence of any. Worse, "creator
+  // budget remaining" would go NEGATIVE and red the moment a creator was
+  // locked, reporting an overspend against a budget nobody has set.
+  if(budgetPending(camp)) return(
+    <div>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}><Lbl>Financial overview</Lbl><span style={{fontSize:9,color:T.amber,border:`1px solid ${T.amber}25`,borderRadius:3,padding:"1px 6px"}}>Internal only</span></div>
+      <div style={{padding:"16px 18px",borderRadius:10,background:`${T.amber}0D`,border:`1px solid ${T.amber}26`}}>
+        <div style={{fontSize:13,fontWeight:600,color:T.text,fontFamily:SF,marginBottom:5}}>No budget allocated</div>
+        <div style={{fontSize:11.5,color:T.sub,lineHeight:1.6}}>
+          This campaign was raised before the client agreed a number. The brief, the team and the roster all run without one — the quote, the client PO and the invoice are what wait.
+        </div>
+        {cmt>0&&(
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:14,paddingTop:12,borderTop:`1px solid ${T.amber}26`}}>
+            <span style={{fontSize:11.5,color:T.sub}}>Creator fees committed so far</span>
+            <span style={{fontSize:12,fontWeight:500,color:T.text}}>{fmtINR(cmt)}</span>
+          </div>
+        )}
+        {onAllocate&&<div style={{marginTop:14}}><Btn variant="primary" onClick={onAllocate}>Allocate budget</Btn></div>}
+      </div>
+      {!canFF(role)&&<div style={{marginTop:10,fontSize:10,color:T.label}}>{canFin(role)?"Agency fee and margin visible to Founders only.":"Creator-side budget only — total budget, agency fee and margin are not shown for your role."}</div>}
+    </div>
+  );
   const rows=[
     {label:"Total budget",value:fmtINR(camp.budget),color:T.text,show:canFin(role)},
     {label:"Creator budget",value:fmtINR(cb),color:T.sub,show:true},
@@ -3041,6 +3269,13 @@ function WorkflowActions({camp, role, onAction}) {
 
   const actions = [];
 
+  // Said once, on every stage before the PO, because it is true on all of them
+  // and only becomes a BLOCKER on the last. Stated early it reads as the open
+  // item it is; stated only at team_assigned it would ambush a campaign that
+  // had already staffed and delivered.
+  if (budgetPending(camp) && ["draft","brief_locked"].includes(stage))
+    actions.push({action:null, hint:"No budget allocated yet — that's fine until the client PO"});
+
   // Draft has no button by design — the brief is locked from the Brief tab,
   // where the thing being locked is actually in front of you.
   if (stage==="draft") {
@@ -3067,10 +3302,18 @@ function WorkflowActions({camp, role, onAction}) {
   // the roster has to be confirmed before it can be raised. Recorded against a
   // half-locked list, the PO's value was a guess: anyone still negotiating could
   // land above the number, and anyone who backed off meant reissuing it.
+  // Two things can hold the PO now, not one — see poGaps. A missing budget is
+  // the one an ACCOUNTS user can't clear themselves, so the button that clears
+  // it is offered here to the roles that can.
   if (stage==="team_assigned") {
     const gap=rosterGap(camp);
-    if (isAcc) actions.push({label:"Record Client PO", action:"raise_po", variant:"primary", disabled:!!gap});
-    else if (!gap) actions.push({action:null, hint:"Waiting on Accounts to record the client's Purchase Order"});
+    const noBudget=budgetPending(camp);
+    if (isAcc) actions.push({label:"Record Client PO", action:"raise_po", variant:"primary", disabled:!!gap||noBudget});
+    else if (!gap&&!noBudget) actions.push({action:null, hint:"Waiting on Accounts to record the client's Purchase Order"});
+    if (noBudget) {
+      actions.push({action:null, hint:"No budget allocated — the PO is raised from it, so it has to be set first"});
+      if (isLead) actions.push({label:"Allocate Budget", action:"allocate_budget", variant:"primary"});
+    }
     if (gap) actions.push({action:null, hint:`${gap} — settle the roster on the Creators tab before the PO is raised`});
   }
   if (stage==="po_raised") {
@@ -3117,12 +3360,26 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
   const [extending,setExtending]=useState(false);
   const [sheet,setSheet]=useState(null);        // "execution" | "creator_payment"
   const [raisingPO,setRaisingPO]=useState(false);
+  const [allocating,setAllocating]=useState(false);
   // Selecting a different campaign resets the panel to Brief — the tab chosen
   // on one campaign shouldn't leak onto the next.
-  useEffect(()=>{setTab("brief");setConfirmDelete(false);setExtending(false);setSheet(null);setRaisingPO(false);},[camp.id]);
+  useEffect(()=>{setTab("brief");setConfirmDelete(false);setExtending(false);setSheet(null);setRaisingPO(false);setAllocating(false);},[camp.id]);
+  // Who can put a number on the campaign. The same people who can edit the
+  // commercials on the Brief tab, and for the same reason: allocating IS
+  // editing the total budget, just from a campaign that never had one. Gated
+  // on beforePO through canEditCommercials — past the PO the number is what
+  // the client was billed and no longer ours to set.
+  const isCreator=!!currentUser?.teamId&&camp.createdBy===currentUser.teamId;
+  const canAllocate=(["founder","pcm"].includes(role)||isCreator)&&beforePO(camp)&&budgetPending(camp);
   // raise_po needs a form before it can do anything, so it opens ClientPOModal
   // instead of firing straight through. Everything else passes untouched.
-  const handleAction=(action,data)=>action==="raise_po"?setRaisingPO(true):onAction(action,data);
+  // Two actions need a form before they can do anything, so they open their
+  // modal instead of firing straight through. The modals call `onAction`
+  // directly with the data they collected. Everything else passes untouched.
+  const handleAction=(action,data)=>
+    action==="raise_po"        ? setRaisingPO(true)
+    : action==="allocate_budget" ? setAllocating(true)
+    : onAction(action,data);
   // Clicking a finance node goes to where that step is actually DONE, rather
   // than only telling you where the campaign stands. The PO is recorded on the
   // campaign, so it opens the Financials tab where the button lives; the rest
@@ -3175,9 +3432,23 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
               sentence. Labelled and evenly spaced, they can be read one at a
               time instead of parsed left to right. */}
           <div style={{display:"flex",flexWrap:"wrap",gap:"10px 30px",marginBottom:14}}>
-            {[...(canFin(role)?[{k:"Budget",v:fmtINR(camp.budget)}]:[]),
-              {k:"Creators",v:`${lockedCountOf(camp)} of ${numReqOf(camp)} locked`},
-              {k:"Progress",v:`${progressOf(camp)}%`},
+            {canFin(role)&&(budgetPending(camp)
+              // Named, not an em dash. "—" here is indistinguishable from a
+              // field that failed to load, and this is the one number in the
+              // header someone is expected to go and do something about — so
+              // the fix sits beside it, the way Extend sits beside the
+              // end-date nudge below.
+              ? <Stat label="Budget" value="Not allocated">
+                  <Pill tone={T.amber} dot style={{padding:"2px 8px",fontSize:9.5}}>Pending</Pill>
+                  {canAllocate&&(
+                    <button onClick={()=>setAllocating(true)} style={{background:"transparent",border:"none",padding:0,cursor:"pointer",fontFamily:SF,fontSize:11,fontWeight:600,color:T.accent,textDecoration:"underline",textUnderlineOffset:2}}>
+                      Allocate
+                    </button>
+                  )}
+                </Stat>
+              : <Stat label="Budget" value={fmtINR(camp.budget)}/>)}
+            {[{k:"Creators",v:`${lockedCountOf(camp)} of ${numReqOf(camp)} locked`},
+              {k:"Progress",v:`${progressOf(camp,role)}%`},
              ].map(s=><Stat key={s.k} label={s.k} value={s.v}/>)}
             <Stat label="Window" value={`${prettyDate(camp.start)} – ${prettyDate(camp.end)}`}>
               <EndPill es={es}/>
@@ -3198,6 +3469,9 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
             {sheet==="creator_payment"&&<CreatorPaymentModal camp={camp} role={role} expenseById={expenseById} onClose={()=>setSheet(null)}/>}
             {raisingPO&&<ClientPOModal camp={camp} invoiceAmount={camp.budget||0}
               onConfirm={po=>{setRaisingPO(false);onAction("raise_po",po);}} onCancel={()=>setRaisingPO(false)}/>}
+            {allocating&&<AllocateBudgetModal camp={camp} role={role}
+              onConfirm={(budget,creatorBudget)=>{setAllocating(false);onAction("allocate_budget",{budget,creatorBudget});}}
+              onCancel={()=>setAllocating(false)}/>}
           </AnimatePresence>
           <WorkflowActions camp={camp} role={role} onAction={handleAction}/>
           {/* Scrolls inside its own lane so it never widens the card */}
@@ -3221,12 +3495,12 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
       <div style={{...card,padding:"22px 24px"}}>
         <AnimatePresence mode="wait" initial={false}>
           <motion.div key={tab} initial={{opacity:0,y:5}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-3}} transition={{duration:0.16,ease:"easeOut"}}>
-            {tab==="brief"        &&<TabBrief        camp={camp} role={role} currentUser={currentUser} onAction={onAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign} onGoTab={setTab}/>}
+            {tab==="brief"        &&<TabBrief        camp={camp} role={role} currentUser={currentUser} onAction={onAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign} onGoTab={setTab} onAllocate={canAllocate?()=>setAllocating(true):null}/>}
             {tab==="team"         &&<TabTeam         camp={camp} role={role} onAction={onAction}/>}
             {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
             {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
             {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
-            {tab==="financials"   &&(canFin(role)||canCrFin(role))&&<TabFinancials camp={camp} role={role}/>}
+            {tab==="financials"   &&(canFin(role)||canCrFin(role))&&<TabFinancials camp={camp} role={role} onAllocate={canAllocate?()=>setAllocating(true):null}/>}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -3242,7 +3516,7 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
 const STEPS=[
   {id:"Basics",     title:"Start with the basics",     sub:"A name and a brand is most of it."},
   {id:"Brief",      title:"What's the campaign for?",  sub:"Objective is the one thing worth pinning down now — the rest can be written properly later, on its own tab."},
-  {id:"Commercial", title:"Scope and money",           sub:"The budget, how many creators it buys, and when it runs."},
+  {id:"Commercial", title:"Scope and money",           sub:"How many creators, when it runs, and — if the client has agreed one yet — the budget."},
   {id:"Internal",   title:"Anything the client shouldn't see?", sub:"Optional. Check the summary and you're done."},
 ];
 
@@ -3284,32 +3558,53 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
       // files the campaign (and every invoice and PO after it) under another
       // client. Still editable; only the default changes. Validated against
       // `brands`, which may not have loaded yet.
-  const [f,setF]=useState({name:"",brandId:brands.some(b=>b.id===brandFilter)?brandFilter:"",service:"Influencer Marketing",region:"",niches:[],budget:"",numCreators:5,deliverablesPerCreator:1,creatorBudgetMode:"pct",creatorBudgetPct:60,creatorBudgetAmt:"",objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
+  const [f,setF]=useState({name:"",brandId:brands.some(b=>b.id===brandFilter)?brandFilter:"",service:"Influencer Marketing",region:"",niches:[],budget:"",budgetDeferred:false,numCreators:5,deliverablesPerCreator:1,creatorBudgetMode:"pct",creatorBudgetPct:60,creatorBudgetAmt:"",objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
   // Staged only — nothing is written to the backend until the campaign is
   // actually submitted, so abandoning this modal never leaves an orphan brand.
   const [pendingBrandName,setPendingBrandName]=useState(null);
   const [submitting,setSubmitting]=useState(false);
   const [brandErr,setBrandErr]=useState(null);
+  // Set when someone tries to leave a step with a required field empty — see
+  // next(). Until then the form stays quiet: fields are not marked missing
+  // before anyone has had the chance to fill them.
+  const [tried,setTried]=useState(false);
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const merge=patch=>setF(p=>({...p,...patch}));
   const budgetNum=parseInt(f.budget)||0;
   const creatorBudget=resolveCreatorBudget(f,budgetNum);
   // Per-step required fields — Next/Create stay disabled until the current
   // step's required inputs are filled (Brief + Internal have none).
+  //
+  // The money half of Commercial drops out entirely when the budget is
+  // deferred: scope and dates are still required, because those are what the
+  // campaign is planned and staffed against and neither waits on a number.
+  const moneyOk=f.budgetDeferred||(budgetNum>0&&creatorBudget>0&&creatorBudget<=budgetNum);
   const stepOk=[
     !!(f.name.trim()&&f.service&&f.brandId),
     !!f.objective.trim(),
-    budgetNum>0&&parseInt(f.numCreators)>0&&parseInt(f.deliverablesPerCreator)>0&&creatorBudget>0&&creatorBudget<=budgetNum&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
+    moneyOk&&parseInt(f.numCreators)>0&&parseInt(f.deliverablesPerCreator)>0&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
     true,
   ];
   const ok=stepOk[step];
   const allOk=stepOk.every(Boolean);
   const timelineLabel=f.timelineStart&&f.timelineEnd?`${prettyDate(f.timelineStart)} – ${prettyDate(f.timelineEnd)}`:"";
   const handleSubmit=async()=>{
-    if(!allOk)return;
+    if(!allOk){
+      // The summary screen has no required fields of its own, so a blocked
+      // Create is always about a screen behind it. Going there and marking the
+      // field beats grey-ing a button on a step with nothing wrong on it.
+      setTried(true);
+      const bad=stepOk.findIndex(v=>!v);
+      if(bad>=0)setStep(bad);
+      return;
+    }
     // creatorBudget is resolved here rather than in onCreate so the stored
     // number is exactly the one the wizard showed, whichever mode was used.
-    const payload={...f,timeline:timelineLabel,creatorBudget};
+    // Both are NULL when the budget was deferred — see hasBudget in
+    // lib/campaign.js for why absent rather than zero.
+    const payload={...f,timeline:timelineLabel,
+      budget:f.budgetDeferred?null:budgetNum,
+      creatorBudget:f.budgetDeferred?null:creatorBudget};
     if(f.brandId!=="__new__"){ onSubmit(payload); return; }
     setSubmitting(true);setBrandErr(null);
     try{
@@ -3320,13 +3615,22 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
       setSubmitting(false);
     }
   };
-  const next=()=>ok&&setStep(s=>Math.min(s+1,STEPS.length-1));
+  // Advancing with something missing SAYS what is missing, rather than leaving
+  // a dead Next button and no reason for it. `tried` arms the per-field
+  // "required" messages below; it clears on a successful move so stepping back
+  // into a screen you already completed isn't met with red text.
+  const next=()=>{
+    if(!ok){setTried(true);return;}
+    setTried(false);
+    setStep(s=>Math.min(s+1,STEPS.length-1));
+  };
+  const back=()=>{setTried(false);setStep(s=>s-1);};
   // Enter advances the wizard from any single-line input, the way every other
   // form on the web behaves. Textareas keep Enter for newlines.
   const onKeyDown=e=>{
     if(e.key!=="Enter"||e.target.tagName==="TEXTAREA")return;
     e.preventDefault();
-    step<STEPS.length-1?next():allOk&&handleSubmit();
+    step<STEPS.length-1?next():allOk?handleSubmit():setTried(true);
   };
   const brandLabel=f.brandId==="__new__"?`${pendingBrandName} (new)`:brands.find(b=>b.id===f.brandId)?.name||"—";
   const nCr=parseInt(f.numCreators)||0, nDv=parseInt(f.deliverablesPerCreator)||0;
@@ -3351,11 +3655,15 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
           <div style={{fontSize:11,color:T.sub,fontFamily:SF,marginTop:3,lineHeight:1.55}}>{STEPS[step].sub}</div>
         </div>
         {step===0&&<>
-          <Field label="Campaign name"><input value={f.name} onChange={e=>u("name",e.target.value)} placeholder="e.g. Summer Launch Teaser" style={{...INP,resize:"none"}}/></Field>
+          <Field label="Campaign name">
+            <input value={f.name} onChange={e=>u("name",e.target.value)} placeholder="e.g. Summer Launch Teaser" style={{...INP,resize:"none"}}/>
+            <Req show={tried&&!f.name.trim()}/>
+          </Field>
           <Field label="Brand" hint={f.brandId==="__new__"&&pendingBrandName?`"${pendingBrandName}" will be created when you submit this campaign.`:undefined}>
             <BrandPicker brands={brands} value={f.brandId} pendingName={pendingBrandName}
               onSelect={id=>{u("brandId",id);setPendingBrandName(null);}}
               onCreate={name=>{setPendingBrandName(name);u("brandId","__new__");}}/>
+            <Req show={tried&&!f.brandId}>Mandatory field — pick the brand this campaign runs for, or create it.</Req>
           </Field>
           {brandErr&&<div style={{fontSize:10.5,color:T.red,marginBottom:10}}>{brandErr}</div>}
           <Field label="Service"><select value={f.service} onChange={e=>u("service",e.target.value)} style={{...INP,resize:"none"}}>{["Influencer Marketing","IM — Mass","IM — Sales"].map(s=><option key={s}>{s}</option>)}</select></Field>
@@ -3363,11 +3671,39 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
         </>}
         {step===1&&<>
           {[["Objective","objective",60,false],["Target audience","audience",50,true],["Key Messages","messages",50,true]].map(([l,k,h,opt])=>
-            <Field key={k} label={l} optional={opt}><textarea value={f[k]} onChange={e=>u(k,e.target.value)} style={{...INP,minHeight:h}}/></Field>)}
+            <Field key={k} label={l} optional={opt}>
+              <textarea value={f[k]} onChange={e=>u(k,e.target.value)} style={{...INP,minHeight:h}}/>
+              <Req show={tried&&!opt&&!f[k].trim()}/>
+            </Field>)}
           <Field label="Deliverables" optional style={{marginBottom:0}}><DelvSelect value={f.deliverables} onChange={v=>u("deliverables",v)}/></Field>
         </>}
         {step===2&&<>
-          <Field label="Total budget (₹)"><MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="e.g. 12,50,000" style={{...INP,resize:"none"}}/></Field>
+          {/* The budget is the one thing on this screen the client may not have
+              agreed yet, and waiting for it used to mean not raising the
+              campaign at all. Deferring it leaves everything else intact — the
+              brief still locks, the team is still staffed, the roster is still
+              built and delivered. Only the client PO waits, because the PO's
+              amount IS this number. */}
+          <Field label="Total budget (₹)">
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:f.budgetDeferred?0:9}}>
+              <div style={SEG_WRAP}>
+                <button onClick={()=>u("budgetDeferred",false)} style={segBtn(!f.budgetDeferred)}>Set now</button>
+                <button onClick={()=>u("budgetDeferred",true)}  style={segBtn(f.budgetDeferred)}>Not agreed yet</button>
+              </div>
+              {f.budgetDeferred&&<span style={{fontSize:11,color:T.label,fontFamily:SF}}>Allocate it later</span>}
+            </div>
+            {f.budgetDeferred
+              ? <div style={{fontSize:10.5,color:T.sub,lineHeight:1.55,padding:"10px 12px",borderRadius:8,background:`${T.amber}0D`,border:`1px solid ${T.amber}26`}}>
+                  The campaign runs as normal — brief, team, roster and delivery are all open. Allocate the budget from its Brief or Financials tab when the client agrees a number; the client PO and the invoice wait until you do.
+                </div>
+              : <MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="e.g. 12,50,000" style={{...INP,resize:"none"}}/>}
+            {/* Still mandatory. The toggle is the ONLY way past it — leaving it
+                blank on "Set now" is an omission, and the campaign would go on
+                to quote and invoice the client from it. */}
+            <Req show={tried&&!f.budgetDeferred&&budgetNum<=0}>
+              Mandatory field — enter the total budget, or switch to "Not agreed yet" if the client hasn't given you one.
+            </Req>
+          </Field>
           {/* The two numbers that size a campaign. Deliverables-per-creator is
               the PLAN — any single creator can be set higher on the
               Deliverables tab without changing it (see delivTargetOf). */}
@@ -3376,11 +3712,17 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
               <div><Lbl style={{display:"block",marginBottom:4,fontSize:8.5}}>Creators required</Lbl><input type="number" min={1} value={f.numCreators} onChange={e=>u("numCreators",e.target.value)} placeholder="5" style={{...INP,resize:"none"}}/></div>
               <div><Lbl style={{display:"block",marginBottom:4,fontSize:8.5}}>Deliverables each</Lbl><input type="number" min={1} value={f.deliverablesPerCreator} onChange={e=>u("deliverablesPerCreator",e.target.value)} placeholder="1" style={{...INP,resize:"none"}}/></div>
             </div>
+            <Req show={tried&&!(parseInt(f.numCreators)>0&&parseInt(f.deliverablesPerCreator)>0)}>
+              Mandatory field — both numbers are required, and each has to be at least 1.
+            </Req>
           </Field>
-          <CreatorBudgetField
+          {/* Nothing to split until there is a total. Hidden rather than shown
+              disabled: an empty allocation bar reads as "the creators get
+              nothing", which is the opposite of what a deferred budget means. */}
+          {!f.budgetDeferred&&<CreatorBudgetField
             budget={budgetNum} numCreators={nCr}
             mode={f.creatorBudgetMode} pct={f.creatorBudgetPct} amount={f.creatorBudgetAmt}
-            onChange={merge} showAgency={canFF(role)}/>
+            onChange={merge} showAgency={canFF(role)}/>}
           <Field label="Niches" optional hint="Steers Generate towards creators in the same or similar niches. Leave empty for any niche.">
             <NicheSelect value={f.niches} onChange={v=>u("niches",v)}/>
           </Field>
@@ -3391,6 +3733,9 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
             </div>
             {f.timelineStart&&f.timelineEnd&&f.timelineEnd<f.timelineStart&&<div style={{fontSize:9.5,color:T.red,marginTop:5}}>End date must be after the start date.</div>}
             {timelineLabel&&f.timelineEnd>=f.timelineStart&&<div style={{fontSize:9.5,color:T.sub,marginTop:5}}>{timelineLabel}</div>}
+            <Req show={tried&&!(f.timelineStart&&f.timelineEnd)}>
+              Mandatory field — both a start and an end date are required.
+            </Req>
           </Field>
         </>}
         {step===3&&<>
@@ -3400,7 +3745,7 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
           <div style={{display:"flex",flexWrap:"wrap",gap:"12px 26px",padding:"13px 15px",borderRadius:10,background:`${T.accent}08`,border:`1px solid ${T.accent}1F`,marginBottom:16}}>
             <Stat small label="Campaign" value={f.name||"—"}/>
             <Stat small label="Brand" value={brandLabel}/>
-            <Stat small label="Budget" value={budgetNum?fmtINR(budgetNum):"—"}/>
+            <Stat small label="Budget" value={f.budgetDeferred?"To be allocated":budgetNum?fmtINR(budgetNum):"—"}/>
             <Stat small label="Scope" value={`${nCr} creators · ${nDv} each`}/>
             <Stat small label="Window" value={timelineLabel||"—"}/>
           </div>
@@ -3410,11 +3755,15 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
         </>}
       </div>
       <div style={{padding:"14px 20px",borderTop:`1px solid ${T.border}`,display:"flex",gap:8,alignItems:"center"}}>
-        {step>0&&<Btn variant="ghost" onClick={()=>setStep(s=>s-1)}>← Back</Btn>}
+        {step>0&&<Btn variant="ghost" onClick={back}>← Back</Btn>}
         <div style={{flex:1}}/>
+        {/* Deliberately NOT disabled on an incomplete step. A dead button is
+            the reason nobody knew which field was missing; pressing it now
+            marks them (see next / handleSubmit). Only the in-flight submit
+            disables, because that one really can't be pressed twice. */}
         {step<STEPS.length-1
-          ? <Btn variant="primary" onClick={next} disabled={!ok}>Next →</Btn>
-          : <Btn variant="success" onClick={handleSubmit} disabled={submitting||!allOk}>{submitting?"Creating…":"Create campaign"}</Btn>}
+          ? <Btn variant="primary" onClick={next}>Next →</Btn>
+          : <Btn variant="success" onClick={handleSubmit} disabled={submitting}>{submitting?"Creating…":"Create campaign"}</Btn>}
       </div>
     </motion.div>
   </div>);
@@ -3542,7 +3891,12 @@ export default function InternalCampaigns(){
         // Deliberately does NOT copy the PO onto the campaign. client_pos is
         // the record and the timeline is the audit trail; a third copy here
         // would go stale the moment Accounts corrects the number in Billing.
-        case "raise_po": next=rosterGap(c)?(blocked=`Roster not confirmed — ${rosterGap(c)}`,c)
+        // poGaps, not rosterGap: a campaign raised without a budget also stops
+        // here. The PO's amount IS the budget and the client invoice is drawn
+        // from it, so recording one against a campaign with no number would
+        // invent the figure the client gets billed. Re-checked in the reducer
+        // like every other gate — the button is not the only way in.
+        case "raise_po": next=poGaps(c).length?(blocked=`Can't record the PO — ${poGaps(c).join("; ")}`,c)
           :data.poNumber?{...c,stage:"po_raised",
           timeline:addEv(`Client PO ${data.poNumber} recorded — ${fmtINR(data.amount)}, awaiting advance`,currentUser.name||"Accounts")}:(blocked="A client PO number is required",c);break;
         case "advance_received": next={...c,stage:"advance_received",advanceReceivedOn:today(),
@@ -3551,6 +3905,25 @@ export default function InternalCampaigns(){
           timeline:addEv("Client invoice issued — NET 30",currentUser.name||"Accounts")};break;
         case "payment_done": next={...c,stage:"payment_done",paidOn:today(),
           timeline:addEv("Client payment received in full",currentUser.name||"Accounts")};break;
+        // The number arrives. Deliberately moves NO stage: allocating is not
+        // an event on either track — it removes a blocker on the finance one.
+        // A campaign sitting at Team Assigned with the roster confirmed can
+        // record its PO the moment this lands, and one still in Draft carries
+        // on being a draft. Anything else would let the money jump the work.
+        //
+        // `brief.budget` is the formatted string the CLIENT PORTAL renders,
+        // kept in step here for the same reason the Brief tab's budget edit
+        // keeps it in step: the portal reads the brief as authored, so a stale
+        // one shows the brand the wrong figure.
+        case "allocate_budget": {
+          const budget=Math.max(0,parseInt(data.budget)||0);
+          const creatorBudget=Math.min(Math.max(0,parseInt(data.creatorBudget)||0),budget);
+          if(budget<=0){ blocked="A budget is required"; next=c; break; }
+          if(!beforePO(c)){ blocked="The budget is fixed once the client PO is recorded"; next=c; break; }
+          next={...c,budget,creatorBudget,brief:{...c.brief,budget:fmtINR(budget)},
+            timeline:addEv(`Budget allocated — ${fmtINR(budget)} total, ${fmtINR(creatorBudget)} to creators`,currentUser.name||role)};
+          break;
+        }
         // Schedule change only — the stage is deliberately untouched, so
         // extending a campaign that ran long doesn't rewind its pipeline.
         case "extend_end_date": next={...c,end:data.end,timeline:addEv(
@@ -3573,21 +3946,31 @@ export default function InternalCampaigns(){
         // PO left no quote and no invoice, the stage moved anyway, and nobody
         // found out until the books were reconciled. `warn` says so instead.
         const warn=what=>()=>showToast(`${what} — campaign moved, but the record wasn't created. Retry from Billing.`);
-            // The lock is where the commercials stop being a draft — budget and
-            // creator split agreed, brief frozen. That is what a quote is, so it
-            // is raised here with the campaign's real numbers rather than the
-            // invented percentages the old auto-quote carried.
-            //
-            // Margin is one percentage because that is quoteMargin()'s shape, and
-            // it resolves back to the campaign's own split: margin = budget −
-            // creator pool, ops = pool.
-            //
-            // `updatedCamp`, not `next` — `next` is scoped to the setCampaigns
-            // updater, so reading it here threw and the lock silently raised no
-            // quote at all. Only visible by walking the UI.
-        if(action==="lock_brief"&&briefLocked(updatedCamp)){
-          const budget=updatedCamp.budget||0, pool=creatorBudgetOf(updatedCamp);
-          if(budget>0) QuotesAPI.create({
+        // The quote carries the campaign's real numbers rather than the
+        // invented percentages the old auto-quote used. Margin is one
+        // percentage because that is quoteMargin()'s shape, and it resolves
+        // back to the campaign's own split: margin = budget − creator pool,
+        // ops = pool.
+        //
+        // `updatedCamp`, not `next` — `next` is scoped to the setCampaigns
+        // updater, so reading it here threw and the lock silently raised no
+        // quote at all. Only visible by walking the UI.
+        //
+        // TWO triggers, one definition. A quote needs a locked brief AND a
+        // budget, and those no longer arrive together: a campaign raised
+        // without a number locks its brief with nothing to quote, and the
+        // quote falls due later, when the number does. Whichever of the two
+        // lands second raises it, and `note` says which that was.
+        //
+        // Create-or-nothing rather than create-or-update: QT-<id> is derived
+        // from the campaign, so a second call after both paths fire is a
+        // duplicate-key 409 rather than a second quote. `warn` reports the
+        // genuine failures; a 409 only means the quote already exists, which
+        // is the outcome we wanted.
+        const raiseQuote=note=>{
+          const budget=updatedCamp.budget||0, pool=creatorBudgetOf(updatedCamp)||0;
+          if(budget<=0||!briefLocked(updatedCamp)) return;
+          QuotesAPI.create({
             id:`QT-${id}`, campaignId:id, client:updatedCamp.client||"",
             brandId:updatedCamp.brandId||null,
             label:`${updatedCamp.name} — Quote`, status:"pending_review",
@@ -3595,9 +3978,23 @@ export default function InternalCampaigns(){
             marginPct: Math.round(((budget-pool)/budget)*1000)/10,
             agencyFeePct:0, agencyFeeType:"baked_in", isRetainerClient:false,
             lines:[{desc:`Influencer Marketing — ${updatedCamp.name}`,sac:"998361",qty:1,rate:budget,gstRate:18}],
-            notes:"Raised when the brief was locked. Review and send before recording the client's PO.",
-          }).catch(warn("Quote not raised"));
-        }
+            notes:note,
+            // 409 is the duplicate-id response (lib/api.js sets `status`), and
+            // it means the quote is already there — which is the outcome this
+            // wanted. Branching on the status rather than the message, because
+            // the message is prose and prose gets reworded.
+          }).catch(err=>{ if(err?.status!==409) warn("Quote not raised")(); });
+        };
+            // The lock is where the commercials stop being a draft — budget and
+            // creator split agreed, brief frozen. That is what a quote is.
+        if(action==="lock_brief")
+          raiseQuote("Raised when the brief was locked. Review and send before recording the client's PO.");
+            // The other order: brief locked long ago with no number to quote,
+            // and the client has just given one. Without this the quote was
+            // never raised at all — the lock's `budget>0` guard had already
+            // declined, and nothing came back to it.
+        if(action==="allocate_budget")
+          raiseQuote("Raised when the budget was allocated — the brief was locked before the client agreed a number. Review and send before recording the client's PO.");
         if(action==="raise_po"&&data.poNumber){
           const poId=`CPO-${id}`;
           ClientPOsAPI.create({id:poId,poNumber:data.poNumber,amount:data.amount,
@@ -3775,19 +4172,29 @@ export default function InternalCampaigns(){
     // Stable slug ID — readable, collision-resistant, matches billing references
     const slug = f.name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,24);
     const campId = `camp_${slug}_${Date.now().toString(36)}`;
-    const budget = parseInt(f.budget)||0;
+    // NULL, not 0, when the wizard deferred the budget — the whole distinction
+    // this feature rests on. See hasBudget in lib/campaign.js.
+    const deferred = f.budget===null||f.budgetDeferred;
+    const budget = deferred ? null : (parseInt(f.budget)||0);
     const c={
       id:campId, name:f.name, client:brandName(f.brandId)||"", brandId:f.brandId, service:f.service,
       region:f.region||"TBD", niches:f.niches||[], stage:"draft",
-      budget, creatorBudget:Math.min(f.creatorBudget||0,budget),
+      budget, creatorBudget:deferred?null:Math.min(f.creatorBudget||0,budget),
       numReq:parseInt(f.numCreators)||5, deliverablesPerCreator:parseInt(f.deliverablesPerCreator)||1,
       start:f.timelineStart||today(), end:f.timelineEnd||"TBD",
       createdBy:currentUser.teamId,
       amId, cmId, eaId,
-      brief:{objective:f.objective,audience:f.audience,messages:f.messages,deliverables:f.deliverables,budget:fmtINR(budget),timeline:timelineLabel(f.timelineStart,f.timelineEnd)},
+      // `brief.budget` is the formatted string the CLIENT PORTAL renders. Left
+      // null rather than "—" so the portal decides how to say "not agreed yet"
+      // in its own voice instead of inheriting an em dash from here.
+      brief:{objective:f.objective,audience:f.audience,messages:f.messages,deliverables:f.deliverables,budget:deferred?null:fmtINR(budget),timeline:timelineLabel(f.timelineStart,f.timelineEnd)},
       briefStatus:"draft", amNote:"", cmNote:"", creators:[], genRounds:0,
       sentToClient:false, internalNotes:f.internalNotes,
-      timeline:[{date:today(),event:"Campaign created",actor:currentUser.name||role.toUpperCase()}],
+      // The deferral is stated on the timeline at creation. Nothing else
+      // records that it was a decision rather than an omission, and the person
+      // who picks the campaign up a week later needs to know which it was.
+      timeline:[{date:today(),event:"Campaign created",actor:currentUser.name||role.toUpperCase()},
+        ...(deferred?[{date:today(),event:"Raised without a budget — to be allocated once the client agrees a number",actor:currentUser.name||role.toUpperCase()}]:[])],
     };
     // Save campaign
     CampaignsAPI.create(c).catch(()=>showToast("Save failed — check connection"));

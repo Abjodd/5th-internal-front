@@ -24,6 +24,16 @@ export const PERMS = {
   // separate from seeCampaignBudget (client-facing total) and seeMargins, so
   // these roles still never see what the agency keeps.
   seeCreatorFees:     ["founder", "pcm", "cm", "am", "ea", "accounts_head", "accounts_exec"],
+  // The FINANCE rail on a campaign's pipeline — PO Raised → Advance Received →
+  // Invoice Raised → Payment Done. Deliberately wider than seeCampaignBudget:
+  // these are STEPS, not amounts. AM chases the client's PO and Accounts
+  // settles the invoice, so both need to see where the money has got to
+  // without seeing what it is.
+  //
+  // CM and EA execute against a brief that is already funded, and none of the
+  // four steps is theirs to take — the rail was four dead-end nodes. They get
+  // the execution track alone, drawn as one straight line with no fork.
+  seeFinanceTrack:    ["founder", "pcm", "am", "accounts_head", "accounts_exec"],
   seeMargins:         ["founder"],
   seeAgencyFee:       ["founder"],
   createCampaign:     ["founder", "pcm", "cm", "am"],

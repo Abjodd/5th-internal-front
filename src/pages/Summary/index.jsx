@@ -3806,7 +3806,7 @@ function Financials({ data = {} }) {
  * 6 — CAMPAIGN PIPELINE
  * ──────────────────────────────────────────────────────────────── */
 
-function CampaignFlow({ stages = [] }) {
+function CampaignFlow({ stages = [], awaitingBudget = 0 }) {
   const reduce = useReducedMotion();
   return (
     <section style={{ padding: "140px 44px", background: F.surface }}>
@@ -3844,6 +3844,29 @@ function CampaignFlow({ stages = [] }) {
               </Reveal>
             ))}
           </div>
+
+          {/* Campaigns running with no budget agreed. Deliberately BELOW the
+              rail rather than on it: this is not a stage. A campaign can be
+              raised before the client commits a number, and while it is, it
+              sits in draft, brief-locked or team-assigned like any other and
+              progresses normally — what it cannot do is have its client PO
+              recorded. Drawn as a stage it would double-count every campaign
+              on the rail above. */}
+          {awaitingBudget > 0 && (
+            <Reveal delay={0.3}>
+              <div style={{
+                marginTop: 34, padding: "16px 18px", borderRadius: 14,
+                border: `1px solid ${F.gold}44`, background: `${F.gold}0F`,
+              }}>
+                <div style={{ fontFamily: T.ui, fontSize: 13, fontWeight: 700, color: F.ink, letterSpacing: "0.03em", marginBottom: 4 }}>
+                  {awaitingBudget} AWAITING A BUDGET
+                </div>
+                <div style={{ fontFamily: T.ui, fontSize: 12, color: F.inkSoft, lineHeight: 1.6 }}>
+                  Raised before the client agreed a number. The work runs; the billing waits, because the purchase order is drawn from the budget.
+                </div>
+              </div>
+            </Reveal>
+          )}
         </div>
 
         {/* The timeline used to be the whole section — a single narrow
@@ -4438,18 +4461,26 @@ function ClientCard({ client, delay = 0 }) {
                         {c.name}
                       </div>
 
+                      {/* A campaign with no agreed budget says so here, in the
+                          slot the stage would use. It IS the more useful fact
+                          about the row: the stage says where the work is, and
+                          the work is fine — the number behind it is what is
+                          missing, and it is the reason this campaign can't be
+                          invoiced however far along the bar below reads. */}
                       <span
                         style={{
                           fontFamily: T.ui,
                           fontSize: 8.5,
                           fontWeight: 700,
-                          color: c.live
+                          color: c.budgetPending
+                            ? F.gold
+                            : c.live
                             ? F.forest
                             : F.muted,
                           flexShrink: 0,
                         }}
                       >
-                        {c.live ? "LIVE" : c.stage}
+                        {c.budgetPending ? "NO BUDGET" : c.live ? "LIVE" : c.stage}
                       </span>
                     </div>
 
@@ -4565,6 +4596,9 @@ function ClientPortfolio({ clients = {} }) {
               { label: "On the books", value: clients.total, color: F.rust },
               { label: "With live work", value: clients.active, color: F.forest },
               { label: "No live campaign", value: clients.idle, color: F.muted },
+              // Only when there are any. A permanent "0 awaiting a budget"
+              // would make a normal state look like a metric being watched.
+              ...(clients.awaitingBudget ? [{ label: "Awaiting a budget", value: clients.awaitingBudget, color: F.gold }] : []),
             ].map((s) => (
               <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 7 }}>
                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.color }} />
@@ -7840,7 +7874,7 @@ export default function FounderSummary() {
         summary: inPipeline
           ? `${inPipeline} ${plural(inPipeline, "campaign")} across the pipeline.`
           : "Where every campaign sits across the pipeline.",
-        node: <CampaignFlow stages={stages} />,
+        node: <CampaignFlow stages={stages} awaitingBudget={data.campaigns?.awaitingBudget || 0} />,
       },
       {
         eyebrow: "Ahead",

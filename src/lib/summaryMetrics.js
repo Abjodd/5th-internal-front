@@ -17,7 +17,7 @@
  *
  * `health.clients` used to be on that list — see healthFrom().
  */
-import { PIPELINE, normStage } from "./campaign";
+import { PIPELINE, normStage, budgetPending } from "./campaign";
 import { ISO_DATE } from "./format";
 import { invoiceTotals, isRevenueInvoice, receivedOf } from "./invoiceMoney";
 
@@ -139,6 +139,11 @@ function clientsFrom(clients, campaigns) {
       id: c.id,
       name: c.name,
       activeCampaigns,
+      // In-flight campaigns this client has no agreed number for. Reported per
+      // client rather than only per campaign because it is a fact about the
+      // RELATIONSHIP — work running for a brand that hasn't committed a spend
+      // is the kind of thing a founder wants to see against the client's name.
+      awaitingBudget: own.filter((x) => isActive(x) && budgetPending(x)).length,
       status: activeCampaigns > 0 ? "active" : "idle",
       health: null, // no health field exists on a client record
       // Newest first, so a card opens on what is happening now rather than on
@@ -153,6 +158,10 @@ function clientsFrom(clients, campaigns) {
           stage: PIPELINE.find((p) => p.id === normStage(x.stage))?.label || "Draft",
           progress: Math.max(0, Math.min(100, Number(x.progress) || 0)),
           live: isActive(x),
+          // So the card's back can mark the row. The stage says where the
+          // campaign is; this says the one thing about it that the stage
+          // cannot — that it is moving without a number behind it.
+          budgetPending: budgetPending(x),
         })),
     };
   });
@@ -161,6 +170,7 @@ function clientsFrom(clients, campaigns) {
     total: names.length,
     active: names.filter((n) => n.status === "active").length,
     idle: names.filter((n) => n.status === "idle").length,
+    awaitingBudget: names.filter((n) => n.awaitingBudget > 0).length,
     healthy: null,
     atRisk: null,
     critical: null,
@@ -279,7 +289,7 @@ function healthFrom({ campaigns, team, clients }) {
    in a state that needs the founder to act — a quote awaiting review, an
    invoice past its due date, an inbound brand or creator application nobody
    has answered. Each carries the id of the document it came from. */
-function decisionsFrom({ quotes, invoices, clientRequests, creatorRequests }) {
+function decisionsFrom({ campaigns, quotes, invoices, clientRequests, creatorRequests }) {
   const out = [];
 
   for (const q of quotes || []) {
@@ -323,6 +333,27 @@ function decisionsFrom({ quotes, invoices, clientRequests, creatorRequests }) {
       impactLabel: "Creator application",
       deadline: null,
       tag: r.name || r.handle || "Creator",
+    });
+  }
+
+  /* Campaigns running without a budget. A campaign can be raised before the
+     client has agreed a number — the brief locks, the team is staffed, the
+     roster delivers — but the client PO cannot be recorded against it, so the
+     money never starts moving until somebody sets one. That is exactly this
+     section's subject: a real record, in a state, waiting on a decision.
+
+     Settled campaigns are skipped. One that reached payment_done without a
+     budget on file is history, not a decision — there is nothing left to
+     allocate. */
+  for (const c of campaigns || []) {
+    if (c.deleted || !budgetPending(c)) continue;
+    if (normStage(c.stage) === "payment_done") continue;
+    out.push({
+      id: `cb:${c.id}`,
+      title: `Allocate a budget for ${c.name || "an unnamed campaign"}`,
+      impactLabel: "Raised without one — the client PO can't be recorded until it is set",
+      deadline: ISO_DATE.test(c.end || "") ? `campaign ends ${c.end}` : null,
+      tag: c.client || "Campaign",
     });
   }
 
@@ -424,11 +455,18 @@ export function buildSummary(sources = {}, colors = {}) {
 
     health: healthFrom({ campaigns, team, clients: clientStats }),
     revenue: revenueFrom(invoices),
-    campaigns: { stages: stagesFrom(campaigns) },
+    campaigns: {
+      stages: stagesFrom(campaigns),
+      // In-flight campaigns with no budget agreed. Counted here rather than in
+      // stagesFrom because it is NOT a stage — it cuts across draft, brief
+      // locked and team assigned, and a campaign in any of them is otherwise
+      // progressing normally.
+      awaitingBudget: (campaigns || []).filter((c) => !c.deleted && isActive(c) && budgetPending(c)).length,
+    },
     clients: clientStats,
     team,
 
-    decisions: decisionsFrom({ quotes, invoices, clientRequests, creatorRequests }),
+    decisions: decisionsFrom({ campaigns, quotes, invoices, clientRequests, creatorRequests }),
     performance: performanceFrom({ invoices, campaigns }, colors),
     growth: growthFrom(campaigns),
   };

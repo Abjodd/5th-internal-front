@@ -62,7 +62,10 @@ const showAmt = (n, r) => isAccounts(r) ? fmtFull(n) : "₹ ——";
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 function fmtFull(n) { return "₹" + (n || 0).toLocaleString("en-IN"); }
-function fmtPct(n)  { return `${Number(n || 0).toFixed(1)}%`; }
+// Null is "not measurable", not zero — a campaign with no budget has no margin
+// percentage, and printing "0.0%" would have the P&L's own colour rule paint it
+// red as though the agency were losing money on it.
+function fmtPct(n)  { return n == null ? "—" : `${Number(n).toFixed(1)}%`; }
 
 // ── MARGIN MODEL ──────────────────────────────────────────────────────────────
 // One model, the same arithmetic IM Financials shows: the client's budget splits
@@ -74,14 +77,22 @@ function fmtPct(n)  { return `${Number(n || 0).toFixed(1)}%`; }
 // fields. Every P&L reported two invented percentages as the commercials while
 // `creatorBudget`, the number the brief actually collects, went unused. Deriving
 // it means the two pages cannot disagree again.
+//
+// `pending` is true for a campaign raised without a budget at all (see
+// hasBudget in lib/campaign.js). Every figure below is still 0 in that case,
+// because 0 is what the arithmetic gives — but the flag lets the screens
+// DRAWING them tell "no commercials agreed yet" from "commercials agreed at
+// zero", and `grossPct` goes null rather than reporting a confident 0.0% that
+// the margin colouring would then paint red as an underperforming campaign.
 function calcMargin(clientBudget, creatorBudget) {
   const budget    = clientBudget || 0;
+  const pending   = !(Number.isFinite(Number(clientBudget)) && Number(clientBudget) > 0);
   // Clamped: a creator pool larger than the budget is a data error, not a
   // negative agency fee.
   const opsBudget = Math.min(Math.max(creatorBudget || 0, 0), budget);
   const agencyFee = budget - opsBudget;
-  return { opsBudget, agencyFee, clientTotal:budget, grossProfit:agencyFee,
-           grossPct: budget > 0 ? (agencyFee / budget) * 100 : 0 };
+  return { opsBudget, agencyFee, clientTotal:budget, grossProfit:agencyFee, pending,
+           grossPct: budget > 0 ? (agencyFee / budget) * 100 : null };
 }
 
 // ── PO LEDGER MODEL ───────────────────────────────────────────────────────────
@@ -762,7 +773,7 @@ function TabDashboard({ role, invoices, expenses, setTab, anomalies, pos, campsR
             <div key={c.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:`1px solid ${T.border}` }}>
               <div style={{ flex:1 }}>
                 <div style={{ fontSize:11.5, fontWeight:500, color:T.text }}>{c.name}</div>
-                <div style={{ fontSize:9.5, color:T.sub }}>{c.client} · Budget: {fmtINR(c.budget)}</div>
+                <div style={{ fontSize:9.5, color:T.sub }}>{c.client} · Budget: {c.budget > 0 ? fmtINR(c.budget) : "not allocated"}</div>
               </div>
               <span style={{ fontSize:10, color:T.amber, fontStyle:"italic" }}>{MONEY_WAIT[normStage(c.stage)]}</span>
             </div>
@@ -784,8 +795,14 @@ function TabDashboard({ role, invoices, expenses, setTab, anomalies, pos, campsR
             // `status === "paid"` made an open ₹10L invoice read as ₹0 invoiced,
             // which is the one number this row exists to show.
             const campInv   = invoices.filter(i => i.campaign === c.id && i.type !== "credit_note").reduce((s, i) => s + (i.amount || 0), 0);
-            const pct       = c.budget > 0 ? Math.min(100, (campSpend / c.budget) * 100) : 0;
-            const over      = campSpend > c.budget;
+            // A campaign with no budget has nothing to track spend against.
+            // The bar stays empty and the row says why: `over` compared
+            // against null was silently false, so the footer read "0% of
+            // budget used · ₹— remaining" — two figures that look measured and
+            // are not.
+            const noBudget  = !(c.budget > 0);
+            const pct       = noBudget ? 0 : Math.min(100, (campSpend / c.budget) * 100);
+            const over      = !noBudget && campSpend > c.budget;
             return (
               <div key={c.id} style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:7, padding:"12px 14px", marginBottom:8 }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
@@ -795,7 +812,7 @@ function TabDashboard({ role, invoices, expenses, setTab, anomalies, pos, campsR
                     <span style={{ fontSize:8.5, color:T.sub, marginLeft:6, padding:"1px 5px", border:`1px solid ${T.border}`, borderRadius:3 }}>{stageLabel(c.stage)}</span>
                   </div>
                   <div style={{ display:"flex", gap:16, alignItems:"center" }}>
-                    {[["Budget",fmtINR(c.budget),T.text],["Spent",fmtINR(campSpend),over?T.red:T.text],["Invoiced",fmtINR(campInv),T.green]].map(([l,v,col])=>(
+                    {[["Budget",noBudget?"Not allocated":fmtINR(c.budget),noBudget?T.amber:T.text],["Spent",fmtINR(campSpend),over?T.red:T.text],["Invoiced",fmtINR(campInv),T.green]].map(([l,v,col])=>(
                       <div key={l} style={{ textAlign:"right" }}>
                         <div style={{ fontSize:8.5, color:T.label }}>{l}</div>
                         <div style={{ fontSize:11.5, fontWeight:600, color:col }}>{v}</div>
@@ -807,8 +824,12 @@ function TabDashboard({ role, invoices, expenses, setTab, anomalies, pos, campsR
                   <div style={{ height:4, borderRadius:2, background:over?T.red:pct>80?T.amber:T.accent, width:`${pct}%`, transition:"width 0.3s" }} />
                 </div>
                 <div style={{ display:"flex", justifyContent:"space-between", marginTop:3 }}>
-                  <span style={{ fontSize:8.5, color:T.label }}>{pct.toFixed(0)}% of budget used</span>
-                  <span style={{ fontSize:8.5, color:over?T.red:T.green }}>{over?`Over by ${fmtINR(campSpend-c.budget)}`:`${fmtINR(c.budget-campSpend)} remaining`}</span>
+                  {noBudget
+                    ? <span style={{ fontSize:8.5, color:T.amber }}>No budget allocated — {fmtINR(campSpend)} committed against a figure the client hasn't agreed yet</span>
+                    : <>
+                        <span style={{ fontSize:8.5, color:T.label }}>{pct.toFixed(0)}% of budget used</span>
+                        <span style={{ fontSize:8.5, color:over?T.red:T.green }}>{over?`Over by ${fmtINR(campSpend-c.budget)}`:`${fmtINR(c.budget-campSpend)} remaining`}</span>
+                      </>}
                 </div>
               </div>
             );
@@ -1136,7 +1157,7 @@ function TabQuotations({ role, quotes, setQuotes, campsRef }) {
   const simulateBriefLock = () => {
     const camp = campsRef[1] || campsRef[0];
     if (!camp) return;
-    const newQ = { id:newId("QT-AUTO"), client:camp.client, brandId:camp.brandId || null, label:`${camp.name} — Auto-Generated Quote`, status:"pending_review", isAutoGenerated:true, campaignId:camp.id, createdDate:todayStr(), validTill:"", isRetainerClient:true, marginPct:35, agencyFeePct:0, agencyFeeType:"baked_in", lines:[{ desc:`Influencer Marketing — ${camp.name}`, sac:"998361", qty:1, rate:camp.budget, gstRate:18 }], notes:"Auto-generated on brief lock. Review and edit before sending." };
+    const newQ = { id:newId("QT-AUTO"), client:camp.client, brandId:camp.brandId || null, label:`${camp.name} — Auto-Generated Quote`, status:"pending_review", isAutoGenerated:true, campaignId:camp.id, createdDate:todayStr(), validTill:"", isRetainerClient:true, marginPct:35, agencyFeePct:0, agencyFeeType:"baked_in", lines:[{ desc:`Influencer Marketing — ${camp.name}`, sac:"998361", qty:1, rate:camp.budget || 0, gstRate:18 }], notes:"Auto-generated on brief lock. Review and edit before sending." };
     setQuotes(p => [newQ, ...p]);
     setSelId(newQ.id);
   };
@@ -1530,8 +1551,18 @@ function TabCampaignPL({ role, expenses, setExpenses, invoices, campsRef }) {
           {/* Read-only on purpose. The margin used to be an editable % that
               overrode a field the campaign never had; it is now the split the
               brief actually agreed, so it changes on the campaign or not at all. */}
-          <div style={{ fontSize:9.5, color:T.label, marginBottom:10 }}>Derived from the brief — edit the creator budget on the campaign to change this.</div>
-          {[["Client budget", fmtFull(camp.budget), T.text], ["Creator pool (ops budget)", fmtFull(m.opsBudget), T.teal], ["Agency fee (stays with us)", fmtFull(m.agencyFee), T.accent], ["Gross margin %", fmtPct(m.grossPct), m.grossPct >= 30 ? T.green : T.red], ["Invoiced to client", fmtFull(campInvoiced), T.text], ["Received", fmtFull(campReceived), campReceived >= campInvoiced && campInvoiced > 0 ? T.green : T.amber]].map(([l, v, c]) => (
+          <div style={{ fontSize:9.5, color:T.label, marginBottom:10 }}>
+            {m.pending
+              ? "This campaign was raised without a budget. Allocate one on the campaign and the commercials fill in here."
+              : "Derived from the brief — edit the creator budget on the campaign to change this."}
+          </div>
+          {/* Every split figure is a share of a budget that doesn't exist yet,
+              so they are named as pending rather than printed as ₹0 — a P&L
+              reading "client budget ₹0, margin 0.0%" in red describes a
+              campaign losing money, which is the opposite of the truth. What
+              HAS happened is still shown: invoiced and received are real
+              records, and both are legitimately zero here. */}
+          {[["Client budget", m.pending ? "Not allocated" : fmtFull(camp.budget), m.pending ? T.amber : T.text], ["Creator pool (ops budget)", m.pending ? "—" : fmtFull(m.opsBudget), T.teal], ["Agency fee (stays with us)", m.pending ? "—" : fmtFull(m.agencyFee), T.accent], ["Gross margin %", fmtPct(m.grossPct), m.grossPct == null ? T.sub : m.grossPct >= 30 ? T.green : T.red], ["Invoiced to client", fmtFull(campInvoiced), T.text], ["Received", fmtFull(campReceived), campReceived >= campInvoiced && campInvoiced > 0 ? T.green : T.amber]].map(([l, v, c]) => (
             <div key={l} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:`1px solid ${T.border}` }}>
               <span style={{ fontSize:11, color:T.sub }}>{l}</span>
               <span style={{ fontSize:11.5, fontWeight:500, color:c }}>{v}</span>
@@ -1763,7 +1794,11 @@ export default function InternalBilling() {
           name: c.name,
           client: c.client,
           brandId: c.brandId || null,
-          budget: c.budget || 0,
+          // ?? not ||, so a campaign raised without a budget arrives here as
+          // null rather than as a confident ₹0. Everything downstream — the
+          // tracker bar, the P&L commercials, the margin colouring — keys off
+          // that distinction.
+          budget: c.budget ?? null,
           creatorBudget: creatorBudgetOf(c),
           // Normalised on the way in, so a legacy 16-stage id can never reach
           // a label or a filter here. Billing reads the stage; it never writes it.

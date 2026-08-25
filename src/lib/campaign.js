@@ -116,11 +116,36 @@ export function createdAtOf(camp) {
 // change to one silently put the Financials tab and the Campaign P&L back into
 // disagreement — the exact bug that motivated deriving these at all.
 
+// ── BUDGET ───────────────────────────────────────────────────────────────────
+// A campaign can be raised with NO budget at all. The client has agreed to the
+// work and not yet to a number, and that is a normal place to be: holding the
+// campaign in a drawer until they agree one means the brief can't be locked,
+// the team can't be staffed and the roster can't be built — none of which the
+// number has any bearing on.
+//
+// The budget is ABSENT (null), never 0. fmtINR(0) is "₹0" — a real figure, and
+// a wrong one — while fmtINR(null) is "—". Every screen that divides by the
+// budget or measures committed spend against it has to be able to tell "no
+// number agreed yet" from "agreed at nothing", and 0 cannot say that.
+//
+// Nothing is stored to mark the state: a campaign with no budget IS the state.
+// A `budgetPending` flag would be a second witness to the same fact, free to
+// disagree with it — the same reason the execution track is derived.
+export const hasBudget     = c => Number.isFinite(Number(c?.budget)) && Number(c.budget) > 0;
+export const budgetPending = c => !hasBudget(c);
+
 // Creator budget — the slice of the total budget that pays creators. It's set
 // explicitly on the Commercial step of the New Campaign wizard; campaigns
 // created before that step existed fall back to the 60% split that used to be
 // hardcoded at creation, so their financials read the same as they always did.
-export const creatorBudgetOf = c => c?.creatorBudget || Math.round((c?.budget || 0) * 0.6);
+//
+// NULL when there is no total to take a slice of. This used to fall through to
+// `Math.round(0 * 0.6)` and hand every caller a confident 0, which reads as a
+// pool of nothing rather than as no pool at all — the Creators tab drew
+// "₹4L of ₹0" in over-budget red the moment a creator was locked on a campaign
+// whose number simply hadn't been agreed yet.
+export const creatorBudgetOf = c =>
+  c?.creatorBudget || (hasBudget(c) ? Math.round(c.budget * 0.6) : null);
 
 export const numReqOf = c => c?.numReq || 5;
 
@@ -192,7 +217,12 @@ export const delivDoneOf = (camp, cr) =>
 
 // Even per-head slice of the creator budget — an "approx" planning number, not
 // a commitment: the real per-creator fee is negotiated on the Creators tab.
-export const perCreatorOf = c => Math.round(creatorBudgetOf(c) / numReqOf(c));
+// Null when there is no pool to slice, so a budgetless campaign quotes no
+// per-head target rather than an authoritative-looking ₹0.
+export const perCreatorOf = c => {
+  const pool = creatorBudgetOf(c);
+  return pool == null ? null : Math.round(pool / numReqOf(c));
+};
 
 // What we pay a creator for this campaign.
 //
@@ -298,6 +328,29 @@ export function rosterGap(camp, creators = camp?.creators) {
   return `${locked} of ${req} creators locked`;
 }
 
+// ── THE PO GATE ──────────────────────────────────────────────────────────────
+// Everything standing between a campaign and its client PO, in words.
+//
+// Two conditions, and the budget one is the reason this exists as its own
+// function rather than staying a bare rosterGap() call at the button. The PO is
+// where a budgetless campaign stops: the PO's amount IS the budget and the
+// client invoice is drawn from it, so recording one against a campaign whose
+// number was never agreed would invent the figure the client is billed.
+//
+// Everything BEFORE this point stays open to a budgetless campaign on purpose —
+// lock the brief, staff the team, build and lock the roster, deliver. The work
+// does not wait on the number; only the billing does.
+//
+// Read by the reducer, the workflow button and its hint, so a blocked PO says
+// the same thing wherever you meet it.
+export function poGaps(camp, creators = camp?.creators) {
+  const gap = rosterGap(camp, creators);
+  return [
+    ...(hasBudget(camp) ? [] : ["no budget allocated"]),
+    ...(gap ? [gap] : []),
+  ];
+}
+
 // ── THE DERIVED (EXECUTION) TRACK ────────────────────────────────────────────
 // Everything below answers "where is the WORK", never "where is the money".
 // It lives here rather than in the Campaigns page because the campaign header,
@@ -367,10 +420,17 @@ export const execDone = c => { const s = execStats(c); return s.locked > 0 && s.
 // campaign can't be priced or staffed without. Holding the lock for them stalled
 // campaigns whose brief was otherwise complete until someone invented a
 // sentence. Still on the brief, still editable until the PO.
+//
+// The creator budget is required only when there IS a budget to split. A
+// campaign raised without one (see hasBudget) is not missing a field — the
+// number genuinely hasn't been agreed with the client yet, and gating the lock
+// on it would trap the campaign in Draft: no team, no roster, no delivery,
+// none of which the budget has any bearing on. The money is gated where money
+// is actually committed instead — the client PO (see poGaps).
 export const briefGaps = c => [
   ...(String(c?.brief?.objective || "").trim() ? [] : ["Objective"]),
   ...((c?.brief?.deliverables || []).length ? [] : ["Deliverables"]),
-  ...(creatorBudgetOf(c) > 0 ? [] : ["Creator budget"]),
+  ...(!hasBudget(c) || creatorBudgetOf(c) > 0 ? [] : ["Creator budget"]),
 ];
 
 // Which EXEC_NODES node the campaign is standing on. Every branch reads state

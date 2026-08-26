@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, createContext, useContext } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -7,7 +7,8 @@ import {
 } from "lucide-react";
 import { SECTIONS, canAccess, getRole } from "../routes/sections";
 import { useAuth } from "../context/AuthContext";
-import { ClientsAPI, UsersAPI } from "../lib/api";
+import { ClientsAPI, UsersAPI, CampaignsAPI } from "../lib/api";
+import { seesAllCampaigns } from "../lib/campaign";
 
 const SECTION_ICONS = {
   LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck, Building2,
@@ -615,13 +616,14 @@ function BrandSelect({ brands, value, onChange }) {
               borderRadius: 12, boxShadow: F.shadowLg, padding: "6px 0",
             }}
           >
-            {brands.length > 7 && (
+            {brands.length > 1 && (
               <div style={{ padding: "4px 10px 8px" }}>
                 <input
                   autoFocus
                   value={q}
                   onChange={e => setQ(e.target.value)}
                   placeholder="Find a brand"
+                  aria-label="Find a brand"
                   style={{
                     width: "100%", padding: "7px 10px",
                     border: `1px solid ${F.hairline}`, borderRadius: 7,
@@ -775,6 +777,13 @@ export default function AppShell() {
     try { return sessionStorage.getItem("5av_brandFilter") || null; } catch { return null; }
   });
   const [brands, setBrands] = useState([]);
+  // Brand ids this user can actually reach, or null for company-wide roles.
+  // Kept apart from `brands`: the FILTER must only offer brands whose campaigns
+  // the user can open, while the create-campaign brand picker (which reads
+  // `brands` off the outlet context) still has to offer every brand in the
+  // business — you raise a campaign for a brand precisely because you are not
+  // on one yet.
+  const [reachable, setReachable] = useState(null);
 
   const handleBrandChange = (val) => {
     setBrandFilter(val);
@@ -794,14 +803,54 @@ export default function AppShell() {
           .map(c => ({ id: c.id, name: c.name, hasAvatar: c.hasAvatar, avatarUpdatedAt: c.avatarUpdatedAt }))
           .filter(b => b.name);
         setBrands(brandsList);
-        setBrandFilter(prev => (prev && !brandsList.some(b => b.id === prev) ? null : prev));
       })
       .catch(() => {});
+  };
+
+  // Assignment-scoped roles need to know which brands they can reach; company-
+  // wide roles skip the request entirely. A failure leaves `reachable` null —
+  // the filter falls back to showing every brand, which is the pre-existing
+  // behaviour and strictly better than silently hiding brands because one
+  // request did not land.
+  //
+  // brandScope(), not list(): this runs on every page, and the campaign list
+  // carries every full document plus a per-campaign creators join. The scope
+  // endpoint answers the same question with a `distinct` and returns a handful
+  // of ids.
+  const loadReachable = () => {
+    if (seesAllCampaigns(user?.role) || !user?.teamId) { setReachable(null); return; }
+    CampaignsAPI.brandScope(user.teamId)
+      .then(ids => setReachable(new Set(ids || [])))
+      .catch(() => setReachable(null));
   };
 
   useEffect(() => {
     loadBrands();
   }, []);
+
+  useEffect(() => {
+    loadReachable();
+  }, [user?.role, user?.teamId]);
+
+  // What the brand FILTER offers: every brand for a company-wide role, and for
+  // everyone else only the brands behind campaigns they're on.
+  //
+  // Memoised because the effect below depends on it. A fresh .filter() every
+  // render is a fresh array identity every render, which would re-run that
+  // effect on every render of the shell — for a check that can only change
+  // when `brands` or `reachable` does.
+  const filterBrands = useMemo(
+    () => (reachable ? brands.filter(b => reachable.has(b.id)) : brands),
+    [brands, reachable],
+  );
+
+  // The filter can only ever hold a brand it is still offering. Re-checked
+  // whenever either input moves, so a stale sessionStorage value — or one left
+  // by the last person signed in on this machine — is dropped rather than
+  // filtering every page down to nothing with no visible cause.
+  useEffect(() => {
+    if (brandFilter && !filterBrands.some(b => b.id === brandFilter)) handleBrandChange(null);
+  }, [brandFilter, filterBrands]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -934,7 +983,7 @@ export default function AppShell() {
               brand". The Summary scopes its own brand-bearing collections to
               match — see FounderSummary. */}
           <Pill>
-            <BrandSelect brands={brands} value={brandFilter} onChange={handleBrandChange} />
+            <BrandSelect brands={filterBrands} value={brandFilter} onChange={handleBrandChange} />
           </Pill>
 
           <Pill style={{ flex: "1 1 auto", minWidth: 0, justifyContent: "center", overflowX: "auto" }}>
@@ -952,11 +1001,13 @@ export default function AppShell() {
         </div>
       </NavCtx.Provider>
 
+      {/* filterBrands, not brands: the palette sets the same filter as the chip
+          in the top bar, so it must not offer a brand the chip won't. */}
       <CommandPalette
         open={searchOpen}
         onClose={() => setSearchOpen(false)}
         sections={visibleSections}
-        brands={brands}
+        brands={filterBrands}
         brandFilter={brandFilter}
         onBrand={handleBrandChange}
       />

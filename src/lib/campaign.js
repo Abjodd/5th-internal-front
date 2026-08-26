@@ -147,7 +147,19 @@ export const budgetPending = c => !hasBudget(c);
 export const creatorBudgetOf = c =>
   c?.creatorBudget || (hasBudget(c) ? Math.round(c.budget * 0.6) : null);
 
-export const numReqOf = c => c?.numReq || 5;
+// How many creators the campaign is scoped for — NULL when nobody has said yet.
+//
+// This was `c?.numReq || 5`. An unset count silently became five: a number no
+// one chose, which then drove the roster gate, the "spots remaining" counter,
+// the PO blocker and the execution denominator. Exactly the invented-precision
+// problem the per-creator budget slice had — and worse here, because a fabricated
+// target makes a complete roster read incomplete and holds the campaign back.
+//
+// A campaign raised without an agreed budget can now be raised without an agreed
+// scope too (the two are settled in the same conversation with the client), so
+// "not decided yet" is a real state the whole app has to carry rather than paper
+// over. Callers must handle null; the ones that can't compute without it say so.
+export const numReqOf = c => { const n = Number(c?.numReq); return n > 0 ? n : null; };
 
 // ── DELIVERABLES PLANNING ────────────────────────────────────────────────────
 // `deliverablesPerCreator` is the PLAN — the default a creator is briefed with —
@@ -157,20 +169,40 @@ export const numReqOf = c => c?.numReq || 5;
 //
 // Each creator carries an optional `numDeliverables` overriding the plan for
 // that row only. Nothing to set for the common case.
+//
+// Unset means one post each, and stays that way. Unlike numReqOf above, this
+// default is NOT an invention: "a deliverable per creator" is what an absent
+// plan has always meant here, the client portal mirrors this exact rule
+// (portalMetrics.perCreatorDeliverables in 5th-avenue-client-front), and every
+// campaign in the data predates the field being optional. Making it null would
+// retroactively re-read those campaigns AND put the two apps into disagreement
+// — a completed campaign showing the brand "2/2" would start showing "—".
+//
+// The scope form can still be left at 0: that stores null, which reads back as
+// this default for the per-creator plan while numReq stays genuinely unset —
+// and numReq alone is enough for totalDelivOf and the roster gate to say "not
+// scoped yet" rather than invent one.
 export const perCreatorDelivOf = c => Number(c?.deliverablesPerCreator) || 1;
 
 // What THIS creator owes — their own override, else the campaign plan.
 export const delivTargetOf = (camp, cr) => Number(cr?.numDeliverables) || perCreatorDelivOf(camp);
 
-// Total posts the campaign expects. Locked creators contribute their real
-// target; slots not yet filled contribute the plan, so the number is meaningful
-// from the moment the campaign is created and only gets more accurate as the
-// roster fills. Never below the locked creators' own sum — a campaign that
-// over-locked its target still owes every post it committed to.
+// Total posts the campaign expects, or NULL when that cannot be known. Locked
+// creators contribute their real target; slots not yet filled contribute the
+// plan, so the number is meaningful from the moment the campaign is created and
+// only gets more accurate as the roster fills. Never below the locked creators'
+// own sum — a campaign that over-locked its target still owes every post it
+// committed to.
+//
+// NULL when the campaign has no agreed creator count: how many slots are still
+// to fill is then unknown, so any figure would be the locked creators' subtotal
+// passed off as the campaign's total.
 export function totalDelivOf(camp) {
+  const req = numReqOf(camp);
+  if (req == null) return null;
   const locked = (camp?.creators || []).filter(isLockedCreator);
   const committed = locked.reduce((s, cr) => s + delivTargetOf(camp, cr), 0);
-  const unfilled = Math.max(0, numReqOf(camp) - locked.length);
+  const unfilled = Math.max(0, req - locked.length);
   return committed + unfilled * perCreatorDelivOf(camp);
 }
 
@@ -215,14 +247,38 @@ export const trackedPostsOf = cr => Number(cr?.tracking?.postsCounted) || 0;
 export const delivDoneOf = (camp, cr) =>
   Math.min(trackedPostsOf(cr), liveLinksOf(cr).length, delivTargetOf(camp, cr));
 
-// Even per-head slice of the creator budget — an "approx" planning number, not
-// a commitment: the real per-creator fee is negotiated on the Creators tab.
-// Null when there is no pool to slice, so a budgetless campaign quotes no
-// per-head target rather than an authoritative-looking ₹0.
-export const perCreatorOf = c => {
-  const pool = creatorBudgetOf(c);
-  return pool == null ? null : Math.round(pool / numReqOf(c));
-};
+// Has this creator finished? One definition, because execStats counts by it and
+// two screens draw a tick from it, and three hand-rolled `done >= target`
+// comparisons are three chances to disagree.
+export const creatorLive = (camp, cr) => delivDoneOf(camp, cr) >= delivTargetOf(camp, cr);
+
+// ── VISIBILITY ───────────────────────────────────────────────────────────────
+// Who can see which campaign. Lives here rather than in pages/Campaigns because
+// the app shell's brand filter has to answer the same question — it was listing
+// every brand in the business to a user whose campaign board showed four, which
+// reads as "there is data here you are not being shown" and offers filters that
+// resolve to an empty board.
+//
+// Founder sees everything. Accounts is company-wide by design (they settle the
+// books for campaigns nobody assigned them to — see Billing's `seesAll`).
+// Everyone else sees the campaigns they are ON, in any of the four role slots.
+const COMPANY_WIDE_ROLES = ["founder", "accounts", "accounts_head", "accounts_exec"];
+export const seesAllCampaigns = role => COMPANY_WIDE_ROLES.includes(role);
+
+export const canSeeCampaign = (c, role, teamId) =>
+  seesAllCampaigns(role) ||
+  [c?.createdBy, c?.amId, c?.cmId, c?.eaId].includes(teamId);
+
+// No reachableBrandIds() here. The app shell needs the same answer, but deriving
+// it in the browser meant pulling every campaign document (plus a creators join
+// per campaign) on every page just to fill a dropdown. It is a `distinct` on one
+// indexed field, so it belongs in the database: GET /api/campaigns/brand-scope.
+
+// No perCreatorOf here any more. It sliced the creator pool evenly by head
+// count and every screen printed the result as "≈ ₹X per creator" — a target
+// nobody set, on a roster where fees are negotiated one at a time and rarely
+// match. The pool and the fees actually committed against it are both real
+// numbers; their quotient was not.
 
 // What we pay a creator for this campaign.
 //
@@ -316,14 +372,22 @@ export const expenseIdFor = (campId, crId) => `EXP-${campId}-${crId}`;
 // the one it is about to write.
 export const lockedCountOf = (camp, creators = camp?.creators) =>
   (creators || []).filter(isLockedCreator).length;
-export const rosterReady = (camp, creators = camp?.creators) =>
-  lockedCountOf(camp, creators) >= numReqOf(camp);
+// A roster is confirmed when every planned slot holds a locked creator. With no
+// planned count there is nothing to be complete against, so it stays unconfirmed
+// until someone sets the scope — the same shape as a budgetless campaign, which
+// waits at the PO until someone sets the budget. Neither blocks the actual work.
+export const rosterReady = (camp, creators = camp?.creators) => {
+  const req = numReqOf(camp);
+  return req != null && lockedCountOf(camp, creators) >= req;
+};
 
 // Why the roster isn't confirmed, in words, or null when it is. Shared so the
 // PO button's hint, the reducer's rejection and the Creators tab all say the
 // same thing rather than three near-misses that drift apart.
 export function rosterGap(camp, creators = camp?.creators) {
-  const locked = lockedCountOf(camp, creators), req = numReqOf(camp);
+  const req = numReqOf(camp);
+  const locked = lockedCountOf(camp, creators);
+  if (req == null) return `creator count not set (${locked} locked so far)`;
   if (locked >= req) return null;
   return `${locked} of ${req} creators locked`;
 }
@@ -387,7 +451,10 @@ export const assetIn = a => !!a?.status && a.status !== "yet_to_receive";
 // per creator, and the real counts are returned so the UI can state them.
 export function execStats(c){
   const lockd = (c?.creators || []).filter(isLockedCreator);
-  const target= Math.max(numReqOf(c), lockd.length);
+  // With no planned count, the roster we actually have IS the denominator —
+  // progress over what has been committed, which is the only thing there is to
+  // measure. `?? 0` not `|| 0` so a real target of 0 is respected.
+  const target= Math.max(numReqOf(c) ?? 0, lockd.length);
   const delivered = lockd.reduce((s, x) => s + delivDoneOf(c, x), 0);
   const expected  = lockd.reduce((s, x) => s + delivTargetOf(c, x), 0);
   const done = {
@@ -395,7 +462,7 @@ export function execStats(c){
     concept: lockd.filter(x => assetIn(x.concept)).length,
     video:   lockd.filter(x => assetIn(x.demo)).length,
     // Creators with every post up — what "live" means as a headcount.
-    live:    lockd.filter(x => delivDoneOf(c, x) >= delivTargetOf(c, x)).length,
+    live:    lockd.filter(x => creatorLive(c, x)).length,
   };
   // Fractional credit for partially-posted creators, in creator-equivalents so
   // it stays commensurate with the other three milestones.

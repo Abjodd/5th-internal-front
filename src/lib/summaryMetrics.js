@@ -119,7 +119,18 @@ function clientsFrom(clients, campaigns) {
   // only the name, and dropping them would under-report a client's book.
   const campaignsByClient = new Map();
   for (const c of campaigns || []) {
-    for (const key of [c.brandId, c.client]) {
+    // new Set, so a campaign lands in each bucket ONCE however many of its keys
+    // happen to be the same string. brandId is normally a slug and `client` the
+    // display name ("freshbite-foods" / "FreshBite Foods"), so they rarely
+    // collide — but a brand named in lower case matches its own slug exactly
+    // ("random" / "random"), and both passes then pushed into the one bucket.
+    // The client's card listed that campaign twice and counted it twice, while
+    // the Campaigns board — which reads the collection directly — showed one.
+    //
+    // Deduping the KEYS rather than the resulting list is what makes this
+    // structural: any future alias added to this loop is covered by the same
+    // Set, instead of needing its own guard.
+    for (const key of new Set([c.brandId, c.client])) {
       if (!key) continue;
       if (!campaignsByClient.has(key)) campaignsByClient.set(key, []);
       campaignsByClient.get(key).push(c);

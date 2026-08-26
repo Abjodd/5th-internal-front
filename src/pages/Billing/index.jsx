@@ -9,7 +9,7 @@ import { useOutletContext, useSearchParams } from "react-router-dom";
 import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, CampaignsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { fmtCompact, fmtINR, prettyDate, todayISO } from "../../lib/format";
-import { receivedOf, isOverdue } from "../../lib/invoiceMoney";
+import { receivedOf, isOverdue, scheduleOf } from "../../lib/invoiceMoney";
 import { creatorBudgetOf, creatorKeyOf, normStage, stageLabel } from "../../lib/campaign";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
@@ -21,6 +21,28 @@ const INP = {
   width:"100%", padding:"7px 10px", borderRadius:5,
   background:T.raised, border:`1px solid ${T.border}`,
   color:T.text, fontSize:11.5, fontFamily:"'Sora'", outline:"none",
+};
+
+// INP plus a caret, for <select>. index.css strips the native one from every
+// select in the app, so a dropdown left on INP alone is pixel-identical to
+// static text — which is how the Campaign P&L campaign picker came to read as a
+// heading rather than the control that changes what the whole page is about.
+// The five selects inside forms got away with it only because a <Lbl> sits
+// above them saying what they are.
+//
+// Drawn as a background image rather than the absolutely-positioned ▼ span used
+// elsewhere: that pattern needs a wrapper element around every select, and this
+// is a style object the existing call sites already spread. `backgroundColor`,
+// not the `background` shorthand INP uses — the shorthand would reset the image.
+const SEL = {
+  ...INP,
+  background: undefined,
+  backgroundColor: T.raised,
+  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='${T.sub.replace("#","%23")}' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
+  backgroundRepeat: "no-repeat",
+  backgroundPosition: "right 9px center",
+  paddingRight: 24,
+  cursor: "pointer",
 };
 
 const FY = "2025–26";
@@ -37,8 +59,8 @@ const newId = (prefix) =>
 
 // ── ROLES ─────────────────────────────────────────────────────────────────────
 // NOTE: "pcm" (Partner Category Manager) gets accounts-tier financial
-// visibility + PO rights, scoped to the campaign/event they select — see
-// canRaisePO / isAccounts below and the event filter on the Dashboard,
+// visibility + PO rights, scoped to the campaign they select — see
+// canRaisePO / isAccounts below and the campaign filter on the Dashboard,
 // Income, Spending and Campaign P&L tabs. Every other operating role
 // (Category Manager, EA, Brand/Account Manager) stays revenue-blind:
 // showAmt() masks amounts to "₹ ——" for them everywhere in this file.
@@ -54,7 +76,7 @@ const ROLES = [
 // ── ROLE GATES ────────────────────────────────────────────────────────────────
 const isFounder = r => r === "founder";
 // Accounts-tier visibility: Founder, Accounts team, and PCM (full billing
-// access to their own event's numbers).
+// access to their own campaign's numbers).
 const isAccounts = r => r === "founder" || r === "accounts" || r === "pcm";
 const isPCM = r => r === "pcm";
 const canRaisePO = r => ["founder","cm","ea","pcm"].includes(r);
@@ -390,7 +412,11 @@ function StatCard({ label, value, sub, col, permission, role }) {
 function InvDetail({ inv, role, onAccConfirm, onFounderConfirm, onUploadPO }) {
   if (!inv) return <div style={{ textAlign:"center", paddingTop:60, color:T.label, fontSize:11 }}>Select an invoice to view details</div>;
   const gstAmt = Math.abs(inv.amount || 0) * ((inv.gstRate || 18) / 100);
-  const schedType = inv.schedule && inv.schedule.type;
+  // scheduleOf, not inv.schedule: a paid invoice has no outstanding legs, and
+  // reading the stored ones raw is what let this panel print "PAID" in the
+  // header above an "Advance (50%) PENDING" row.
+  const schedule = scheduleOf(inv);
+  const schedType = schedule && schedule.type;
   return (
     <div style={{ padding:"20px 24px", overflowY:"auto", height:"100%" }}>
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:14 }}>
@@ -431,7 +457,7 @@ function InvDetail({ inv, role, onAccConfirm, onFounderConfirm, onUploadPO }) {
       ) : (
         <div style={{ marginBottom:14 }}>
           {["advance","final"].map(t => {
-            const s = inv.schedule && inv.schedule[t];
+            const s = schedule && schedule[t];
             if (!s) return null;
             return (
               <div key={t} style={{ padding:"10px 12px", background:T.raised, borderRadius:6, marginBottom:6, border:`1px solid ${s.status === "paid" ? `${T.green}25` : T.border}` }}>
@@ -443,7 +469,7 @@ function InvDetail({ inv, role, onAccConfirm, onFounderConfirm, onUploadPO }) {
                 </div>
                 {s.status === "paid" && (
                   <div style={{ fontSize:9.5, color:T.green }}>
-                    Paid {s.paidDate} · UTR: {s.utr}
+                    Paid {s.paidDate || "—"}{s.utr ? ` · UTR: ${s.utr}` : ""}
                     {s.razorpaySettled === false && <span style={{ color:T.teal }}> · Settling T+2</span>}
                     {s.settledDate && <span> · Settled {s.settledDate}</span>}
                   </div>
@@ -1075,8 +1101,8 @@ function TabPurchaseOrders({ role, currentUser, pos, setPos, setExpenses, client
             <div style={{ fontFamily:"'Newsreader',serif", fontSize:18, fontWeight:600, color:T.text, fontStyle:"italic", marginBottom:16 }}>New Purchase Order</div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:12 }}>
               <div><Lbl style={{ display:"block", marginBottom:4 }}>Vendor / MCN name *</Lbl><input value={draft.vendor} onChange={e => ud("vendor", e.target.value)} placeholder="e.g. StarTalent MCN" style={{ ...INP }} /></div>
-              <div><Lbl style={{ display:"block", marginBottom:4 }}>Type</Lbl><select value={draft.vendorType} onChange={e => ud("vendorType", e.target.value)} style={{ ...INP }}><option value="creator_mcn">Creator MCN</option><option value="vendor">Production Vendor</option></select></div>
-              <div><Lbl style={{ display:"block", marginBottom:4 }}>Campaign</Lbl><select value={draft.campaign} onChange={e => ud("campaign", e.target.value)} style={{ ...INP }}><option value="">— None —</option>{campsRef.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+              <div><Lbl style={{ display:"block", marginBottom:4 }}>Type</Lbl><select value={draft.vendorType} onChange={e => ud("vendorType", e.target.value)} style={{ ...SEL }}><option value="creator_mcn">Creator MCN</option><option value="vendor">Production Vendor</option></select></div>
+              <div><Lbl style={{ display:"block", marginBottom:4 }}>Campaign</Lbl><select value={draft.campaign} onChange={e => ud("campaign", e.target.value)} style={{ ...SEL }}><option value="">— None —</option>{campsRef.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
               <div><Lbl style={{ display:"block", marginBottom:4 }}>Expected delivery</Lbl><DateInput value={draft.deliveryDate} onChange={v => ud("deliveryDate", v)} placeholder="Pick a date" style={{ ...INP }} /></div>
             </div>
             <div style={{ marginBottom:12 }}><Lbl style={{ display:"block", marginBottom:4 }}>Scope of work *</Lbl><textarea value={draft.scope} onChange={e => ud("scope", e.target.value)} rows={3} placeholder="Describe deliverables…" style={{ ...INP, resize:"vertical" }} /></div>
@@ -1088,7 +1114,7 @@ function TabPurchaseOrders({ role, currentUser, pos, setPos, setExpenses, client
                   <div style={{ fontSize:9, color:T.amber, marginTop:3 }}>Below threshold — PO optional</div>
                 )}
               </div>
-              <div><Lbl style={{ display:"block", marginBottom:4 }}>Payment</Lbl><select value={draft.paymentScheduleType} onChange={e => ud("paymentScheduleType", e.target.value)} style={{ ...INP }}><option value="single">Single payment</option><option value="advance_final">Advance + Final</option></select></div>
+              <div><Lbl style={{ display:"block", marginBottom:4 }}>Payment</Lbl><select value={draft.paymentScheduleType} onChange={e => ud("paymentScheduleType", e.target.value)} style={{ ...SEL }}><option value="single">Single payment</option><option value="advance_final">Advance + Final</option></select></div>
             </div>
             <div style={{ marginBottom:14 }}><Lbl style={{ display:"block", marginBottom:4 }}>Notes</Lbl><input value={draft.notes} onChange={e => ud("notes", e.target.value)} placeholder="Additional instructions…" style={{ ...INP }} /></div>
             <div style={{ display:"flex", gap:8 }}>
@@ -1231,7 +1257,7 @@ function TabQuotations({ role, quotes, setQuotes, campsRef }) {
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
                 <div><Lbl style={{ display:"block", marginBottom:3 }}>Margin %</Lbl><input type="number" value={draft.marginPct} onChange={e => setDraft(d => ({ ...d, marginPct:parseFloat(e.target.value)||0 }))} style={{ ...INP }} /></div>
                 <div><Lbl style={{ display:"block", marginBottom:3 }}>Agency fee %</Lbl><input type="number" value={draft.agencyFeePct} disabled={draft.isRetainerClient} onChange={e => setDraft(d => ({ ...d, agencyFeePct:parseFloat(e.target.value)||0 }))} style={{ ...INP, opacity:draft.isRetainerClient?0.4:1 }} /></div>
-                <div><Lbl style={{ display:"block", marginBottom:3 }}>Fee type</Lbl><select value={draft.agencyFeeType} disabled={draft.isRetainerClient} onChange={e => setDraft(d => ({ ...d, agencyFeeType:e.target.value }))} style={{ ...INP, opacity:draft.isRetainerClient?0.4:1 }}><option value="over_above">Over &amp; above</option><option value="baked_in">Baked in</option></select></div>
+                <div><Lbl style={{ display:"block", marginBottom:3 }}>Fee type</Lbl><select value={draft.agencyFeeType} disabled={draft.isRetainerClient} onChange={e => setDraft(d => ({ ...d, agencyFeeType:e.target.value }))} style={{ ...SEL, cursor:draft.isRetainerClient?"not-allowed":"pointer", opacity:draft.isRetainerClient?0.4:1 }}><option value="over_above">Over &amp; above</option><option value="baked_in">Baked in</option></select></div>
               </div>
               <QuoteMarginPreview lines={draft.lines} marginPct={draft.marginPct} agencyFeePct={draft.agencyFeePct} agencyFeeType={draft.agencyFeeType} isRetainerClient={draft.isRetainerClient} />
             </div>
@@ -1241,7 +1267,7 @@ function TabQuotations({ role, quotes, setQuotes, campsRef }) {
                 <input value={ln.desc} onChange={e => updateLine(i, "desc", e.target.value)} placeholder="Service description…" style={{ ...INP, fontSize:11 }} />
                 <input value={ln.sac} onChange={e => updateLine(i, "sac", e.target.value)} placeholder="SAC" style={{ ...INP, fontSize:11 }} />
                 <MoneyInput value={ln.rate} onChange={v => updateLine(i, "rate", parseFloat(v)||0)} placeholder="Rate" style={{ ...INP, fontSize:11 }} />
-                <select value={ln.gstRate} onChange={e => updateLine(i, "gstRate", parseInt(e.target.value))} style={{ ...INP, fontSize:11 }}>
+                <select value={ln.gstRate} onChange={e => updateLine(i, "gstRate", parseInt(e.target.value))} style={{ ...SEL, fontSize:11 }}>
                   {[0,5,12,18,28].map(r => <option key={r} value={r}>{r}% GST</option>)}
                 </select>
                 <button onClick={() => removeLine(i)} style={{ background:"transparent", border:"none", color:T.red, cursor:"pointer", fontSize:14 }}>✕</button>
@@ -1482,7 +1508,7 @@ function TabRegistry({ role, campsRef, expenses }) {
   );
 }
 
-// ── TAB: CAMPAIGN P&L (Founder — full; PCM — their event, no director pay) ──
+// ── TAB: CAMPAIGN P&L (Founder — full; PCM — their campaign, no director pay) ──
 function TabCampaignPL({ role, expenses, setExpenses, invoices, campsRef }) {
   const [selC, setSelC] = useState(null);
 
@@ -1528,7 +1554,7 @@ function TabCampaignPL({ role, expenses, setExpenses, invoices, campsRef }) {
         <div style={{ fontFamily:"'Newsreader',serif", fontSize:20, fontWeight:600, color:T.text, fontStyle:"italic" }}>
           Campaign P&L
           <span style={{ marginLeft:10, fontSize:10, color:T.amber, border:`1px solid ${T.amber}25`, borderRadius:3, padding:"1px 5px", fontFamily:"'Sora'", fontStyle:"normal", verticalAlign:"middle" }}>
-            {isFounder(role) ? "Founder" : "PCM — event view"}
+            {isFounder(role) ? "Founder" : "PCM — campaign view"}
           </span>
           {/* Where the campaign actually stands. Billing reads this; it never
               writes it — the pipeline is owned by the campaign. */}
@@ -1536,13 +1562,18 @@ function TabCampaignPL({ role, expenses, setExpenses, invoices, campsRef }) {
             {stageLabel(camp.stage)}
           </span>
         </div>
-        {/* Event selector — campsRef arrives pre-scoped from the root
+        {/* Campaign selector — campsRef arrives pre-scoped from the root
             (non-founder/accounts users only get campaigns where their teamId
             is createdBy/amId/cmId/eaId), so a PCM only ever sees their own
-            events here. */}
-        <select value={camp.id} onChange={e => setSelC(e.target.value)} style={{ ...INP, width:"auto" }}>
-          {campsRef.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+            campaigns here. */}
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <Lbl style={{ whiteSpace:"nowrap" }}>Campaign</Lbl>
+          <select value={camp.id} onChange={e => setSelC(e.target.value)}
+            title="Switch campaign — every figure on this page is for the one selected"
+            style={{ ...SEL, width:"auto" }}>
+            {campsRef.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
       </div>
 
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 }}>
@@ -1597,7 +1628,7 @@ function TabCampaignPL({ role, expenses, setExpenses, invoices, campsRef }) {
       </div>
 
       {/* Owner's personal compensation — never shown to PCM, even though
-          PCM otherwise has full billing access to this event's numbers. */}
+          PCM otherwise has full billing access to this campaign's numbers. */}
       {isFounder(role) && (
         <div style={{ background:T.raised, border:`1px solid ${T.gold}22`, borderRadius:7, padding:"14px", marginBottom:14 }}>
           <Lbl color={T.gold} style={{ display:"block", marginBottom:10 }}>Director's Remuneration — All structures</Lbl>

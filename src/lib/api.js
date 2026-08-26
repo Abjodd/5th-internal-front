@@ -201,6 +201,11 @@ export const InvoicePdfAPI = {
 
 export const CampaignsAPI = {
   list: () => request("/api/campaigns"),
+  // Just the brandIds a team member's campaigns belong to. The app shell asks
+  // this on every page to scope its brand filter; list() would answer it too,
+  // but only by shipping every campaign document plus a creators join per
+  // campaign — see the endpoint's own note in the backend's server.js.
+  brandScope: (teamId) => request(`/api/campaigns/brand-scope?teamId=${encodeURIComponent(teamId)}`),
   create: (campaign) =>
     request("/api/campaigns", { method: "POST", body: JSON.stringify(campaign) }),
   update: (id, patch) =>

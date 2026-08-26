@@ -22,6 +22,33 @@ export const receivedOf = inv => {
   return ["advance", "final"].reduce((t, k) => t + (s[k]?.status === "paid" ? (s[k].amount || 0) : 0), 0);
 };
 
+// Every schedule leg marked settled, for the moment an invoice is paid in full.
+// Legs already paid keep their own paidDate and UTR — this closes what is
+// outstanding, it does not restate what was already banked.
+//
+// Written here rather than at the call site because "which legs count as
+// received" is receivedOf's rule above, and the two have to move together: a
+// paid invoice whose legs still read pending is the same fact recorded two
+// ways, and the screens that render legs (Billing's InvDetail) show the stale
+// half.
+export const settleSchedule = (schedule, paidDate) => {
+  if (!schedule) return schedule;
+  const next = { ...schedule };
+  for (const leg of ["advance", "final"]) {
+    const s = next[leg];
+    if (s && s.status !== "paid") next[leg] = { ...s, status: "paid", paidDate };
+  }
+  return next;
+};
+
+// The payment schedule as it should READ for a given invoice. An invoice paid
+// in full has no outstanding legs by definition — that is already receivedOf's
+// rule above — so this closes the gap on records written before payment_done
+// settled every leg, without a migration and without a screen ever
+// contradicting the invoice header it sits under.
+export const scheduleOf = inv =>
+  inv?.status === "paid" ? settleSchedule(inv.schedule, inv.paidDate || null) : inv?.schedule;
+
 // Overdue is DERIVED, never stored — nothing in the app ever sets
 // `status:"overdue"`.
 //

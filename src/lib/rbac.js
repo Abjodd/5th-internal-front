@@ -47,6 +47,25 @@ export const PERMS = {
   // record is only ever deleted from the founder's Auth side).
   editCreatorDetails: ["founder", "pcm", "cm", "am", "ea"],   // full Edit modal on the creators table
   removeCreator:      ["founder"],
+  // Raising a creator's GST invoice and pulling the PDF back down. Split out
+  // of seeCampaignBudget, which is a REVENUE permission (founder/pcm) and was
+  // gating this only because both happened to sit on the same table: EAs run
+  // the creator side of a campaign and are the ones who actually chase and
+  // issue these, so they could see the fee they were invoicing but not the
+  // button that invoiced it. Deliberately narrower than seeCreatorFees —
+  // issuing a document on the agency's behalf is not the same as reading a
+  // number — and it carries the pay-type field with it, since choosing how a
+  // creator is paid is the first step of the same job.
+  invoiceCreator:     ["founder", "pcm", "ea"],
+  // Re-price a creator whose fee is already committed. Locking posts the fee to
+  // Billing as an expense and freezes it for everyone precisely so a commitment
+  // the books have recorded cannot be quietly restated — but a deal genuinely
+  // does get renegotiated after the handshake, and the alternative today is to
+  // Remove the creator (cancelling their expense and their invoice history) and
+  // re-add them, which loses the trail rather than recording the change.
+  // Founder only, and every use is written to the campaign timeline: this is an
+  // override with an audit entry, not an open field.
+  overrideLockedCost: ["founder"],
   editCreator:        ["founder"],   // edit from the Creators directory
   assignUsers:        ["founder", "pcm", "cm", "am"],
   // A brand's logo and website are its identity across the whole app — the

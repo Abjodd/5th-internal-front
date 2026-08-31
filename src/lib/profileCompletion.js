@@ -9,7 +9,9 @@
  *
  * `teamId` IS counted despite not being self-serve — it is what campaigns store
  * in amId/cmId/eaId, so a user without one owns nothing and appears nowhere.
- * Their own profile is where that gets noticed.
+ * Their own profile is where that gets noticed. It is labelled "Team" for the
+ * same reason the Profile page shows the team rather than the t-id: the id is a
+ * join key, and nobody reading their own profile is looking for one.
  */
 
 const filled = (v) => v != null && String(v).trim() !== "";
@@ -23,7 +25,7 @@ export function profileCompletion(user) {
     { key: "name",   label: "Full name",     filled: filled(u.name),       actionable: false },
     { key: "title",  label: "Title",         filled: filled(u.title),      actionable: false },
     { key: "email",  label: "Login email",   filled: filled(u.email || u.username), actionable: false },
-    { key: "teamId", label: "Team ID",       filled: filled(u.teamId),     actionable: false },
+    { key: "teamId", label: "Team",          filled: filled(u.teamId),     actionable: false },
   ];
 
   const done = items.filter((i) => i.filled).length;

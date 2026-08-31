@@ -11,7 +11,7 @@ import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI, CreatorsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
-import { fmtCompact, fmtINR, prettyDate, initials, ISO_DATE, todayISO, isoDay } from "../../lib/format";
+import { fmtCompact, fmtINR, fmtCPV, prettyDate, initials, ISO_DATE, todayISO, isoDay } from "../../lib/format";
 import { useBrandAccents } from "../../lib/brandAccent";
 import { settleSchedule } from "../../lib/invoiceMoney";
 import { creatorBudgetOf, numReqOf, costOf, normCreator, creatorExpensePlan, isLockedCreator, canSeeCampaign, creatorKeyOf,
@@ -28,6 +28,7 @@ import BrandPicker from "../../components/BrandPicker";
 import BrandLogoModal from "../../components/BrandLogoModal";
 import { zoomOf } from "../../lib/zoom";
 import CreatorHandle from "../../components/CreatorHandle";
+import AvatarPicker from "../../components/AvatarPicker";
 import Donut from "../../components/Donut";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
@@ -2089,6 +2090,9 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
   const [fetching,setFetching]=useState(false);
   const [fetchErr,setFetchErr]=useState(null);
   const [igFetched,setIgFetched]=useState(null);
+  // Three-state, same contract as every other AvatarPicker in the app:
+  // undefined = untouched, null = remove, data URI = new photo.
+  const [avatarImage,setAvatarImage]=useState(undefined);
   const [errors,setErrors]=useState({});
   const u=(k,v)=>{
     const clean=FIELD_SANITIZE[k]?sanitizeField(FIELD_SANITIZE[k],v):v;
@@ -2157,6 +2161,14 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
         cost:costLocked?costOf(editing):(parseInt(cost)||0),
         payType:f.payType||null, payId:payId||null,
         personalDetails:{...editing.personalDetails,...personalDetails},
+        // Only when actually touched — sending `undefined` would read as
+        // "field absent" and sending null would wipe an untouched photo.
+        ...(avatarImage!==undefined?{avatarImage}:{}),
+        // A Fetch in this session re-captured the platform picture, which is
+        // how a creator who changed their Instagram photo gets the new one.
+        // The backend copies the bytes and never stores this URL: it is signed
+        // and expires (see remoteAvatar.js). Loses to an explicit upload.
+        ...(avatarImage===undefined&&igFetched?.profilePic?{avatarSourceUrl:igFetched.profilePic}:{}),
       });
       onClose();
       return;
@@ -2177,6 +2189,23 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
   return(
     <Panel title={editing?`Edit Creator — ${editing.name}`:"Add Creator"} onClose={onClose}
       footer={<Btn variant="primary" onClick={handleAdd} disabled={!valid}>{editing?"Save changes":"Add to list"}</Btn>}>
+        {/* Directory edits only. On the campaign Add path this creator has no
+            record yet, and their photo arrives on its own: the backend copies
+            it out of the Fetch snapshot when the roster saves (creatorSync.js).
+            A picker there would be a control that silently did nothing. */}
+        {editing&&(
+          <div style={{marginBottom:16,paddingBottom:16,borderBottom:`1px solid ${T.border}`}}>
+            <Lbl style={{display:"block",marginBottom:10}}>Profile photo</Lbl>
+            <AvatarPicker
+              value={avatarImage}
+              currentUrl={CreatorsAPI.avatarUrl(editing)}
+              initials={(editing.name||"?").split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join("").toUpperCase()}
+              onChange={setAvatarImage}
+              size={64}
+              noun="photo"
+            />
+          </div>
+        )}
         <div style={{marginBottom:14}}><Lbl style={{display:"block",marginBottom:4}}>Platform <span style={{color:T.red}}>*</span></Lbl><select value={f.platform} onChange={e=>u("platform",e.target.value)} style={{...INP,resize:"none"}}>{PLATFORMS.map(p=><option key={p}>{p}</option>)}</select></div>
         <Lbl style={{display:"block",marginBottom:6}}>{lookup?.label||`${f.platform} profile link`}</Lbl>
         <div style={{display:"flex",gap:8,marginBottom:6}}>
@@ -3050,15 +3079,21 @@ const externalCpv = totV > 0 && campaignBudget > 0
   const agg=[
     {l:"Total Views",v:fmtNum(totV||null),show:true},
     {l:"Total Likes",v:fmtNum(totL||null),show:true},
-    {l:"Overall CPV",v:cpv!=null?`₹${cpv.toFixed(5)}`:"—",show:canCrFin(role)},
-    {l:"External CPV",v:externalCpv!=null?`₹${externalCpv.toFixed(5)}`:"—",show:canFin(role)},  // campaign-wide creator fees ÷ views, over the same set of creators
+    // The two rate tiles on a strip of raw totals, and the only ones where
+    // lower is better — so they carry T.green, the same hue the client portal
+    // gives CPV. fmtCPV, not toFixed(5): five decimals is a number you count
+    // zeros in, and the portal prints the same figure to two significant
+    // digits, so a hardcoded precision here is how the two screens start
+    // disagreeing about what a view cost.
+    {l:"Overall CPV",v:fmtCPV(cpv),c:T.green,show:canCrFin(role)},
+    {l:"External CPV",v:fmtCPV(externalCpv),c:T.green,show:canFin(role)},  // campaign-wide creator fees ÷ views, over the same set of creators
     {l:"Avg ER",v:er!=null?`${er.toFixed(1)}%`:"—",show:true},
     {l:"Avg Forwards",v:avgF!=null?fmtNum(Math.round(avgF)):"—",show:true},
   ].filter(s=>s.show);
   return(<div>
     {wd.length>0&&<div style={{marginBottom:20}}>
       <div style={{display:"grid",gridTemplateColumns:`repeat(${agg.length},1fr)`,gap:8,marginBottom:6}}>
-        {agg.map(s=><div key={s.l} style={{padding:"12px 14px",background:T.raised,borderRadius:7,border:`1px solid ${T.border}`}}><div style={{fontSize:8.5,color:T.label,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.07em",fontWeight:600}}>{s.l}</div><div style={{fontSize:18,fontWeight:600,color:T.text,lineHeight:1}}>{s.v}</div></div>)}
+        {agg.map(s=><div key={s.l} style={{padding:"12px 14px",background:T.raised,borderRadius:7,border:`1px solid ${T.border}`}}><div style={{fontSize:8.5,color:T.label,marginBottom:5,textTransform:"uppercase",letterSpacing:"0.07em",fontWeight:600}}>{s.l}</div><div style={{fontSize:18,fontWeight:600,color:s.c||T.text,lineHeight:1}}>{s.v}</div></div>)}
       </div>
       {wd.length<rows.length&&<div style={{fontSize:9,color:T.label}}>Based on {wd.length} of {rows.length} creator{rows.length!==1?"s":""} with live data.</div>}
     </div>}

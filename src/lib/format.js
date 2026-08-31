@@ -54,6 +54,28 @@ export function fmtINR(n) {
   return `${sign}₹${a.toLocaleString("en-IN")}`;
 }
 
+// Cost per view. Neither fmtINR's lakh/crore scale nor a flat two decimals
+// works here: a real CPV is routinely a fraction of a paisa (₹0.005264), which
+// toFixed(2) flattens to "₹0.01" — while five or six decimals gives a number
+// you have to count zeros in. Two significant digits past the leading zeros,
+// at any magnitude: 0.005264 → ₹0.0053, 0.03578 → ₹0.036, 1.25 → ₹1.25.
+//
+// Mirrors fmtCPV in the client portal (5th-avenue-client-front
+// src/lib/format.js), as fmtINR already does — the same campaign's CPV is
+// printed on both screens and the two must not round differently.
+const CPV_SIGNIFICANT = 2;
+export function fmtCPV(n) {
+  const v = Number(n);
+  if (n == null || n === "" || !Number.isFinite(v)) return "—";
+  const a = Math.abs(v), sign = v < 0 ? "-" : "";
+  // toFixed, not toPrecision: toPrecision returns "5.3e-3" on exactly these
+  // values. Below ₹1 the exponent counts the zeros before the first real digit.
+  const decimals = !(a > 0) || a >= 1
+    ? CPV_SIGNIFICANT
+    : Math.min(20, -Math.floor(Math.log10(a)) - 1 + CPV_SIGNIFICANT);
+  return `${sign}₹${a.toFixed(decimals)}`;
+}
+
 // Compact display for follower/like/view counts: 1200000 → "1.2M",
 // 95000 → "95K", 820 → "820". Accepts raw numbers, numeric strings
 // ("820000" / "8,20,000"), or already-compact values ("820K") which pass

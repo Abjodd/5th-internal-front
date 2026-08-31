@@ -4,11 +4,12 @@
  * Reached from the app shell's user chip. Mirrors the client portal's Settings →
  * Profile pane so both products answer "who am I signed in as" the same way.
  *
- * Your PHOTO is the only editable field. Everything else — name, role, teamId,
+ * Your PHOTO is the only editable field. Everything else — name, role, team,
  * login email — is what the founder set on Access & Credentials, and several are
  * load-bearing: `teamId` is what campaigns store in amId/cmId/eaId, so editing it
  * here would silently detach someone from every campaign they own, and `role` is
- * the access-control key. Those belong behind the founder's judgement.
+ * the access-control key. Those belong behind the founder's judgement. The t-id
+ * itself stays backstage; the field shows the team it puts you on.
  *
  * A photo affects nothing but how you appear, and is tedious to ask someone else
  * to change — so it is the one thing you can change here.
@@ -175,7 +176,9 @@ export default function Profile() {
 
   if (!user) return null;
 
-  const roleLabel = getRole(user.role)?.label || user.role;
+  const role = getRole(user.role);
+  const roleLabel = role?.label || user.role;
+  const teamLabel = user.teamId ? role?.group : null;
   const dirty = avatarImage !== undefined;
 
   const save = async () => {
@@ -298,9 +301,13 @@ export default function Profile() {
           <Field label="Role" value={roleLabel} />
           <Field label="Title" value={user.title} />
           <Field label="Login email" value={user.email || user.username} mono />
-          {/* Surfaced read-only precisely because it is the link between this
-              user and every campaign they own (amId/cmId/eaId). */}
-          <Field label="Team ID" value={user.teamId} mono />
+          {/* The team, not the `teamId` behind it: the raw t-id is an internal
+              join key (campaigns store it in amId/cmId/eaId) and means nothing
+              to the person reading their own profile. It is still what the
+              field reports on — no teamId means you are attached to no team
+              and own no campaigns, which is exactly what "—" should say here,
+              and what the completion meter counts. */}
+          <Field label="Team" value={teamLabel} />
           <Field label="Account ID" value={user.id} mono />
         </div>
 

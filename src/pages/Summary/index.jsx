@@ -449,42 +449,68 @@ function InitialsBadge({ seed, size = 40, radius = 10 }) {
  * reference: true, worth having, but not worth three screens of scrolling
  * past every visit. Those are wrapped in one of these.
  *
- * The bar is deliberately not a second title: the section inside keeps its own
- * editorial header, so this carries the chapter name and a one-line summary
- * that stays useful while the chapter is shut — a collapsed row that says only
- * "Trajectory" makes the reader open it to find out whether they need it.
+ * The bar carries the chapter name and nothing else, set large enough to read
+ * at a scroll: five of them stacked are the page's table of contents, and a
+ * name that size does the job a one-line summary beside it used to.
  *
- * Bars alternate between the page's two surfaces, which is what gives the tail
- * of the page its rhythm now that there is no third colour to separate
- * chapters with.
+ * Every bar wears the same navy so the stack reads as one object rather than a
+ * ladder of alternating materials; a hairline between them is the only thing
+ * dividing them, which is all the division a uniform surface needs.
+ *
+ * ── Why the navy is on the BUTTON and not on this wrapper ───────────────────
+ * The wrapper is the chapter's paper, and the chapters open onto F.surface. Put
+ * the navy here and it paints the whole column, so any moment where the opened
+ * body does not yet fill the space shows as a navy band under white content.
+ * Painting only the bar means the worst case is paper against paper.
+ *
+ * ── Why the height is not animated in pixels ────────────────────────────────
+ * This used AnimatePresence with `height: "auto"`, which is measured: motion
+ * reads the body's height once, tweens to that number, and swaps to `auto` at
+ * the end. Anything that changes height after the measurement — a photo band
+ * decoding, a chart taking its first layout — leaves the box at a stale number
+ * for the length of the tween, and the swap to `auto` at the end is the "band
+ * appears, then vanishes" that made this look broken.
+ *
+ * A 0fr→1fr grid row has no measurement to be wrong. The row is defined AS the
+ * body's height, so it tracks content that resizes mid-animation instead of
+ * racing it, and it settles exactly on the real height because it never held
+ * anything else. Same technique as the Creators cards.
  */
-// The two materials a bar can wear, as data rather than as the same
-// `dark ? … : …` ternary repeated at every property.
-const CHAPTER_TONES = {
-  light: { bg: F.surface, line: F.hairline, ink: F.ink, sub: F.inkSoft, chevron: F.inkSoft },
-  dark: {
-    bg: F.navySurface, line: "rgba(255,255,255,0.12)", ink: "#FFFFFF",
-    sub: "rgba(255,255,255,0.55)", chevron: "rgba(255,255,255,0.7)",
-  },
-};
+const CHAPTER_LINE = "rgba(255,255,255,0.14)";
+const CHAPTER_MS = 420;
 
-function CollapsibleSection({ eyebrow, summary, accent = F.navy, tone = "light", children }) {
+function CollapsibleSection({ eyebrow, children }) {
   const [open, setOpen] = useState(false);
+  // Mounted on first open and then kept. Chapters stay out of the initial
+  // render — that is the whole point of shutting them — but paying a chart's
+  // mount cost again on every reopen is what made the second opening stutter
+  // worse than the first, and it is the one hitch easing cannot smooth.
+  const [opened, setOpened] = useState(false);
   const reduce = useReducedMotion();
-  const c = CHAPTER_TONES[tone];
+
+  const toggle = () => {
+    setOpen((v) => !v);
+    setOpened(true);
+  };
 
   return (
-    <div style={{ background: c.bg }}>
+    <div style={{ background: F.surface }}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        className="fs-chapbar"
+        onClick={toggle}
         aria-expanded={open}
+        // The bar, not its wrapper: the wrapper also spans the chapter's pale
+        // body once open, and marking that dark would flip the nav pills to
+        // their light material over light paper.
+        data-nav-tone="dark"
         style={{
-          display: "block", width: "100%", padding: "26px 44px", cursor: "pointer",
-          background: "transparent", textAlign: "left",
-          border: "none", borderTop: `1px solid ${c.line}`,
-          borderBottom: open ? `1px solid ${c.line}` : "none",
-          font: "inherit", color: "inherit",
+          display: "block", width: "100%", padding: "30px 44px", cursor: "pointer",
+          textAlign: "left", font: "inherit", color: "inherit", border: "none",
+          borderTop: `1px solid ${CHAPTER_LINE}`,
+          // Always a full pixel, transparent when shut, so gaining the rule on
+          // open does not nudge everything below it down by one.
+          borderBottom: `1px solid ${open ? CHAPTER_LINE : "transparent"}`,
         }}
       >
         <div style={{
@@ -492,27 +518,12 @@ function CollapsibleSection({ eyebrow, summary, accent = F.navy, tone = "light",
           display: "flex", alignItems: "center", gap: 18,
         }}>
           <span style={{
-            width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
-            background: accent,
-          }} />
-
-          <span style={{
-            fontFamily: T.ui, fontSize: 10.5, fontWeight: 700,
-            letterSpacing: "0.16em", textTransform: "uppercase",
-            color: c.ink, flexShrink: 0,
+            fontFamily: T.ui, fontSize: 17, fontWeight: 700, lineHeight: 1.1,
+            letterSpacing: "0.13em", textTransform: "uppercase",
+            color: "#FFFFFF",
           }}>
             {eyebrow}
           </span>
-
-          {summary && (
-            <span style={{
-              fontFamily: T.ui, fontSize: 12, lineHeight: 1.5,
-              color: c.sub,
-              flex: 1, minWidth: 0,
-            }}>
-              {summary}
-            </span>
-          )}
 
           <motion.span
             aria-hidden="true"
@@ -520,10 +531,10 @@ function CollapsibleSection({ eyebrow, summary, accent = F.navy, tone = "light",
             transition={{ duration: reduce ? 0 : 0.3, ease: EASE }}
             style={{
               marginLeft: "auto", flexShrink: 0,
-              width: 28, height: 28, borderRadius: "50%",
+              width: 30, height: 30, borderRadius: "50%",
               display: "flex", alignItems: "center", justifyContent: "center",
-              border: `1px solid ${c.line}`,
-              color: c.chevron,
+              border: `1px solid ${CHAPTER_LINE}`,
+              color: "rgba(255,255,255,0.7)",
             }}
           >
             <svg width="11" height="7" viewBox="0 0 11 7" fill="none">
@@ -534,24 +545,28 @@ function CollapsibleSection({ eyebrow, summary, accent = F.navy, tone = "light",
         </div>
       </button>
 
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div
-            className="fs-chapter"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: reduce ? 0 : 0.42, ease: EASE }}
-            // Stays hidden after the expansion too, not just during it: every
-            // section inside already clips its own content, so there is
-            // nothing to release, and toggling overflow mid-animation
-            // re-renders the element and strands the height part-way open.
-            style={{ overflow: "hidden" }}
-          >
-            {children}
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <div style={{
+        display: "grid",
+        gridTemplateRows: open ? "1fr" : "0fr",
+        transition: reduce ? "none" : `grid-template-rows ${CHAPTER_MS}ms cubic-bezier(0.16, 1, 0.3, 1)`,
+      }}>
+        {/* `fs-chapter` sits here because the padding rule below targets this
+            element's direct <section> child. `visibility` is what takes a shut
+            chapter out of the tab order and off the screen reader — a body
+            clipped to zero height still holds focusable controls — and it is
+            transitioned so it stays visible for the whole collapse rather than
+            blanking on the first frame. */}
+        <div
+          className="fs-chapter"
+          style={{
+            overflow: "hidden",
+            visibility: open ? "visible" : "hidden",
+            transition: reduce ? "none" : `visibility ${CHAPTER_MS}ms`,
+          }}
+        >
+          {opened && children}
+        </div>
+      </div>
     </div>
   );
 }
@@ -7828,64 +7843,16 @@ export default function FounderSummary() {
 
   /* The chapters below the fold, in reading order.
    *
-   * `summary` is the line the bar shows while the chapter is shut, so it is
-   * built from the same data the chapter contains rather than being a static
-   * caption — a collapsed row that reports "6 waiting on a decision" is worth
-   * reading on its own, and one that says only "Ahead" is not. Anything the
-   * database cannot answer falls back to what the chapter IS, never to a zero.
+   * Name and content only: the bar shows the name alone, so nothing here has
+   * to derive a summary line out of the same data the chapter already renders.
    */
-  const chapters = useMemo(() => {
-    const lines = data.performance?.lines || [];
-    const growth = data.growth || {};
-    const members = data.team?.members || [];
-    const staffed = members.filter((m) => m.activeProjects > 0).length;
-    const stages = data.campaigns?.stages || [];
-    const decisions = data.decisions || [];
-    const inPipeline = stages.reduce((sum, st) => sum + (numOrNull(st.count) ?? 0), 0);
-
-    return [
-      {
-        eyebrow: "Trajectory",
-        accent: F.forest,
-        summary: lines.length
-          ? "How the numbers on the books have moved across the recorded history."
-          : "Fills in as operating history accumulates.",
-        node: <PerformanceGraph lines={lines} />,
-      },
-      {
-        eyebrow: "Audience",
-        accent: F.plum,
-        summary: growth.creators
-          ? `What the work did once it was live — ${growth.creators} tracked ${plural(growth.creators, "post")}.`
-          : "What the work did once it was live.",
-        node: <LivePostGrowth growth={growth} />,
-      },
-      {
-        eyebrow: "People",
-        accent: F.plum,
-        summary: members.length
-          ? `${staffed} of ${members.length} carrying a live campaign.`
-          : "Everyone carrying the work.",
-        node: <TeamField team={data.team} />,
-      },
-      {
-        eyebrow: "Campaign operations",
-        accent: F.navy,
-        summary: inPipeline
-          ? `${inPipeline} ${plural(inPipeline, "campaign")} across the pipeline.`
-          : "Where every campaign sits across the pipeline.",
-        node: <CampaignFlow stages={stages} awaitingBudget={data.campaigns?.awaitingBudget || 0} />,
-      },
-      {
-        eyebrow: "Ahead",
-        accent: F.gold,
-        summary: decisions.length
-          ? `${decisions.length} ${plural(decisions.length, "item")} waiting on a decision.`
-          : "Nothing currently waiting on a decision.",
-        node: <DecisionsHorizon items={decisions} />,
-      },
-    ];
-  }, [data]);
+  const chapters = useMemo(() => [
+    { eyebrow: "Trajectory",          node: <PerformanceGraph lines={data.performance?.lines || []} /> },
+    { eyebrow: "Audience",            node: <LivePostGrowth growth={data.growth || {}} /> },
+    { eyebrow: "People",              node: <TeamField team={data.team} /> },
+    { eyebrow: "Campaign operations", node: <CampaignFlow stages={data.campaigns?.stages || []} awaitingBudget={data.campaigns?.awaitingBudget || 0} /> },
+    { eyebrow: "Ahead",               node: <DecisionsHorizon items={data.decisions || []} /> },
+  ], [data]);
 
   return (
     <div style={{ background: F.surface, fontFamily: T.ui, color: F.ink, position: "relative" }}>
@@ -7899,6 +7866,8 @@ export default function FounderSummary() {
           `!important` is what it takes to beat an inline style. */}
       <style>{`
         .fs-chapter > section { padding-top: 54px !important; }
+        .fs-chapbar { background: ${F.navySurface}; transition: background 0.25s ease; }
+        .fs-chapbar:hover { background: #262E3D; }
       `}</style>
 
       {/* ── SECTION ORDER ──
@@ -7909,14 +7878,15 @@ export default function FounderSummary() {
 
           Everything after them is reference. It is true and worth having, but
           it is not worth three screens of scrolling past on every visit, so it
-          is shut by default behind a chapter bar that still states what is
-          inside. Nothing is hidden that the reader cannot open in one click,
-          and nothing was deleted to shorten the page.
+          is shut by default behind a chapter bar that names what is inside.
+          Nothing is hidden that the reader cannot open in one click, and
+          nothing was deleted to shorten the page.
 
-          The bars alternate between the page's two surfaces. That alternation
-          is now the ONLY thing separating chapters: the cream band and the
-          SectionSeam rules that used to do that job were a third colour and a
-          decoration respectively, and both are gone. */}
+          The bars are one continuous navy block divided by hairlines — the
+          cream band and the SectionSeam rules that used to separate chapters
+          were a third colour and a decoration respectively, and the
+          light/navy alternation that replaced them made five chapters read as
+          five different kinds of thing. */}
       <Hero asOfLabel={asOfLabel} />
       <AtAGlance bigNumbers={data.bigNumbers} />
       <ExecutiveStatement />
@@ -7925,16 +7895,8 @@ export default function FounderSummary() {
       <Financials data={data.revenue} />
       <AgencyHealth health={data.health} />
 
-      {chapters.map((chapter, i) => (
-        <CollapsibleSection
-          key={chapter.eyebrow}
-          eyebrow={chapter.eyebrow}
-          summary={chapter.summary}
-          accent={chapter.accent}
-          // Agency Health closes on navy, so the first bar is paper and the
-          // alternation carries on from there unbroken.
-          tone={i % 2 === 0 ? "light" : "dark"}
-        >
+      {chapters.map((chapter) => (
+        <CollapsibleSection key={chapter.eyebrow} eyebrow={chapter.eyebrow}>
           {chapter.node}
         </CollapsibleSection>
       ))}

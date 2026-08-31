@@ -184,6 +184,11 @@ export const BrandCredentialsAPI = authCrud("/api/brand-credentials");
 // ── Creators (founder directory) ─────────────────────────────────────────────
 export const CreatorsAPI = {
   list: (brandId) => request(`/api/creators${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ""}`),
+  // A photo stored against our own creator record, same contract as every other
+  // avatar in the app: null unless the record says one exists, so a creator we
+  // only know from a platform fetch never issues a request that is certain to
+  // 404. See components/CreatorAvatar for the platform-photo fallback.
+  avatarUrl: avatarUrlFor("/api/creators"),
   // Founder edit from the directory — the backend propagates the patch to the
   // creator's entries across campaigns so the directory stays the source of truth.
   update: (id, patch) =>

@@ -16,21 +16,12 @@ import { useOutletContext } from "react-router-dom";
 import { CreatorsAPI, InvoicePdfAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import CreatorHandle from "../../components/CreatorHandle";
+import CreatorAvatar from "../../components/CreatorAvatar";
 import { fmtCompact, fmtINR } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { AddCreatorModal } from "../Campaigns";
 
 // ── STYLE HELPERS ────────────────────────────────────────────────────────────
-const thS = {
-  padding: "9px 14px", textAlign: "left", fontSize: 9, fontWeight: 600,
-  color: T.label, textTransform: "uppercase", letterSpacing: "0.07em",
-  borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap",
-  fontFamily: "'Sora', sans-serif", background: T.raised,
-};
-const tdS = {
-  padding: "11px 14px", fontSize: 11.5, color: T.text,
-  borderBottom: `1px solid ${T.border}`, verticalAlign: "middle",
-};
 const INP = {
   padding: "7px 10px", borderRadius: 5, background: T.surface,
   border: `1px solid ${T.border}`, color: T.text, fontSize: 11.5,
@@ -38,17 +29,6 @@ const INP = {
 };
 
 const PAY_LABELS = { vendor: "To Vendor", net_banking: "Net Banking", upi: "UPI" };
-
-const Av = ({ name }) => (
-  <div style={{
-    width: 28, height: 28, borderRadius: 8, flexShrink: 0,
-    background: `${T.pink}16`, color: T.pink,
-    display: "flex", alignItems: "center", justifyContent: "center",
-    fontSize: 10, fontWeight: 600,
-  }}>
-    {(name || "?").split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase()}
-  </div>
-);
 
 const Pill = ({ children, color = T.sub }) => (
   <span style={{
@@ -66,7 +46,7 @@ const Fact = ({ label, value }) => (
   </div>
 );
 
-// Shared styles for the three expanded-row panels.
+// Shared styles for the three expanded detail panels.
 const panel = {
   flex: 1, minWidth: 220, background: T.surface,
   border: `1px solid ${T.border}`, borderRadius: T.radiusSm, padding: "12px 14px",
@@ -75,6 +55,19 @@ const panelTitle = {
   fontSize: 9, fontWeight: 600, color: T.label, textTransform: "uppercase",
   letterSpacing: "0.07em", marginBottom: 8,
 };
+
+// One figure in a card's stat strip. The strip draws its own dividers with a
+// 1px grid gap over a border-coloured backdrop, so nothing here needs to know
+// its index to decide whether it has a rule on its left.
+const Stat = ({ label, value, color = T.text }) => (
+  <div style={{ flex: 1, minWidth: 0, background: T.surface, padding: "9px 4px", textAlign: "center" }}>
+    <div style={{ fontSize: 13, fontWeight: 600, color, letterSpacing: "-0.01em" }}>{value}</div>
+    <div style={{
+      fontSize: 7.5, color: T.label, textTransform: "uppercase",
+      letterSpacing: "0.07em", marginTop: 2,
+    }}>{label}</div>
+  </div>
+);
 
 // ── INVOICES PANEL ───────────────────────────────────────────────────────────
 // One creator's generated invoices with a local filter — matches invoice
@@ -138,7 +131,7 @@ function InvoicesPanel({ invoices, campaigns }) {
   );
 }
 
-// ── EXPANDED ROW ─────────────────────────────────────────────────────────────
+// ── EXPANDED DETAIL ──────────────────────────────────────────────────────────
 function CreatorDetail({ inf, canEdit, onEdit }) {
   const pd = inf.personalDetails || {};
   return (
@@ -198,6 +191,115 @@ function CreatorDetail({ inf, canEdit, onEdit }) {
   );
 }
 
+// ── CREATOR CARD ─────────────────────────────────────────────────────────────
+/**
+ * One creator, as a card: photo and identity, the four figures worth scanning,
+ * then platform/location/pay on a footer strip.
+ *
+ * Opening one spans it across the whole grid row (`gridColumn: 1 / -1`) rather
+ * than growing it inside its own column — the detail is three panels wide, and
+ * in a 300px column they stack into a tower that leaves the rest of the row
+ * empty. The card stays where it is in DOM order, so it moves at most one row.
+ */
+function CreatorCard({ inf, open, onToggle, canEdit, onEdit }) {
+  return (
+    <article
+      className="cr-card"
+      onClick={onToggle}
+      // Border and shadow live in the .cr-card rule, not here: an inline
+      // shorthand outranks a stylesheet, so declaring them inline would make
+      // the :hover rule below dead code. Only the open state is set inline —
+      // where beating :hover is the point, since an open card should not also
+      // light up under the cursor.
+      style={{
+        gridColumn: open ? "1 / -1" : "auto",
+        background: T.surface, borderRadius: T.radius,
+        overflow: "hidden", cursor: "pointer",
+        borderColor: open ? T.borderMid : undefined,
+      }}
+    >
+      <header style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 14px" }}>
+        <CreatorAvatar creator={inf} size={40} radius={10} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{
+            fontSize: 12.5, fontWeight: 500, color: T.text,
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          }}>{inf.name}</div>
+          <div style={{ fontSize: 9.5, color: T.sub, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <CreatorHandle creator={inf} style={{ fontSize: 9.5 }} />{inf.niche ? ` · ${inf.niche}` : ""}
+          </div>
+        </div>
+        {/* The whole card is clickable for convenience, but the chevron is the
+            real control: a div with an onClick is unreachable by keyboard, and
+            the card cannot itself be a button because it contains a link. */}
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-label={`${open ? "Hide" : "Show"} details for ${inf.name}`}
+          onClick={e => { e.stopPropagation(); onToggle(); }}
+          style={{
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            width: 20, height: 20, borderRadius: "50%", flexShrink: 0, fontSize: 10,
+            border: "none", padding: 0, cursor: "pointer",
+            background: open ? `${T.accent}12` : "transparent",
+            color: open ? T.accent : T.label,
+            transform: open ? "rotate(180deg)" : "rotate(0deg)",
+            transition: "transform 0.3s cubic-bezier(0.4,0,0.2,1), background 0.2s ease, color 0.2s ease",
+          }}
+        >▾</button>
+      </header>
+
+      {/* 1px gap over a border-coloured backdrop = hairlines between figures. */}
+      <div style={{ display: "flex", gap: 1, background: T.border, borderTop: `1px solid ${T.border}` }}>
+        <Stat label="Followers" value={fmtCompact(inf.followers)} />
+        <Stat label="Avg ER" value={inf.avgER != null ? `${inf.avgER}%` : "—"} />
+        <Stat label="Campaigns" value={inf.campaigns.length} color={inf.campaigns.length ? T.teal : T.label} />
+        <Stat label="Invoices" value={inf.invoices.length} color={inf.invoices.length ? T.green : T.label} />
+      </div>
+
+      <footer style={{
+        display: "flex", alignItems: "center", gap: 8, padding: "9px 14px",
+        borderTop: `1px solid ${T.border}`, background: T.raised,
+        fontSize: 10.5, color: T.sub,
+      }}>
+        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {inf.platform || "—"}{inf.state ? ` · ${inf.state}` : ""}
+        </span>
+        {inf.payType && (
+          <span style={{ marginLeft: "auto" }}>
+            <Pill color={T.accent}>{PAY_LABELS[inf.payType] || inf.payType}</Pill>
+          </span>
+        )}
+      </footer>
+
+      {/* Always mounted; the 0fr→1fr grid transition animates the reveal.
+          The detail swallows its own clicks: it lives inside the card that
+          toggles, so without this the invoice filter and every View PDF button
+          would shut the card the moment they were used. `visibility` is what
+          takes the collapsed copy out of the tab order and off the screen
+          reader — clipped-but-present controls are still focusable. */}
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          display: "grid", gridTemplateRows: open ? "1fr" : "0fr",
+          transition: "grid-template-rows 0.32s cubic-bezier(0.4,0,0.2,1)",
+        }}
+      >
+        <div style={{ overflow: "hidden" }}>
+          <div style={{
+            borderTop: `1px solid ${T.border}`,
+            opacity: open ? 1 : 0,
+            visibility: open ? "visible" : "hidden",
+            transition: "opacity 0.28s ease 0.06s, visibility 0.34s",
+          }}>
+            <CreatorDetail inf={inf} canEdit={canEdit} onEdit={onEdit} />
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 // ── PAGE ─────────────────────────────────────────────────────────────────────
 export default function Creators() {
   const { user, brandFilter } = useOutletContext() || {};
@@ -218,7 +320,17 @@ export default function Creators() {
   const saveEdit = useCallback(merged => {
     const { campaigns, invoices, ...patch } = merged;
     setCreators(prev => prev.map(i => (i.id === merged.id ? { ...i, ...patch } : i)));
-    CreatorsAPI.update(merged.id, patch).catch(() => showToast("Save failed — check connection"));
+    CreatorsAPI.update(merged.id, patch)
+      // The photo is the one field the optimistic pass cannot paint. What the
+      // card renders is a URL built from `hasAvatar` + `avatarUpdatedAt`, and
+      // both are the server's to decide — it also owns whether a platform
+      // capture (`avatarSourceUrl`) actually succeeded. Folding the response
+      // back in is what makes a new picture appear without a reload, and
+      // `avatarUpdatedAt` moving is what busts the year-long image cache.
+      // The response carries no campaigns/invoices keys, so the aggregates
+      // merged over above survive.
+      .then(saved => setCreators(prev => prev.map(i => (i.id === saved.id ? { ...i, ...saved } : i))))
+      .catch(() => showToast("Save failed — check connection"));
     showToast("Creator updated");
   }, [showToast]);
 
@@ -248,6 +360,18 @@ export default function Creators() {
 
   return (
     <div style={{ flex: 1, overflowY: "auto", background: T.bg, padding: "26px 30px" }}>
+      <style>{`
+        .cr-card {
+          border: 1px solid ${T.border};
+          box-shadow: ${T.shadow};
+          transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        .cr-card:hover {
+          border-color: ${T.borderMid};
+          box-shadow: 0 4px 16px rgba(28,24,16,0.10);
+        }
+      `}</style>
+
       {/* Header */}
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 20 }}>
         <div>
@@ -279,86 +403,22 @@ export default function Creators() {
         </div>
       )}
 
-      {/* Table */}
+      {/* Directory */}
       {!loading && !error && visible.length > 0 && (
-        <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: T.radius, boxShadow: T.shadow, overflow: "hidden" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                <th style={thS}>Creator</th>
-                <th style={thS}>Platform</th>
-                <th style={thS}>Followers</th>
-                <th style={thS}>Avg ER%</th>
-                <th style={thS}>State</th>
-                <th style={thS}>Pay Type</th>
-                <th style={thS}>Campaigns</th>
-                <th style={thS}>Invoices</th>
-                <th style={{ ...thS, width: 34 }} />
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map(inf => {
-                const open = expanded === inf.id;
-                return [
-                  <tr
-                    key={inf.id}
-                    onClick={() => setExpanded(open ? null : inf.id)}
-                    style={{ cursor: "pointer", background: open ? T.raised : "transparent", transition: "background 0.2s ease" }}
-                    onMouseOver={e => { if (!open) e.currentTarget.style.background = T.hover; }}
-                    onMouseOut={e => { if (!open) e.currentTarget.style.background = "transparent"; }}
-                  >
-                    <td style={tdS}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <Av name={inf.name} />
-                        <div>
-                          <div style={{ fontWeight: 500 }}>{inf.name}</div>
-                          <div style={{ fontSize: 9.5, color: T.sub }}><CreatorHandle creator={inf} style={{ fontSize: 9.5 }}/>{inf.niche ? ` · ${inf.niche}` : ""}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td style={tdS}>{inf.platform || "—"}</td>
-                    <td style={tdS}>{fmtCompact(inf.followers)}</td>
-                    <td style={tdS}>{inf.avgER != null ? `${inf.avgER}%` : "—"}</td>
-                    <td style={tdS}>{inf.state || "—"}</td>
-                    <td style={tdS}>{inf.payType ? <Pill color={T.accent}>{PAY_LABELS[inf.payType] || inf.payType}</Pill> : "—"}</td>
-                    <td style={tdS}><Pill color={T.teal}>{inf.campaigns.length}</Pill></td>
-                    <td style={tdS}><Pill color={inf.invoices.length ? T.green : T.sub}>{inf.invoices.length}</Pill></td>
-                    <td style={{ ...tdS, fontSize: 10 }}>
-                      <span style={{
-                        display: "inline-flex", alignItems: "center", justifyContent: "center",
-                        width: 20, height: 20, borderRadius: "50%",
-                        background: open ? `${T.accent}12` : "transparent",
-                        color: open ? T.accent : T.label,
-                        transform: open ? "rotate(180deg)" : "rotate(0deg)",
-                        transition: "transform 0.3s cubic-bezier(0.4,0,0.2,1), background 0.2s ease, color 0.2s ease",
-                      }}>▾</span>
-                    </td>
-                  </tr>,
-                  // Always rendered; the 0fr→1fr grid transition animates the
-                  // expand/collapse smoothly (no sudden mount/unmount).
-                  <tr key={`${inf.id}_detail`}>
-                    <td colSpan={9} style={{ padding: 0, border: "none", borderBottom: open ? `1px solid ${T.border}` : "none" }}>
-                      <div style={{
-                        display: "grid",
-                        gridTemplateRows: open ? "1fr" : "0fr",
-                        transition: "grid-template-rows 0.32s cubic-bezier(0.4,0,0.2,1)",
-                      }}>
-                        <div style={{ overflow: "hidden" }}>
-                          <div style={{
-                            opacity: open ? 1 : 0,
-                            transform: open ? "translateY(0)" : "translateY(-6px)",
-                            transition: "opacity 0.28s ease 0.06s, transform 0.32s cubic-bezier(0.4,0,0.2,1)",
-                          }}>
-                            <CreatorDetail inf={inf} canEdit={canEdit} onEdit={setEditTarget} />
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                  </tr>,
-                ];
-              })}
-            </tbody>
-          </table>
+        <div style={{
+          display: "grid", gap: 12, alignItems: "start",
+          gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
+        }}>
+          {visible.map(inf => (
+            <CreatorCard
+              key={inf.id}
+              inf={inf}
+              open={expanded === inf.id}
+              onToggle={() => setExpanded(expanded === inf.id ? null : inf.id)}
+              canEdit={canEdit}
+              onEdit={setEditTarget}
+            />
+          ))}
         </div>
       )}
 

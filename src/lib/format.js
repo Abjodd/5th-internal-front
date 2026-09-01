@@ -34,6 +34,17 @@ export function prettyDate(s) {
     : (s || "");
 }
 
+// A full timestamp — date AND time — for things stamped to the second rather
+// than to the day (review comments). prettyDate takes date-only ISO and echoes
+// anything else unchanged, which printed a raw "2026-09-01T12:40:49.833Z"
+// under a comment.
+export const prettyDateTime = (s) => {
+  const t = Date.parse(s || "");
+  return isNaN(t) ? "" : new Date(t).toLocaleString("en-IN", {
+    day: "numeric", month: "short", hour: "numeric", minute: "2-digit",
+  });
+};
+
 // Money, on the Indian scale: 75000 → "₹75,000", 750000 → "₹7.5L",
 // 12000000 → "₹1.2Cr". Null/empty/non-numeric → "—"; a real 0 → "₹0".
 //

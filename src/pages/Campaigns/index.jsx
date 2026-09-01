@@ -11,10 +11,10 @@ import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI, CreatorsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
-import { fmtCompact, fmtINR, fmtCPV, prettyDate, initials, ISO_DATE, todayISO, isoDay } from "../../lib/format";
+import { fmtCompact, fmtINR, fmtCPV, prettyDate, prettyDateTime, initials, ISO_DATE, todayISO, isoDay } from "../../lib/format";
 import { useBrandAccents } from "../../lib/brandAccent";
 import { settleSchedule } from "../../lib/invoiceMoney";
-import { creatorBudgetOf, numReqOf, costOf, normCreator, creatorExpensePlan, isLockedCreator, canSeeCampaign, creatorKeyOf,
+import { creatorBudgetOf, numReqOf, costOf, clientCostOf, normCreator, creatorExpensePlan, isLockedCreator, canSeeCampaign, creatorKeyOf,
          PIPELINE, PL_IDS, COMMON_STAGES, FIN_STAGES, EXEC_STAGES, EXEC_NODES,
          normStage, stageIdx, extUrl, rosterReady, rosterGap, poGaps, hasBudget, budgetPending, lockedCountOf,
          perCreatorDelivOf, delivTargetOf, totalDelivOf, liveLinksOf, withLiveLinks, delivDoneOf, creatorLive,
@@ -92,13 +92,19 @@ const ASSET_STATUSES = [
   {id:"pending_brand",label:"Pending Brand"},{id:"locked",label:"Locked"},
 ];
 const ASSET_COLOR = { yet_to_receive:T.label,received:T.accent,rework:T.amber,approved:T.green,pending_brand:T.amber,locked:T.green };
+// `suggested` is where every generated or hand-added creator starts: put to the
+// brand, not yet answered. Their yes/no in the client portal sets this field to
+// shortlisted or brand_reject (5th-internal-back, the decision route), and
+// setting either of those here does the same thing in reverse — one field, both
+// directions, so neither side has to be told what the other decided.
 const CR_JOURNEY = [
+  {id:"suggested",label:"Suggested",neg:false},
   {id:"shortlisted",label:"Shortlisted",neg:false},{id:"reached_out",label:"Reached Out",neg:false},
   {id:"negotiating",label:"Negotiating",neg:false},{id:"locked",label:"Locked",neg:false},
   {id:"backed_off",label:"Backed Off",neg:true},{id:"backup",label:"Backup",neg:false},
   {id:"brand_reject",label:"Brand Reject",neg:true},
 ];
-const CR_COLOR = { shortlisted:T.label,reached_out:T.accent,negotiating:T.amber,locked:T.green,backed_off:T.red,backup:T.purple,brand_reject:T.red };
+const CR_COLOR = { suggested:T.amber,shortlisted:T.label,reached_out:T.accent,negotiating:T.amber,locked:T.green,backed_off:T.red,backup:T.purple,brand_reject:T.red };
 const REMOVE_REASONS = [
   {id:"bad_gen",label:"Bad Generation",desc:"Auto-generated — not a good fit"},
   {id:"brand_reject",label:"Brand Reject",desc:"Informally communicated by the brand"},
@@ -233,7 +239,13 @@ const CREATOR_COLS = [
   // Concept/Demo deliberately absent: this table is the shortlist, and an
   // asset status is meaningless before the creator is locked. Both live on the
   // Deliverables tab, which only renders locked creators.
-  {key:"cost",label:"Cost",cv:false,w:90},{key:"payType",label:"Pay Type",cv:false,w:110},
+  // Cost is what WE pay and never leaves the building; Client Cost is what the
+  // brand is charged for that creator, and is the one column here the client
+  // actually sees — it is what their portal breaks the campaign budget down by.
+  // Adjacent on purpose: the pair is the per-creator margin, which is also why
+  // Client Cost is gated on canFin rather than canCrFin (see the header below).
+  {key:"cost",label:"Cost",cv:false,w:90},{key:"clientCost",label:"Client Cost",cv:true,w:100},
+  {key:"payType",label:"Pay Type",cv:false,w:110},
 ];
 // Maps form field names -> validator kinds, for live per-keystroke checks.
 const FIELD_SANITIZE = { phone:"phone", email:"email", pan:"pan", ifsc:"ifsc", bankAccount:"account", upiId:"upi" };
@@ -333,6 +345,23 @@ function useCreatorDirectory() {
   return state;
 }
 
+// The statuses the brand's own answer sets, keyed by the answer. A stored
+// decision that no longer matches the row is history — somebody here moved it
+// since — and a green "Brand ✓" sitting on a Brand Reject would say the
+// opposite of the truth, so the mark is only drawn while the two agree.
+const BRAND_DECIDED = { shortlisted:"approve", brand_reject:"reject" };
+
+// The brand's own call on a creator, made in the client portal — read off
+// `brandDecision`, which the portal writes alongside the status it sets.
+const BrandCall=({d})=>{
+  const ok=d.decision==="approve",col=ok?T.green:T.red;
+  return <span title={`${ok?"Approved":"Rejected"} by ${d.by||"the brand"}${d.at?` \u00b7 ${prettyDateTime(d.at)}`:""}`}
+    style={{marginLeft:6,fontSize:9,fontWeight:600,fontFamily:"'Sora'",color:col,border:`1px solid ${col}40`,
+      borderRadius:20,padding:"1px 6px",whiteSpace:"nowrap",cursor:"help"}}>
+    {ok?"\u2713":"\u2717"} Brand
+  </span>;
+};
+
 // ── CREATOR FACTORY ──────────────────────────────────────────────────────────
 const mkCreator = (src={}, cost) => ({
   _id:      src._id || `cr_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
@@ -351,8 +380,13 @@ const mkCreator = (src={}, cost) => ({
   // `fee`, and was mirrored into a second `negotiatedCost` field that nothing
   // ever read; one name, one field. Legacy docs are read via src.fee.
   cost:     cost ?? costOf(src),
+  // What the client is billed for them. Unset on a fresh shortlist entry —
+  // nobody has priced it yet, and 0 would say they are being given away free.
+  clientCost: src.clientCost ?? null,
   igFetched: src.igFetched || null, // raw auto-fetched snapshot (bio, posts, fetchedAt, etc.)
-  status:   "shortlisted",
+  // Suggested, not shortlisted: a name we have put forward is not a name the
+  // brand has agreed to. Their answer in the portal is what moves it on.
+  status:   "suggested",
   state:    src.state   || null,
   // Unset until someone chooses — see COLLAB_TYPES.
   collab:   src.collab  || null,
@@ -542,6 +576,11 @@ const costFrozen = (role, cr) => isLocked(cr) && !can(role, "overrideLockedCost"
 // agency fee and margin stay behind canFin/canFF.
 const canCrFin  = r => can(r, "seeCreatorFees");
 const canFF     = r => can(r, "seeMargins");          // margins — founder only
+// Who sets the fee charged ON TOP of the budget. Wider than canFF and narrower
+// than canCrFin on purpose: the fee is a term the client is quoted and can read
+// on their own portal, so the roles that own commercials set it, while what is
+// left of the budget after the creator pool stays behind canFF.
+const canAF     = r => can(r, "seeAgencyFee");
 const canCreate = r => can(r, "createCampaign");
 // Visibility now lives in lib/campaign.js (canSeeCampaign) — the app shell's
 // brand filter has to give the same answer as this board, and two copies of
@@ -1358,12 +1397,11 @@ const resolveCreatorBudget = (f, budget) =>
     ? (parseInt(f.creatorBudgetAmt) || 0)
     : Math.round(budget * clampPct(f.creatorBudgetPct) / 100);
 
-function CreatorBudgetField({budget,mode,pct,amount,onChange,showAgency}){
+function CreatorBudgetField({budget,mode,pct,amount,onChange}){
   const isPct = mode === "pct";
   const value = resolveCreatorBudget({creatorBudgetMode:mode,creatorBudgetPct:pct,creatorBudgetAmt:amount}, budget);
   const effPct = budget > 0 ? (value / budget) * 100 : 0;
   const over   = value > budget;
-  const agency = budget - value;
   const seg = segBtn;
   return(<div style={{marginBottom:14}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
@@ -1390,24 +1428,129 @@ function CreatorBudgetField({budget,mode,pct,amount,onChange,showAgency}){
       const on=clampPct(pct)===p;
       return <Chip key={p} on={on} onClick={()=>onChange({creatorBudgetPct:p})} style={{padding:"3px 10px",fontSize:10}}>{p}%</Chip>;
     })}</div>}
-    {/* Allocation bar — the creator pool against the agency remainder. Drawn
-        as ONE block, not one slice per creator: creators are negotiated
-        individually and rarely cost the same, so slicing the pool into equal
-        parts (and labelling it "≈ ₹X per creator") stated an even split the
-        roster almost never has. The pool is the only figure that is true
-        before anyone has been priced. */}
-    {budget>0&&!over&&<div style={{marginTop:10}}>
-      <div style={{display:"flex",height:8,borderRadius:4,overflow:"hidden",background:T.mute}}>
-        <div style={{width:`${effPct}%`,flexShrink:0,background:T.accent,borderRadius:2,transition:"width 0.25s"}}/>
-        <div style={{flex:1,minWidth:0,marginLeft:2,background:`${T.gold}55`,borderRadius:2}}/>
-      </div>
-      <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:9.5,fontFamily:SF}}>
-        <span style={{color:T.sub}}>Creator pool <strong style={{color:T.text,fontWeight:600}}>{fmtINR(value)}</strong></span>
-        {showAgency&&<span style={{color:T.label}}>Agency {fmtINR(agency)} · {(100-effPct).toFixed(0)}%</span>}
-      </div>
-    </div>}
+    {/* The allocation bar that used to live here is now MoneyStack, below the
+        whole money screen. It drew the pool against the agency remainder, which
+        was the entire picture while the budget was the entire commercial — but
+        with a fee charged on top there are three parts, and two bars competing
+        to be the summary is exactly the clutter this screen had. */}
     {over&&<div style={{fontSize:9.5,color:T.red,marginTop:6}}>Creator budget can't exceed the total budget of {fmtINR(budget)}.</div>}
     {budget>0&&!over&&value===0&&<div style={{fontSize:9.5,color:T.red,marginTop:6}}>Mandatory field — set how much of the budget goes to creators.</div>}
+  </div>);
+}
+
+// ── AGENCY FEE FIELD (New Campaign → Money) ──────────────────────────────────
+// The agency's own fee, charged ON TOP of the budget rather than carved out of
+// it — the difference between the two being who the money comes from. What is
+// left of the budget after the creator pool is margin the client never sees a
+// line for; this is a term they are quoted, PO'd and invoiced for, and it shows
+// on their portal beside the creators it sits next to.
+//
+// A PERCENTAGE, and only ever a percentage. A fee is negotiated as a rate — "we
+// work at 15%" — and a flat rupee number typed against a budget that later
+// moves silently stops being the rate that was agreed. The figure it comes to
+// is shown live next to the input, which is the half a flat field was for.
+//
+// Resolved against the budget as typed (the base), never against the total it
+// helps make up: a percentage of a total that already contains the percentage
+// is a different, larger number, and nobody agreeing a fee means that one.
+const resolveAgencyFee = (pct, base) => Math.round(base * clampPct(pct) / 100);
+
+function AgencyFeeField({base,pct,onChange}){
+  const fee = resolveAgencyFee(pct, base);
+  const set = v => onChange({agencyFeePct:v});
+  return(<div style={{marginBottom:14}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+      <Lbl>Agency fee</Lbl>
+      <span style={{fontSize:9.5,color:T.label,fontFamily:SF}}>charged on top</span>
+    </div>
+    <div style={{display:"flex",alignItems:"center",gap:10}}>
+      <div style={{position:"relative",width:120,flexShrink:0}}>
+        <input type="number" min={0} max={100} step={1} value={pct} placeholder="0"
+          onChange={e=>set(e.target.value)} style={{...INP,resize:"none",paddingRight:26}}/>
+        <span style={{position:"absolute",right:11,top:"50%",transform:"translateY(-50%)",fontSize:11,color:T.label,pointerEvents:"none"}}>%</span>
+      </div>
+      <span style={{fontSize:11,color:base>0?T.text:T.label,fontFamily:SF}}>
+        {base<=0 ? "Enter the total budget first"
+          : fee>0 ? `= ${fmtINR(fee)} on top of ${fmtINR(base)}`
+          : "No fee — the client pays the budget above"}
+      </span>
+    </div>
+    {/* "None" is a preset like any other, so choosing not to charge a fee is a
+        click rather than the absence of one. */}
+    <div style={{display:"flex",gap:6,marginTop:8}}>{[0,10,15,20].map(p=>{
+      const on = clampPct(pct)===p && (p>0 || String(pct).trim()!=="");
+      return <Chip key={p} on={on} onClick={()=>set(String(p))} style={{padding:"3px 10px",fontSize:10}}>{p===0?"None":`${p}%`}</Chip>;
+    })}</div>
+  </div>);
+}
+
+// ── MONEY STACK (New Campaign → Money) ───────────────────────────────────────
+// The whole commercial as one bar: what reaches creators, what stays here, and
+// what is charged on top — measured against the total the client actually pays.
+//
+// One picture for three numbers that were previously three separate readouts.
+// It is also the only place the wizard states the total, because the total is
+// the one figure on this screen nobody types: the budget and the fee are
+// inputs, and what they add up to is the answer.
+//
+// Segments the role can't see are still DRAWN, just not labelled — the same
+// rule the old allocation bar followed. A bar that changed shape depending on
+// who was looking would make two people describing the same campaign disagree.
+function MoneyStack({base,fee,pool,showMargin,showFee}){
+  const total = base + fee;
+  if(total<=0) return null;
+  const margin = Math.max(0, base - pool);
+  const segs = [
+    {k:"pool",   label:"Creator pool", v:pool,   c:T.accent,      show:true},
+    {k:"margin", label:"Agency",       v:margin, c:`${T.gold}99`, show:showMargin},
+    {k:"fee",    label:"Agency fee",   v:fee,    c:T.teal,        show:showFee},
+  ].filter(s=>s.v>0);
+  return(<div style={{marginBottom:14,padding:"12px 14px",borderRadius:10,background:T.raised,border:`1px solid ${T.border}`}}>
+    <div style={{display:"flex",alignItems:"baseline",justifyContent:"space-between",gap:10,marginBottom:9}}>
+      <Lbl>Client pays</Lbl>
+      <span style={{fontSize:17,fontWeight:700,color:T.text,fontFamily:SF,letterSpacing:"-0.02em"}}>{fmtINR(total)}</span>
+    </div>
+    <div style={{display:"flex",height:9,borderRadius:5,overflow:"hidden",background:T.mute,gap:2}}>
+      {segs.map(s=><div key={s.k} title={`${s.label} — ${fmtINR(s.v)}`}
+        style={{width:`${(s.v/total)*100}%`,background:s.c,borderRadius:3,transition:"width 0.3s ease"}}/>)}
+    </div>
+    <div style={{display:"flex",flexWrap:"wrap",gap:"5px 16px",marginTop:9}}>
+      {segs.filter(s=>s.show).map(s=>(
+        <span key={s.k} style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:9.5,fontFamily:SF,color:T.sub}}>
+          <span style={{width:7,height:7,borderRadius:2,background:s.c,flexShrink:0}}/>
+          {s.label} <strong style={{color:T.text,fontWeight:600}}>{fmtINR(s.v)}</strong>
+          <span style={{color:T.label}}>{Math.round((s.v/total)*100)}%</span>
+        </span>))}
+    </div>
+    {/* Said in words as well as drawn, because the total is the number that
+        leaves the building — it is what the quote, the PO and the client
+        invoice are all written for. */}
+    {fee>0&&showFee&&<div style={{marginTop:8,fontSize:9.5,color:T.label,fontFamily:SF,lineHeight:1.5}}>
+      {fmtINR(base)} budget + {fmtINR(fee)} agency fee. The client is quoted, PO'd and invoiced for the total.
+    </div>}
+  </div>);
+}
+
+// ── STEPPER (New Campaign → Scope) ───────────────────────────────────────────
+// A count you nudge rather than a box you select-all and retype. Both numbers
+// on the scope screen are small and are almost always adjusted by one, which is
+// a keystroke this turns into a click — and it makes a screen of empty boxes
+// read as something to play with rather than something to fill in.
+//
+// Still a real number input underneath: typing 12 straight in beats twelve
+// clicks, and someone who knows the number already shouldn't have to nudge.
+function Stepper({value,onChange,min=1,max=99,unit}){
+  const n = parseInt(value)||0;
+  const set = v => onChange(String(Math.min(max, Math.max(min, v))));
+  const btn = live => ({width:28,height:28,borderRadius:8,flexShrink:0,fontSize:15,lineHeight:1,fontFamily:SF,
+    border:`1px solid ${live?T.borderMid:T.border}`,background:live?T.surface:"transparent",
+    color:live?T.text:T.label,cursor:live?"pointer":"not-allowed",transition:"all 0.15s"});
+  return(<div style={{display:"flex",alignItems:"center",gap:7}}>
+    <button type="button" onClick={()=>set(n-1)} disabled={n<=min} title="One fewer" style={btn(n>min)}>−</button>
+    <input type="number" min={min} max={max} value={value} onChange={e=>onChange(e.target.value)} onBlur={()=>set(n)}
+      style={{...INP,width:58,textAlign:"center",padding:"7px 4px",resize:"none",fontWeight:600}}/>
+    <button type="button" onClick={()=>set(n+1)} disabled={n>=max} title="One more" style={btn(n<max)}>+</button>
+    {unit&&<span style={{fontSize:10.5,color:T.sub,fontFamily:SF}}>{unit}</span>}
   </div>);
 }
 
@@ -2647,6 +2790,18 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
     if(isLocked(cr))
       onLogTimeline?.(`${cr.name} — locked fee re-priced ${fmtINR(before)} → ${fmtINR(n)}${cr.invoiceNo?` (invoice ${cr.invoiceNo} already generated at the old figure)`:""}`);
   };
+  // The client-side twin of setCost. Silent while the campaign is still ours to
+  // price — the number is being agreed, and logging every keystroke-committed
+  // draft would bury the change that matters. Once the PO is raised it is a
+  // figure the client is holding, so re-pricing it lands on the timeline the
+  // same way a locked fee does.
+  const setClientCost=(cr,n)=>{
+    const before=clientCostOf(cr);
+    if(n===before)return;
+    patch(cr._id,{clientCost:n});
+    if(!beforePO(camp))
+      onLogTimeline?.(`${cr.name} — client cost re-priced ${before==null?"—":fmtINR(before)} → ${n==null?"—":fmtINR(n)} after the PO was raised`);
+  };
   const addFromSugg=cr=>{if(atCapacity)return;sync([...creators,cr]);setSuggested(p=>p.filter(c=>c._id!==cr._id));};
   // From the search: a directory row, not a roster entry, so it goes through
   // mkCreator the same way a suggestion does. Deliberately NOT capped at
@@ -2716,9 +2871,15 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
         ? "No creators in the directory yet — Add Creator is the way in, and everyone added there becomes searchable here."
         : "Every creator in the directory is already on this roster — use Add Creator for someone new."}</div>}
     <div style={{overflowX:"auto",borderRadius:6,border:`1px solid ${T.border}`}}>
-      <table style={{width:"100%",borderCollapse:"collapse",minWidth:1190}}>
+      <table style={{width:"100%",borderCollapse:"collapse",minWidth:1290}}>
         <thead><tr>
-          {CREATOR_COLS.filter(c=>c.key!=="cost"||canCrFin(role)).filter(c=>!["payType","payId"].includes(c.key)||canCrInv(role)).map(col=>(
+          {/* Client Cost is behind canFin, NOT canCrFin: canCrFin is the
+              creator-side pot that CM/AM/EA negotiate against, and putting what
+              the client pays on the same row as what we pay would hand every
+              one of those roles the per-creator margin — the exact thing
+              seeCampaignBudget exists to keep with the two roles that own
+              commercials (rbac.js). */}
+          {CREATOR_COLS.filter(c=>c.key!=="cost"||canCrFin(role)).filter(c=>c.key!=="clientCost"||canFin(role)).filter(c=>!["payType","payId"].includes(c.key)||canCrInv(role)).map(col=>(
             <th key={col.key} title={col.cv?undefined:"Internal only"} style={{...thS,width:col.w,minWidth:col.w}}>{col.label}</th>
           ))}
           {(canEdit||canCrInv(role))&&<th style={{...thS,width:130}}></th>}
@@ -2794,7 +2955,11 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
                     style={{display:"inline-flex",alignItems:"center",gap:4,fontSize:10.5,fontWeight:600,fontFamily:"'Sora'",color:stCol,
                       ...(canEdit&&isLocked(cr)?{background:`${stCol}12`,border:`1px solid ${stCol}40`,borderRadius:20,padding:"3px 10px",cursor:"default"}:{})}}>
                     {CR_JOURNEY.find(s=>s.id===cr.status)?.label}{canEdit&&isLocked(cr)&&<span style={{fontSize:8}}>🔒</span>}
-                  </span>}</td>
+                  </span>}
+                {/* Why the status is what it is, when the brand is the one who
+                    set it. Without it, a row that moved to Brand Reject on its
+                    own looks like somebody here did it. */}
+                {!!cr.brandDecision?.decision&&cr.brandDecision.decision===BRAND_DECIDED[cr.status]&&<BrandCall d={cr.brandDecision}/>}</td>
               {/* Locking a creator is what posts their cost to Billing as a
                   committed expense. Editing it afterwards re-prices a
                   commitment the books have already recorded — and, once an
@@ -2812,6 +2977,24 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
                     style={{color:T.text,...(canEdit&&isLocked(cr)?{cursor:"not-allowed"}:{})}}>
                     {fmtINR(costOf(cr))}{canEdit&&isLocked(cr)&&<span style={{fontSize:9,color:T.label,marginLeft:5}}>🔒</span>}
                   </span>}</td>}
+              {/* What the CLIENT is billed for this creator — the only figure
+                  on this table the brand ever sees. It is what their portal
+                  breaks the campaign budget down by (backend maps it onto the
+                  portal's `cost`), so an unset one is drawn as "—" and sent as
+                  null rather than as ₹0: a creator nobody has priced yet drops
+                  out of the brand's breakdown instead of appearing in it as a
+                  free one.
+                  Deliberately NOT frozen by the creator lock. Locking commits
+                  what we PAY (it posts the expense to Billing); what the client
+                  is charged is settled on the client PO, and freezing it here
+                  would strand every roster locked before the number was agreed.
+                  It is logged to the timeline once the PO is raised, because
+                  from that point it restates a figure the client has. */}
+              {canFin(role)&&<td style={tdS}>{canEdit
+                ? <CostCell value={clientCostOf(cr)} onCommit={n=>setClientCost(cr,n)} blankAs={null}
+                    style={{width:82,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}
+                    title={beforePO(camp)?"What the client is billed for this creator — shown in their portal's budget breakdown. Leave empty until it is agreed.":"The client PO is raised — changing this restates a figure the client already has, and is logged to the timeline."}/>
+                : <span style={{color:clientCostOf(cr)==null?T.label:T.text}}>{clientCostOf(cr)==null?"—":fmtINR(clientCostOf(cr))}</span>}</td>}
               {/* Carries its own caret. The app strips the native one from every
                   select (index.css), so a bordered box with a value in it was
                   indistinguishable from the plain text in the cells either side
@@ -2890,8 +3073,14 @@ function useDraft(value,onCommit,parse){
 // `title` is threaded through like DelivCell's: the founder's override of a
 // locked fee looks identical to an ordinary edit, so the warning about what it
 // re-prices has to reach the input itself.
-function CostCell({value,onCommit,style,title}){
-  const [draft,setDraft,commit]=useDraft(value,onCommit,d=>parseInt(d)||0);
+// `blankAs` is what an emptied field commits. 0 for the negotiated fee — every
+// creator has one, and a blank there is a typo mid-edit, not a state. null for
+// the client cost, which genuinely has an unset state ("not priced for the
+// client yet") that has to survive being cleared, because it is the difference
+// between a creator the brand's portal leaves out of its budget breakdown and
+// one it lists at ₹0.
+function CostCell({value,onCommit,style,title,blankAs=0}){
+  const [draft,setDraft,commit]=useDraft(value,onCommit,d=>d===""?blankAs:(parseInt(d)||0));
   return <MoneyInput value={draft} onChange={setDraft} onBlur={commit} title={title}
     onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}} style={style}/>;
 }
@@ -2979,7 +3168,84 @@ function LiveLinks({links,platform,canEdit,onChange}){
 }
 
 // ── DELIVERABLES TAB ─────────────────────────────────────────────────────────
-function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
+// ── CLIENT REVIEW THREAD ─────────────────────────────────────────────────────
+// What the client said about one asset — concept or demo — and what we said
+// back.
+//
+// The brand reviews it from their portal and writes their notes there; they
+// land on creators[].<asset>.comments, which is what this renders. Replies post
+// to the append endpoint rather than through the campaign PATCH — that rewrites
+// creators[] wholesale and would drop any note the brand left while this page
+// was open.
+//
+// Only mounted once there is something to read: the review is the client's to
+// open, and empty threads on every locked creator are noise on a dense tab.
+function AssetThread({campaignId,creator,asset,label,comments,canEdit,author,onThread}){
+  const [open,setOpen]=useState(false);
+  const [draft,setDraft]=useState("");
+  const [sending,setSending]=useState(false);
+  const [err,setErr]=useState(null);
+  if(!comments.length) return null;
+
+  const last=comments[comments.length-1];
+  const fromClient=comments.filter(c=>c.role==="client").length;
+  const send=async()=>{
+    const text=draft.trim();
+    if(!text||sending) return;
+    setSending(true);setErr(null);
+    try{
+      const res=await CampaignsAPI.replyToAsset(campaignId,creator._id,asset,{text,author});
+      onThread(creator._id,asset,res.comments);
+      setDraft("");
+    }catch(e){setErr(e.message||"Could not send that reply.");}
+    finally{setSending(false);}
+  };
+
+  return(<div style={{borderTop:`1px solid ${T.border}`,padding:"9px 14px"}}>
+    <div onClick={()=>setOpen(!open)} style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
+      <Lbl style={{color:T.amber,whiteSpace:"nowrap"}}>Client review · {label}</Lbl>
+      <span style={{fontSize:9.5,color:T.sub,whiteSpace:"nowrap"}}>
+        {fromClient} note{fromClient!==1?"s":""} from the brand
+      </span>
+      {/* The latest line, collapsed — enough to tell whether it needs opening. */}
+      {!open&&<span style={{fontSize:9.5,color:T.label,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+        “{last.body}”
+      </span>}
+      <span style={{fontSize:9,color:T.accent,marginLeft:"auto"}}>{open?"Hide ▴":"Open ▾"}</span>
+    </div>
+
+    {open&&<div style={{marginTop:10,display:"flex",flexDirection:"column",gap:8}}>
+      {comments.map(c=>{
+        const client=c.role==="client";
+        return(<div key={c.id} style={{alignSelf:client?"flex-start":"flex-end",maxWidth:"78%"}}>
+          <div style={{fontSize:8.5,color:T.label,marginBottom:3}}>
+            {c.author||(client?"Client":"5th Avenue")}{c.at?` · ${prettyDateTime(c.at)}`:""}
+          </div>
+          <div style={{fontSize:10.5,lineHeight:1.5,color:T.text,whiteSpace:"pre-wrap",padding:"7px 10px",borderRadius:6,
+            background:client?`${T.amber}12`:T.raised,border:`1px solid ${client?`${T.amber}25`:T.border}`}}>
+            {c.body}
+          </div>
+        </div>);
+      })}
+
+      {canEdit&&<div style={{marginTop:2}}>
+        {err&&<div style={{fontSize:9.5,color:T.red,marginBottom:4}}>{err}</div>}
+        <textarea value={draft} onChange={e=>setDraft(e.target.value)} rows={2}
+          onKeyDown={e=>{if(e.key==="Enter"&&(e.metaKey||e.ctrlKey)){e.preventDefault();send();}}}
+          placeholder={`Reply to the client about the ${label.toLowerCase()}…`} style={{...INP,fontSize:10,padding:"6px 8px",resize:"vertical",width:"100%"}}/>
+        <div style={{display:"flex",justifyContent:"flex-end",marginTop:5}}>
+          <button onClick={send} disabled={!draft.trim()||sending}
+            style={{fontSize:9,color:T.accent,background:"transparent",border:`1px solid ${T.accent}25`,borderRadius:3,
+              padding:"3px 9px",fontFamily:"'Sora'",cursor:draft.trim()&&!sending?"pointer":"not-allowed",opacity:draft.trim()&&!sending?1:0.45}}>
+            {sending?"Sending…":"Send reply"}
+          </button>
+        </div>
+      </div>}
+    </div>}
+  </div>);
+}
+
+function TabDeliverables({camp,role,currentUser,onUpdateCreators,onLogTimeline}){
   // `creators` stays the FULL list so edits below splice back into the real
   // array; `rows` is what actually renders. Filtering the state itself would
   // drop every non-locked creator on the first save.
@@ -2992,6 +3258,12 @@ function TabDeliverables({camp,role,onUpdateCreators,onLogTimeline}){
   const pCon=(id,obj)=>pCr(id,{concept:{...(creators.find(c=>c._id===id)?.concept||{}),...obj}});
   const pDem=(id,obj)=>pCr(id,{demo:{...(creators.find(c=>c._id===id)?.demo||{}),...obj}});
   const pLiv=(id,obj)=>pCr(id,{live:{...(creators.find(c=>c._id===id)?.live||{}),...obj}});
+  /* setCreators, NOT sync: the thread is already persisted by the append
+     endpoint, and routing it through onUpdateCreators would fire a campaign
+     PATCH that rewrites creators[] from this tab's copy — the exact overwrite
+     the endpoint exists to avoid. */
+  const setThread=(id,asset,comments)=>setCreators(cs=>cs.map(c=>
+    c._id===id?{...c,[asset]:{...(c[asset]||{}),comments}}:c));
   const pTrk=(id,obj)=>pCr(id,{tracking:{...(creators.find(c=>c._id===id)?.tracking||{}),...obj}});
   // Scope changes are audited. Cost is frozen once a creator is locked because
   // the fee is committed in Billing — but the number of posts that fee buys
@@ -3203,6 +3475,12 @@ const externalCpv = totV > 0 && campaignBudget > 0
               </>}
             </div>
           </div>
+          {/* Full width under the four cells: a conversation in a 25% column is
+              unreadable, and this is the one thing on the row the client wrote.
+              One per reviewable asset; each hides itself until it has notes. */}
+          {[["concept","Concept",con],["demo","Demo video",dem]].map(([key,label,a])=>
+            <AssetThread key={key} campaignId={camp.id} creator={cr} asset={key} label={label}
+              comments={a.comments||[]} canEdit={canEdit} author={currentUser?.name} onThread={setThread}/>)}
         </div>);
       })}
     </div>
@@ -3882,7 +4160,7 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
             {tab==="brief"        &&<TabBrief        camp={camp} role={role} currentUser={currentUser} onAction={onAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign} onGoTab={setTab} onAllocate={canAllocate?()=>setAllocating(true):null}/>}
             {tab==="team"         &&<TabTeam         camp={camp} role={role} onAction={onAction}/>}
             {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
-            {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
+            {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} currentUser={currentUser} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
             {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
             {tab==="financials"   &&(canFin(role)||canCrFin(role))&&<TabFinancials camp={camp} role={role} onAllocate={canAllocate?()=>setAllocating(true):null}/>}
           </motion.div>
@@ -3897,11 +4175,19 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
 // only labels itself "BASICS — 1 OF 4" gives you no reason to keep going and no
 // idea what's coming, so the two steps that are entirely skippable read as work
 // rather than as the free passes they actually are.
+// Money and Scope were one "Commercial" step, and it was the screen everybody
+// stalled on: a budget, a defer toggle, two scope counters with a defer toggle
+// of their own, a creator-budget split with its own mode switch and presets,
+// fourteen niche chips and two date pickers — nine controls answering three
+// unrelated questions. Split at the seam that was already there: money is
+// agreed with the client's finance side, scope and dates with their marketing
+// side, and neither conversation waits on the other.
 const STEPS=[
-  {id:"Basics",     title:"Start with the basics",     sub:"A name and a brand is most of it."},
-  {id:"Brief",      title:"What's the campaign for?",  sub:"Objective is the one thing worth pinning down now — the rest can be written properly later, on its own tab."},
-  {id:"Commercial", title:"Scope and money",           sub:"How many creators, when it runs, and — if the client has agreed one yet — the budget."},
-  {id:"Internal",   title:"Anything the client shouldn't see?", sub:"Optional. Check the summary and you're done."},
+  {id:"Basics",   title:"Start with the basics",     sub:"A name and a brand is most of it."},
+  {id:"Brief",    title:"What's the campaign for?",  sub:"Objective is the one thing worth pinning down now — the rest can be written properly later, on its own tab."},
+  {id:"Money",    title:"What the client pays",      sub:"The budget, anything charged on top of it, and how much of it reaches creators."},
+  {id:"Scope",    title:"How big, and when",         sub:"How many creators, what each of them owes, and the window it runs in."},
+  {id:"Internal", title:"Anything the client shouldn't see?", sub:"Optional. Check the summary and you're done."},
 ];
 
 // Numbered rail with every step named, ticked once it's behind you and
@@ -3942,7 +4228,7 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
       // files the campaign (and every invoice and PO after it) under another
       // client. Still editable; only the default changes. Validated against
       // `brands`, which may not have loaded yet.
-  const [f,setF]=useState({name:"",brandId:brands.some(b=>b.id===brandFilter)?brandFilter:"",service:"Influencer Marketing",region:"",niches:[],budget:"",budgetDeferred:false,scopeDeferred:false,numCreators:5,deliverablesPerCreator:1,creatorBudgetMode:"pct",creatorBudgetPct:60,creatorBudgetAmt:"",objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
+  const [f,setF]=useState({name:"",brandId:brands.some(b=>b.id===brandFilter)?brandFilter:"",service:"Influencer Marketing",region:"",niches:[],budget:"",budgetDeferred:false,scopeDeferred:false,numCreators:5,deliverablesPerCreator:1,creatorBudgetMode:"pct",creatorBudgetPct:60,creatorBudgetAmt:"",agencyFeePct:"",objective:"",audience:"",messages:"",deliverables:[],timelineStart:"",timelineEnd:"",internalNotes:""});
   // Staged only — nothing is written to the backend until the campaign is
   // actually submitted, so abandoning this modal never leaves an orphan brand.
   const [pendingBrandName,setPendingBrandName]=useState(null);
@@ -3954,7 +4240,16 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
   const [tried,setTried]=useState(false);
   const u=(k,v)=>setF(p=>({...p,[k]:v}));
   const merge=patch=>setF(p=>({...p,...patch}));
+  // budgetNum is the budget AS TYPED — the base. The agency fee is charged on
+  // top of it, and clientTotal is what actually gets stored as the campaign's
+  // `budget`, because that field means "what the client pays" everywhere it is
+  // read (the quote line, the PO, the client invoice, the portal's budget card).
   const budgetNum=parseInt(f.budget)||0;
+  const agencyFee=canAF(role)?resolveAgencyFee(f.agencyFeePct,budgetNum):0;
+  const clientTotal=budgetNum+agencyFee;
+  // Drawn from the base, never the total: the fee is the agency's and was never
+  // going to pay a creator, so a pool set at "60% of budget" means 60% of the
+  // campaign, not 60% of the campaign plus our own fee.
   const creatorBudget=resolveCreatorBudget(f,budgetNum);
   // Per-step required fields — Next/Create stay disabled until the current
   // step's required inputs are filled (Brief + Internal have none).
@@ -3975,7 +4270,8 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
   const stepOk=[
     !!(f.name.trim()&&f.service&&f.brandId),
     !!f.objective.trim(),
-    moneyOk&&scopeOk&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
+    moneyOk,
+    scopeOk&&!!f.timelineStart&&!!f.timelineEnd&&f.timelineEnd>=f.timelineStart,
     true,
   ];
   const ok=stepOk[step];
@@ -3996,7 +4292,13 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
     // Both are NULL when the budget was deferred — see hasBudget in
     // lib/campaign.js for why absent rather than zero.
     const payload={...f,timeline:timelineLabel,
-      budget:f.budgetDeferred?null:budgetNum,
+      budget:f.budgetDeferred?null:clientTotal,
+      // Stored resolved AND as the rate it was agreed at: the amount is what
+      // every downstream number needs, the rate is what a renegotiation starts
+      // from. Both null on a deferred budget — there is nothing to take a
+      // percentage of yet, and 0 would read as "we agreed to charge nothing".
+      agencyFee:f.budgetDeferred?null:agencyFee,
+      agencyFeePct:f.budgetDeferred?null:(agencyFee>0?clampPct(f.agencyFeePct):0),
       creatorBudget:f.budgetDeferred?null:creatorBudget};
     if(f.brandId!=="__new__"){ onSubmit(payload); return; }
     setSubmitting(true);setBrandErr(null);
@@ -4094,7 +4396,16 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
               ? <div style={{fontSize:10.5,color:T.sub,lineHeight:1.55,padding:"10px 12px",borderRadius:8,background:`${T.amber}0D`,border:`1px solid ${T.amber}26`}}>
                   The campaign runs as normal — brief, team, roster and delivery are all open. Allocate the budget from its Brief or Financials tab when the client agrees a number; the client PO and the invoice wait until you do.
                 </div>
-              : <MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="e.g. 12,50,000" style={{...INP,resize:"none"}}/>}
+              : /* The headline of its own screen now, so it is sized like one.
+                   A 12px input asking for the number the whole campaign is
+                   built on looked exactly as important as the region field two
+                   steps back. The ₹ sits inside the box rather than in the
+                   label, so the figure reads as money while it is being typed. */
+                <div style={{position:"relative"}}>
+                  <span style={{position:"absolute",left:14,top:"50%",transform:"translateY(-50%)",fontSize:17,color:T.label,pointerEvents:"none",fontFamily:SF}}>₹</span>
+                  <MoneyInput value={f.budget} onChange={v=>u("budget",v)} placeholder="12,50,000"
+                    style={{...INP,resize:"none",padding:"13px 14px 13px 32px",fontSize:19,fontWeight:600,letterSpacing:"-0.01em"}}/>
+                </div>}
             {/* Still mandatory. The toggle is the ONLY way past it — leaving it
                 blank on "Set now" is an omission, and the campaign would go on
                 to quote and invoice the client from it. */}
@@ -4102,6 +4413,23 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
               Mandatory field — enter the total budget, or switch to "Not agreed yet" if the client hasn't given you one.
             </Req>
           </Field>
+          {/* The fee is a commercial term, so it sits with the budget it is
+              charged against and above the split of that budget — the order the
+              conversation happens in: what is the campaign worth, what do we
+              charge on top, and how much of it goes to creators. Absent for the
+              roles that don't set it (canAF), rather than shown disabled. */}
+          {!f.budgetDeferred&&canAF(role)&&<AgencyFeeField base={budgetNum} pct={f.agencyFeePct} onChange={merge}/>}
+          {/* Nothing to split until there is a total. Hidden rather than shown
+              disabled: an empty allocation bar reads as "the creators get
+              nothing", which is the opposite of what a deferred budget means. */}
+          {!f.budgetDeferred&&<CreatorBudgetField
+            budget={budgetNum}
+            mode={f.creatorBudgetMode} pct={f.creatorBudgetPct} amount={f.creatorBudgetAmt}
+            onChange={merge}/>}
+          {!f.budgetDeferred&&<MoneyStack base={budgetNum} fee={agencyFee} pool={creatorBudget}
+            showMargin={canFF(role)} showFee={canAF(role)}/>}
+        </>}
+        {step===3&&<>
           {/* The two numbers that size a campaign. Deliverables-per-creator is
               the PLAN — any single creator can be set higher on the
               Deliverables tab without changing it (see delivTargetOf). */}
@@ -4128,21 +4456,16 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
               ? <div style={{fontSize:10.5,color:T.sub,lineHeight:1.55,padding:"10px 12px",borderRadius:8,background:`${T.amber}0D`,border:`1px solid ${T.amber}26`}}>
                   Set the scope from the Brief tab once it's agreed. Shortlisting, locking and delivery all stay open — the roster just has no target to be complete against, so it won't auto-confirm to the client.
                 </div>
-              : <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-                  <div><Lbl style={{display:"block",marginBottom:4,fontSize:8.5}}>Creators required</Lbl><input type="number" min={1} value={f.numCreators} onChange={e=>u("numCreators",e.target.value)} placeholder="5" style={{...INP,resize:"none"}}/></div>
-                  <div><Lbl style={{display:"block",marginBottom:4,fontSize:8.5}}>Deliverables each</Lbl><input type="number" min={1} value={f.deliverablesPerCreator} onChange={e=>u("deliverablesPerCreator",e.target.value)} placeholder="1" style={{...INP,resize:"none"}}/></div>
+              : <div style={{display:"flex",flexWrap:"wrap",gap:"12px 28px"}}>
+                  <div><Lbl style={{display:"block",marginBottom:6,fontSize:8.5}}>Creators required</Lbl>
+                    <Stepper value={f.numCreators} onChange={v=>u("numCreators",v)} unit={nCr===1?"creator":"creators"}/></div>
+                  <div><Lbl style={{display:"block",marginBottom:6,fontSize:8.5}}>Deliverables each</Lbl>
+                    <Stepper value={f.deliverablesPerCreator} onChange={v=>u("deliverablesPerCreator",v)} max={20} unit={nDv===1?"post":"posts"}/></div>
                 </div>}
             <Req show={tried&&!scopeOk}>
               Mandatory field — both numbers are required, and each has to be at least 1.{f.budgetDeferred?' Switch to "Not decided" to size the campaign later.':' Switch the budget to "Not agreed yet" if the scope isn\'t settled either.'}
             </Req>
           </Field>
-          {/* Nothing to split until there is a total. Hidden rather than shown
-              disabled: an empty allocation bar reads as "the creators get
-              nothing", which is the opposite of what a deferred budget means. */}
-          {!f.budgetDeferred&&<CreatorBudgetField
-            budget={budgetNum}
-            mode={f.creatorBudgetMode} pct={f.creatorBudgetPct} amount={f.creatorBudgetAmt}
-            onChange={merge} showAgency={canFF(role)}/>}
           <Field label="Niches" optional hint="Steers Generate towards creators in the same or similar niches. Leave empty for any niche.">
             <NicheSelect value={f.niches} onChange={v=>u("niches",v)}/>
           </Field>
@@ -4158,14 +4481,21 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
             </Req>
           </Field>
         </>}
-        {step===3&&<>
-          {/* Everything the three steps behind you added up to. The last screen
+        {step===4&&<>
+          {/* Everything the four steps behind you added up to. The last screen
               was one textarea, which is a strange place to be asked to commit
               without being shown what you're committing to. */}
           <div style={{display:"flex",flexWrap:"wrap",gap:"12px 26px",padding:"13px 15px",borderRadius:10,background:`${T.accent}08`,border:`1px solid ${T.accent}1F`,marginBottom:16}}>
             <Stat small label="Campaign" value={f.name||"—"}/>
             <Stat small label="Brand" value={brandLabel}/>
+            {/* Three figures, not one, when a fee is charged: the budget, the
+                fee on top, and the total the client is actually committing to.
+                A summary that showed only the total would hide the term someone
+                just agreed; one that showed only the budget would understate
+                the campaign by the fee. */}
             <Stat small label="Budget" value={f.budgetDeferred?"To be allocated":budgetNum?fmtINR(budgetNum):"—"}/>
+            {!f.budgetDeferred&&agencyFee>0&&<Stat small label="Agency fee" value={`${fmtINR(agencyFee)} · ${clampPct(f.agencyFeePct)}%`}/>}
+            {!f.budgetDeferred&&agencyFee>0&&<Stat small label="Client pays" value={fmtINR(clientTotal)}/>}
             <Stat small label="Scope" value={scopeSet?`${nCr} creators · ${nDv||1} each`:"To be agreed"}/>
             <Stat small label="Window" value={timelineLabel||"—"}/>
           </div>
@@ -4609,6 +4939,12 @@ export default function InternalCampaigns(){
       id:campId, name:f.name, client:brandName(f.brandId)||"", brandId:f.brandId, service:f.service,
       region:f.region||"TBD", niches:f.niches||[], stage:"draft",
       budget, creatorBudget:deferred?null:Math.min(f.creatorBudget||0,budget),
+      // `budget` above is what the client pays — base + fee. These two record
+      // what the fee half of it was, so Billing, the portal and any later
+      // renegotiation can name it rather than infer it from a total. See
+      // agencyFeeOf / baseBudgetOf in lib/campaign.js.
+      agencyFee:deferred?null:(parseInt(f.agencyFee)||0),
+      agencyFeePct:deferred?null:(parseFloat(f.agencyFeePct)||0),
       // NULL when the scope was explicitly deferred. `|| 5` used to sit here,
       // and it is where the invented count was born: nothing in the form said
       // "not decided", so an absent answer became five creators that the

@@ -35,7 +35,13 @@ export const PERMS = {
   // the execution track alone, drawn as one straight line with no fork.
   seeFinanceTrack:    ["founder", "pcm", "am", "accounts_head", "accounts_exec"],
   seeMargins:         ["founder"],
-  seeAgencyFee:       ["founder"],
+  // The fee charged ON TOP of a campaign's budget — a commercial term the
+  // client is quoted and can see on their own portal, not an internal split.
+  // That is what separates it from seeMargins directly above, which is the
+  // slice of the budget we keep and stays founder-only: PCM negotiates the fee
+  // with the brand, so they set it on the campaign; what is left of the budget
+  // after the creator pool is still none of their business.
+  seeAgencyFee:       ["founder", "pcm"],
   createCampaign:     ["founder", "pcm", "cm", "am"],
   deleteCampaign:     ["founder"],
   // Pushing a campaign's end date out is a commercial decision (it moves the

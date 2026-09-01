@@ -1034,21 +1034,6 @@ function Hero({ asOfLabel }) {
           }}
         >
 
-          <span
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              background: F.forest,
-              boxShadow:
-                `0 0 0 5px ${F.forestTint}`,
-              animation: reduce
-                ? undefined
-                : "fsLivePulse 2.2s ease-in-out infinite",
-            }}
-          />
-
-          Agency intelligence
 
         </div>
 

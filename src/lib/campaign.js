@@ -145,7 +145,18 @@ export const budgetPending = c => !hasBudget(c);
 // "₹4L of ₹0" in over-budget red the moment a creator was locked on a campaign
 // whose number simply hadn't been agreed yet.
 export const creatorBudgetOf = c =>
-  c?.creatorBudget || (hasBudget(c) ? Math.round(c.budget * 0.6) : null);
+  c?.creatorBudget || (hasBudget(c) ? Math.round(baseBudgetOf(c) * 0.6) : null);
+
+// The fee charged ON TOP of the budget, stored resolved. 0 rather than null
+// when there is none — "nothing charged on top" is an answer, unlike `budget`,
+// where absent means no number has been agreed.
+export const agencyFeeOf = c => Math.max(0, Number(c?.agencyFee) || 0);
+
+// The campaign without the fee — what the fee is a percentage of, and what the
+// creator pool is drawn from. `budget` stays the total the client pays, so the
+// quote, PO, invoice and portal all keep reading one honest number.
+export const baseBudgetOf = c =>
+  hasBudget(c) ? Math.max(0, (Number(c.budget) || 0) - agencyFeeOf(c)) : null;
 
 // How many creators the campaign is scoped for — NULL when nobody has said yet.
 //
@@ -287,6 +298,23 @@ export const canSeeCampaign = (c, role, teamId) =>
 // before the migration runs, or against an environment where it never did,
 // without invoices rendering ₹0. `??` not `||`, so a negotiated 0 survives.
 export const costOf = cr => cr?.cost ?? cr?.fee ?? cr?.negotiatedCost ?? 0;
+
+// What the CLIENT is billed for this creator — the other side of the same row.
+//
+// costOf() is what we PAY: creator-side money, gated on seeCreatorFees, and it
+// never leaves the building. This is what the brand is charged for that
+// creator, and it is the only per-creator figure the portal is allowed to
+// render (5th-internal-back server.js maps it onto the portal's `cost`), which
+// is why it sits behind seeCampaignBudget here — the two numbers side by side
+// on one row ARE the margin.
+//
+// null, never 0: "not priced for the client yet" and "billed at nothing" are
+// different answers, and both the roster cell and the portal's budget
+// breakdown draw the first as "—" rather than as a figure nobody agreed.
+export const clientCostOf = cr => {
+  const v = cr?.clientCost;
+  return v == null || v === "" ? null : Number(v) || 0;
+};
 
 // Normalises a creator entry read from the API onto the current field names.
 // Applied once at load, in the same place stages are normalised, so nothing

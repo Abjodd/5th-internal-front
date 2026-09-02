@@ -35,7 +35,21 @@ export const PERMS = {
   // the execution track alone, drawn as one straight line with no fork.
   seeFinanceTrack:    ["founder", "pcm", "am", "accounts_head", "accounts_exec"],
   seeMargins:         ["founder"],
-  seeAgencyFee:       ["founder"],
+  // The fee charged ON TOP of a campaign's budget — a commercial term the
+  // client is quoted and can see on their own portal, not an internal split.
+  // That is what separates it from seeMargins directly above, which is the
+  // slice of the budget we keep and stays founder-only: PCM negotiates the fee
+  // with the brand, so they set it on the campaign; what is left of the budget
+  // after the creator pool is still none of their business.
+  seeAgencyFee:       ["founder", "pcm"],
+  // CHANGING it after the campaign is raised, which is a different act from
+  // agreeing it in the first place. Setting the fee is part of pricing a new
+  // campaign, and PCM prices campaigns. Editing it later re-prices something
+  // the client has already been quoted — and because the fee is charged on top,
+  // it moves the campaign's total, which is what the PO and the invoice are
+  // both drawn from. That is the same shape as overrideLockedCost below:
+  // founder only, and every use lands on the timeline.
+  editAgencyFee:      ["founder"],
   createCampaign:     ["founder", "pcm", "cm", "am"],
   deleteCampaign:     ["founder"],
   // Pushing a campaign's end date out is a commercial decision (it moves the

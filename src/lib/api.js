@@ -217,4 +217,13 @@ export const CampaignsAPI = {
     request(`/api/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   // actor lands on the campaign's timeline ("Campaign deleted" audit entry)
   remove: (id, actor) => request(`/api/campaigns/${id}${actor ? `?actor=${encodeURIComponent(actor)}` : ""}`, { method: "DELETE" }),
+
+  /* Reply to the client on a creator's concept or demo. Its own endpoint
+     rather than a campaign PATCH: the thread is written from the portal too,
+     and a PATCH rewrites the whole creators[] array — so a save here would
+     drop any note the brand left since this page loaded. `asset` is "concept"
+     or "demo". Returns the whole thread back. */
+  replyToAsset: (campaignId, creatorId, asset, { text, author }) =>
+    request(`/api/campaigns/${campaignId}/creators/${encodeURIComponent(creatorId)}/${asset}/comments`,
+      { method: "POST", body: JSON.stringify({ text, author }) }),
 };

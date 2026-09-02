@@ -674,10 +674,14 @@ function syncCreatorExpenses(camp,prevCreators,nextCreators,onError){
 // own progress instead. The stage LABEL beside this number is already derived
 // that way (viewPl); the number wasn't, so an EA read "Creator Payment · 80%"
 // with a rail underneath saying 100% live. Three readings of one campaign.
+// The COMMERCIAL figure: a flat step lookup on the stored finance stage. Named
+// rather than inlined because the header now prints it beside the delivery one
+// and a second hand-rolled `PIPELINE[stageIdx(...)].p` at the call site is a
+// second chance for the two to disagree.
+const commercialPct = c => (PIPELINE[stageIdx(c?.stage)]||PIPELINE[0]).p;
+
 function progressOf(c, role){
-  return canFinTrack(role)
-    ? (PIPELINE[stageIdx(c?.stage)]||PIPELINE[0]).p
-    : execStats(c).pct;
+  return canFinTrack(role) ? commercialPct(c) : execStats(c).pct;
 }
 // extUrl / profileUrl now live in lib/campaign.js — the creators directory and
 // the creator-applications inbox render handles too, and all three screens have
@@ -4153,9 +4157,22 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
                   )}
                 </Stat>
               : <Stat label="Budget" value={fmtINR(camp.budget)}/>)}
-            {[{k:"Creators",v:numReqOf(camp)!=null?`${lockedCountOf(camp)} of ${numReqOf(camp)} locked`:`${lockedCountOf(camp)} locked · no count set`},
-              {k:"Progress",v:`${progressOf(camp,role)}%`},
-             ].map(s=><Stat key={s.k} label={s.k} value={s.v}/>)}
+            <Stat label="Creators" value={numReqOf(camp)!=null?`${lockedCountOf(camp)} of ${numReqOf(camp)} locked`:`${lockedCountOf(camp)} locked · no count set`}/>
+            {/* TWO figures, because there are two tracks and the rail below
+                already draws them apart. One stat labelled "Progress" carrying
+                the finance number was the third reading of the same campaign:
+                the header said 16%, the Execution tag said 82%, and the Finance
+                tag said "not started" — all three correct, all three about
+                different things, and only the header's unlabelled. A campaign
+                whose PO simply hadn't been raised looked, at a glance, barely
+                begun. Each figure now names its own track, and a role with no
+                finance rail (see canFinTrack) is shown only the one it has. */}
+            <Stat label="Delivery" value={`${execStats(camp).pct}%`}/>
+            {canFinTrack(role)&&(
+              <Stat label="Commercials" value={`${commercialPct(camp)}%`}>
+                <span style={{fontFamily:SF,fontSize:10.5,color:T.sub}}>{viewPl(camp,role).label}</span>
+              </Stat>
+            )}
             <Stat label="Window" value={`${prettyDate(camp.start)} – ${prettyDate(camp.end)}`}>
               <EndPill es={es}/>
               {/* Offered exactly when the end-date nudge is showing — the

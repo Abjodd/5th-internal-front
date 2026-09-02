@@ -147,23 +147,14 @@ export const budgetPending = c => !hasBudget(c);
 export const creatorBudgetOf = c =>
   c?.creatorBudget || (hasBudget(c) ? Math.round(baseBudgetOf(c) * 0.6) : null);
 
-// The agency's fee, charged ON TOP of the campaign budget rather than carved
-// out of it. Always a percentage of the base when it is set (the wizard only
-// offers a %), stored resolved so nothing downstream has to recompute it.
-//
-// 0, not null, when there isn't one: every campaign has an answer to "what is
-// charged on top" and for most of them it is nothing. That is different from
-// `budget`, where absent genuinely means "no number agreed yet".
+// The fee charged ON TOP of the budget, stored resolved. 0 rather than null
+// when there is none — "nothing charged on top" is an answer, unlike `budget`,
+// where absent means no number has been agreed.
 export const agencyFeeOf = c => Math.max(0, Number(c?.agencyFee) || 0);
 
-// The campaign itself, without the fee on top — what the fee was calculated on
-// and what the creator pool is drawn from.
-//
-// `budget` stays what it has always been: the total the client pays. Adding the
-// fee to it rather than storing it alongside is what keeps every downstream
-// number honest without touching any of them — the quote line, the PO, the
-// client invoice and the portal's budget card all mean "what the client pays",
-// and all of them would understate it if the fee lived in a field of its own.
+// The campaign without the fee — what the fee is a percentage of, and what the
+// creator pool is drawn from. `budget` stays the total the client pays, so the
+// quote, PO, invoice and portal all keep reading one honest number.
 export const baseBudgetOf = c =>
   hasBudget(c) ? Math.max(0, (Number(c.budget) || 0) - agencyFeeOf(c)) : null;
 

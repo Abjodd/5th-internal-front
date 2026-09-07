@@ -4359,7 +4359,11 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
     setSubmitting(true);setBrandErr(null);
     try{
       const created=await onCreateBrand(pendingBrandName);
-      onSubmit({...payload,brandId:created.id});
+      // The name travels with the id: onSubmit is a closure from this render,
+      // so its brands[] does not hold the brand we just created and it cannot
+      // look the name up itself. Without this the campaign saved `client: ""`
+      // and the brand's client portal showed nothing at all.
+      onSubmit({...payload,brandId:created.id,clientName:created.name});
     }catch(err){
       setBrandErr(err.message||"Could not create brand — campaign not created");
       setSubmitting(false);
@@ -4986,7 +4990,9 @@ export default function InternalCampaigns(){
     const deferred = f.budget===null||f.budgetDeferred;
     const budget = deferred ? null : (parseInt(f.budget)||0);
     const c={
-      id:campId, name:f.name, client:brandName(f.brandId)||"", brandId:f.brandId, service:f.service,
+      // f.clientName first — the wizard passes it for a brand created in this
+      // same submit, the one case brandName() cannot answer. See handleSubmit.
+      id:campId, name:f.name, client:f.clientName||brandName(f.brandId)||"", brandId:f.brandId, service:f.service,
       region:f.region||"TBD", niches:f.niches||[], stage:"draft",
       budget, creatorBudget:deferred?null:Math.min(f.creatorBudget||0,budget),
       // `budget` above is base + fee. These record which half was the fee, so

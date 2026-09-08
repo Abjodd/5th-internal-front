@@ -2036,13 +2036,48 @@ function LockCreatorModal({creator,onConfirm,onCancel}){
 }
 
 // ── DELETE CAMPAIGN MODAL ────────────────────────────────────────────────────
-// Founder-only confirm step. The backend soft-deletes (deleted:true), so the
-// campaign disappears from every list but stays recoverable in the DB.
-const DeleteCampaignModal=({camp,onConfirm,onCancel})=>(
-  <Dialog title="Delete Campaign" onCancel={onCancel}
-    sub={<>Delete <strong style={{color:T.text}}>{camp?.name}</strong> ({camp?.client})? It will be removed from all views. Recovery requires a database restore.</>}
-    confirm={{label:"Delete campaign",variant:"danger",onClick:onConfirm}}/>
-);
+// Founder-only, and two genuinely different acts rather than one button whose
+// consequence you have to already know.
+//
+// This used to be a single "Delete campaign" that archived — the copy said
+// "Recovery requires a database restore", which was wrong twice over: the row
+// was still right there under deleted:true, and anyone who actually wanted it
+// gone had no way to say so. Archive is the default because it is the one you
+// can take back.
+const DELETE_MODES=[
+  {id:"archive",label:"Archive",blurb:"Removed from every view and every total. The record stays in the database and can be restored.",btn:"Archive campaign",variant:"primary"},
+  {id:"purge",label:"Delete permanently",blurb:"The campaign and the creator expenses generated from its roster are erased from the database. This cannot be undone.",btn:"Delete permanently",variant:"danger"},
+];
+
+function DeleteCampaignModal({camp,onConfirm,onCancel}){
+  const [mode,setMode]=useState("archive");
+  const picked=DELETE_MODES.find(m=>m.id===mode);
+  return(
+    <Dialog title="Delete Campaign" width={460} onCancel={onCancel}
+      sub={<><strong style={{color:T.text}}>{camp?.name}</strong>{camp?.client?` (${camp.client})`:""} — choose what happens to it.</>}
+      confirm={{label:picked.btn,variant:picked.variant,onClick:()=>onConfirm(mode)}}>
+      <div style={{display:"grid",gap:8,marginBottom:16}}>
+        {DELETE_MODES.map(m=>{
+          const on=m.id===mode, danger=m.id==="purge";
+          return(
+            <button key={m.id} onClick={()=>setMode(m.id)} style={{display:"flex",gap:10,alignItems:"flex-start",textAlign:"left",padding:"10px 12px",borderRadius:8,cursor:"pointer",fontFamily:SF,
+              background:on?(danger?`${T.red}0A`:`${T.accent}0A`):"transparent",
+              border:`1px solid ${on?(danger?`${T.red}66`:`${T.accent}66`):T.border}`,transition:"background 0.15s, border-color 0.15s"}}>
+              <span style={{width:14,height:14,marginTop:1,borderRadius:"50%",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",
+                border:`1.5px solid ${on?(danger?T.red:T.accent):T.borderMid}`}}>
+                {on&&<span style={{width:6,height:6,borderRadius:"50%",background:danger?T.red:T.accent}}/>}
+              </span>
+              <span>
+                <span style={{display:"block",fontSize:12,fontWeight:600,color:danger&&on?T.red:T.text,marginBottom:2}}>{m.label}</span>
+                <span style={{display:"block",fontSize:10.5,color:T.sub,lineHeight:1.55}}>{m.blurb}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </Dialog>
+  );
+}
 
 // ── CONFIRM STAGE-CHANGE MODAL ───────────────────────────────────────────────
 // Double-check gate for every workflow action that moves a campaign to another
@@ -4186,7 +4221,7 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
             </Stat>
           </div>
           <AnimatePresence>
-            {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={()=>{setConfirmDelete(false);onDelete(camp.id);}} onCancel={()=>setConfirmDelete(false)}/>}
+            {confirmDelete&&<DeleteCampaignModal camp={camp} onConfirm={mode=>{setConfirmDelete(false);onDelete(camp.id,mode);}} onCancel={()=>setConfirmDelete(false)}/>}
             {extending&&<ExtendEndModal camp={camp} onConfirm={(end,reason)=>{setExtending(false);onAction("extend_end_date",{end,reason});}} onCancel={()=>setExtending(false)}/>}
             {sheet==="execution"&&<ExecutionModal camp={camp} onClose={()=>setSheet(null)}/>}
             {sheet==="creator_payment"&&<CreatorPaymentModal camp={camp} role={role} expenseById={expenseById} onClose={()=>setSheet(null)}/>}
@@ -4942,14 +4977,20 @@ export default function InternalCampaigns(){
       onLogTimeline(`Roster confirmed — ${next.filter(isLockedCreator).length} creators locked, creator list sent to client`);
     }
   },[selectedId,showToast,campaigns,onLogTimeline]);
-  const onDeleteCampaign=useCallback(async(id)=>{
+  // `mode` is "archive" (default — deleted:true, restorable) or "purge" (the
+  // document is erased). See DeleteCampaignModal, which is where it is chosen.
+  const onDeleteCampaign=useCallback(async(id,mode="archive")=>{
     if(!can(role,"deleteCampaign"))return;
+    const purge=mode==="purge";
     try{
-      // backend soft-deletes (deleted:true) and logs the actor on the timeline
-      await CampaignsAPI.remove(id,currentUser.name||role);
+      // Both log the actor; archive also lands it on the campaign's timeline.
+      await (purge?CampaignsAPI.purge:CampaignsAPI.archive)(id,currentUser.name||role);
       setCampaigns(prev=>prev.filter(c=>c.id!==id));
       setSelId(null);
-      showToast("Campaign deleted");
+      showToast(purge?"Campaign permanently deleted":"Campaign archived");
+      // The shell's brand filter only offers brands that still have a live
+      // campaign, and this may have been the last one.
+      refreshBrands?.();
       // Cascade: purge every billing doc that references this campaign, so
       // Billing stops showing a campaign that no longer exists. All five
       // collections, keyed the same way (`campaign`) except quotes.
@@ -4972,10 +5013,12 @@ export default function InternalCampaigns(){
           ...forCamp(qts,"campaignId").map(x=>QuotesAPI.remove(x.id)),
         ]);
       }catch{/* best-effort — Billing also hides docs whose campaign is gone */}
-    }catch{
-      showToast("Delete failed — check connection");
+    }catch(e){
+      // The backend's own message when it has one (e.g. "not found"); the
+      // generic line only when the request never landed.
+      showToast(e?.body?.error||"Delete failed — check connection");
     }
-  },[role,showToast,currentUser]);
+  },[role,showToast,currentUser,refreshBrands]);
   const onCreate=useCallback(f=>{
     if(!canCreate(role))return;
     // Stamp the correct role slot with the logged-in user's teamId

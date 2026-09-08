@@ -211,12 +211,22 @@ export const CampaignsAPI = {
   // but only by shipping every campaign document plus a creators join per
   // campaign — see the endpoint's own note in the backend's server.js.
   brandScope: (teamId) => request(`/api/campaigns/brand-scope?teamId=${encodeURIComponent(teamId)}`),
+  // Brands that have at least one live campaign. Answers "is there anything to
+  // filter to?", where brandScope answers "may this user open it" — the shell
+  // intersects the two.
+  populatedBrands: () => request("/api/campaigns/brand-scope?all=1"),
   create: (campaign) =>
     request("/api/campaigns", { method: "POST", body: JSON.stringify(campaign) }),
   update: (id, patch) =>
     request(`/api/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
-  // actor lands on the campaign's timeline ("Campaign deleted" audit entry)
-  remove: (id, actor) => request(`/api/campaigns/${id}${actor ? `?actor=${encodeURIComponent(actor)}` : ""}`, { method: "DELETE" }),
+  /* Archive: the campaign leaves every view but stays in Mongo, and the act
+     lands on its own timeline as the audit entry. `actor` is who did it. */
+  archive: (id, actor) => request(`/api/campaigns/${id}?actor=${encodeURIComponent(actor || "Unknown")}`, { method: "DELETE" }),
+
+  /* Purge: the document is removed, along with the creator expenses generated
+     from its roster. No undo. Rejects with 409 if invoices were raised against
+     the campaign — see the route in 5th-internal-back/server.js. */
+  purge: (id, actor) => request(`/api/campaigns/${id}?actor=${encodeURIComponent(actor || "Unknown")}&purge=1`, { method: "DELETE" }),
 
   /* Reply to the client on a creator's concept or demo. Its own endpoint
      rather than a campaign PATCH: the thread is written from the portal too,

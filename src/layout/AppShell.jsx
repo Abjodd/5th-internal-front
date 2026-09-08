@@ -784,6 +784,12 @@ export default function AppShell() {
   // business — you raise a campaign for a brand precisely because you are not
   // on one yet.
   const [reachable, setReachable] = useState(null);
+  // Brand ids with at least one live campaign, or null if the request failed.
+  // A brand whose campaigns have all been archived has nothing behind its
+  // filter — picking it emptied every page with no visible cause. Same
+  // null-means-show-everything fallback as `reachable`: a dropped request must
+  // not silently hide brands.
+  const [populated, setPopulated] = useState(null);
 
   const handleBrandChange = (val) => {
     setBrandFilter(val);
@@ -793,7 +799,13 @@ export default function AppShell() {
     } catch {}
   };
 
+  // Both halves of "which brands are worth offering", refreshed together:
+  // archiving the last campaign of a brand has to drop it from the filter, and
+  // refreshBrands() is what the pages already call after a change.
   const loadBrands = () => {
+    CampaignsAPI.populatedBrands()
+      .then(ids => setPopulated(new Set(ids || [])))
+      .catch(() => setPopulated(null));
     ClientsAPI.list()
       .then(list => {
         // hasAvatar/avatarUpdatedAt come along so anything rendering a brand can
@@ -832,16 +844,18 @@ export default function AppShell() {
     loadReachable();
   }, [user?.role, user?.teamId]);
 
-  // What the brand FILTER offers: every brand for a company-wide role, and for
-  // everyone else only the brands behind campaigns they're on.
+  // What the brand FILTER offers: brands that have a live campaign AND that this
+  // user can open — every brand for a company-wide role, and for everyone else
+  // only the brands behind campaigns they're on. The create-campaign picker
+  // reads `brands` instead and still offers all of them.
   //
   // Memoised because the effect below depends on it. A fresh .filter() every
   // render is a fresh array identity every render, which would re-run that
   // effect on every render of the shell — for a check that can only change
   // when `brands` or `reachable` does.
   const filterBrands = useMemo(
-    () => (reachable ? brands.filter(b => reachable.has(b.id)) : brands),
-    [brands, reachable],
+    () => brands.filter(b => (!reachable || reachable.has(b.id)) && (!populated || populated.has(b.id))),
+    [brands, reachable, populated],
   );
 
   // The filter can only ever hold a brand it is still offering. Re-checked

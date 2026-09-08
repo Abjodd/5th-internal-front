@@ -25,7 +25,7 @@ import AvatarPicker from "../../components/AvatarPicker";
 // Env-driven so a local portal (localhost:5174) can be targeted during dev
 // without editing this file; falls back to the deployed portal.
 const CLIENT_PORTAL_URL = (
-  import.meta.env.VITE_CLIENT_PORTAL_URL || "https://5th-avenue-client-front.vercel.app"
+  import.meta.env.VITE_CLIENT_PORTAL_URL || "https://www.fifth-avenue.in/"
 ).replace(/\/$/, "");
 
 // ── STYLE HELPERS ────────────────────────────────────────────────────────────

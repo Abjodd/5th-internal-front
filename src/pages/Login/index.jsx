@@ -16,7 +16,7 @@
  * literally "/favicon.ico".
  */
 import { useState, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import * as THREE from "three";
 import { useAuth } from "../../context/AuthContext";
 
@@ -274,14 +274,20 @@ function KineticText({ text, style, delayStart = 0 }) {
 export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
+  // `?email=` is how the founder's Auth page hands a login across (see
+  // openClientLogin there). Read once as the initial value rather than synced
+  // in an effect — the field is the user's the moment the page is up, and an
+  // effect would fight anything they typed before it ran. The password is
+  // deliberately never in the URL.
+  const [params] = useSearchParams();
+  const prefilledEmail = params.get("email") || "";
+  const [email, setEmail] = useState(prefilledEmail);
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("idle"); // idle | loading | error | success
   const [shake, setShake] = useState(false);
   const [btnOffset, setBtnOffset] = useState({ x: 0, y: 0 });
-  const [tilt, setTilt] = useState({ x: 0, y: 0 });
 
   const sceneRef = useRef(null);
   const statusRef = useRef("idle");
@@ -295,14 +301,6 @@ export default function LoginPage() {
     setBtnOffset({ x, y });
   };
   const handleBtnLeave = () => setBtnOffset({ x: 0, y: 0 });
-
-  const handleCardMove = (e) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const px = (e.clientX - r.left) / r.width - 0.5;
-    const py = (e.clientY - r.top) / r.height - 0.5;
-    setTilt({ x: px * 6, y: -py * 6 });
-  };
-  const handleCardLeave = () => setTilt({ x: 0, y: 0 });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -386,16 +384,17 @@ export default function LoginPage() {
       </div>
 
       {/* Centered glass card */}
-      <div style={{ position: "relative", zIndex: 2, height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, perspective: 1200 }}>
+      {/* The card used to tilt under the cursor — a live rotateX/rotateY inside a
+          `perspective` parent. Browsers and password managers anchor their
+          autofill and "save password?" popups to a field's UNtransformed layout
+          box, so on a rotated card those landed offset from the input they
+          belonged to, over the Sign in button. The gem behind the glass is the
+          moving frame here; the form itself now holds still. */}
+      <div style={{ position: "relative", zIndex: 2, height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
         <div
           className="la-card"
-          onMouseMove={handleCardMove}
-          onMouseLeave={handleCardLeave}
           style={{
             position: "relative", width: "100%", maxWidth: 400,
-            transform: `rotateX(${tilt.y}deg) rotateY(${tilt.x}deg)`,
-            transformStyle: "preserve-3d",
-            transition: "transform 0.15s ease-out",
             animation: `riseIn 0.75s 0.1s cubic-bezier(0.16,1,0.3,1) both${shake ? ", shakeX 0.48s ease-in-out" : ""}`,
           }}
         >
@@ -435,15 +434,25 @@ export default function LoginPage() {
               </div>
             </div>
 
+            {/* `name`, `id` and the autocomplete tokens are what a password
+                manager keys a saved credential on — without them Chrome, Safari
+                and 1Password see two anonymous text boxes, offer nothing on
+                arrival and never prompt to save on submit. `htmlFor` pairs each
+                label so the field also has an accessible name.
+
+                autoFocus lands on whichever field is still empty — arriving
+                from the Auth page's login link, the email is already in. */}
             <form onSubmit={handleSubmit}>
               <div style={{ marginBottom: 16, animation: "fieldIn 0.5s 0.45s cubic-bezier(0.16,1,0.3,1) both" }}>
-                <label style={{ display: "block", fontSize: 10.5, fontWeight: 600, color: C.faint, marginBottom: 6, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                <label htmlFor="login-email" style={{ display: "block", fontSize: 10.5, fontWeight: 600, color: C.faint, marginBottom: 6, letterSpacing: "0.06em", textTransform: "uppercase" }}>
                   Email
                 </label>
                 <input
                   type="email" value={email}
                   onChange={(e) => { setEmail(e.target.value); setErr(""); }}
-                  placeholder="you@5thavenue.in" autoFocus required
+                  placeholder="you@5thavenue.in" required
+                  id="login-email" name="email" autoComplete="username"
+                  autoFocus={!prefilledEmail}
                   className="la-input"
                   style={{
                     width: "100%", padding: "12px 14px", fontSize: 13, color: C.text,
@@ -454,13 +463,15 @@ export default function LoginPage() {
               </div>
 
               <div style={{ marginBottom: err ? 10 : 24, animation: "fieldIn 0.5s 0.52s cubic-bezier(0.16,1,0.3,1) both" }}>
-                <label style={{ display: "block", fontSize: 10.5, fontWeight: 600, color: C.faint, marginBottom: 6, letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                <label htmlFor="login-password" style={{ display: "block", fontSize: 10.5, fontWeight: 600, color: C.faint, marginBottom: 6, letterSpacing: "0.06em", textTransform: "uppercase" }}>
                   Password
                 </label>
                 <input
                   type="password" value={password}
                   onChange={(e) => { setPassword(e.target.value); setErr(""); }}
                   placeholder="••••••••" required
+                  id="login-password" name="password" autoComplete="current-password"
+                  autoFocus={!!prefilledEmail}
                   className="la-input"
                   style={{
                     width: "100%", padding: "12px 14px", fontSize: 13, color: C.text,

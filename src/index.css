@@ -72,8 +72,14 @@ html, body, #root {
    (see src/theme/tokens.js), so a rem/font-size bump would miss almost
    everything — `zoom` scales the whole layout including those px values, and
    unlike `transform: scale()` it reflows properly and keeps the viewport
-   height honest. Change the one number below to retune the whole app. */
-html {
+   height honest. Change the one number below to retune the whole app.
+
+   On #root rather than <html> so it never reaches browser-extension UI:
+   password managers inject their popups into <body> and place them from
+   getBoundingClientRect(), which a zoom above them applies a second time. The
+   iCloud Passwords prompt landed off the field and 10% too big for its own
+   text, so it scrolled. Same double-scaling lib/zoom.js divides back out. */
+#root {
   zoom: 1.1;
 }
 

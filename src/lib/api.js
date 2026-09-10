@@ -136,6 +136,12 @@ export const PurchaseOrdersAPI = crud("/api/purchase-orders");
 export const ClientPOsAPI = crud("/api/client-pos");
 export const QuotesAPI = crud("/api/quotes");
 
+// ── Vendors (Creators › Vendors) ─────────────────────────────────────────────
+// The agencies and talent managers that invoice us for a creator. Plain CRUD:
+// which creators belong to a vendor is `creator.vendorId`, so the roster is
+// derived from the creators list the page already has rather than fetched.
+export const VendorsAPI = crud("/api/vendors");
+
 export const InstagramAPI = {
   lookup: (handle) => request(`/api/instagram?handle=${encodeURIComponent(handle)}`),
 };

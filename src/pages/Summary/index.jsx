@@ -7606,31 +7606,41 @@ function BigPicture() {
  * section (per feedback: "the last tab is good, make it footer bg").
  * ──────────────────────────────────────────────────────────────── */
 
+/* Where the public client-facing site lives, for every outbound footer link
+   below. Same origin as the "open client login" shortcut on the Access page,
+   so the two share one env var: point VITE_CLIENT_PORTAL_URL at a local
+   portal (localhost:5174) and the footer follows it. The deployed site is the
+   fallback. Trailing slash stripped so each link below can own its leading
+   one. */
+const CLIENT_SITE_URL = (
+  import.meta.env.VITE_CLIENT_PORTAL_URL || "https://www.fifth-avenue.in/"
+).replace(/\/$/, "");
+
 const FOOTER_LINKS = {
   Platform: [
-    { label: "Overview", href: "https://5th-avenue-client-front.vercel.app/portal/overview" },
-    { label: "Campaigns", href: "https://5th-avenue-client-front.vercel.app/portal/campaigns" },
-    { label: "Regional map", href: "https://5th-avenue-client-front.vercel.app/portal/regional" },
-    { label: "Profile", href: "https://5th-avenue-client-front.vercel.app/portal/profile" },
+    { label: "Overview", href: `${CLIENT_SITE_URL}/portal/overview` },
+    { label: "Campaigns", href: `${CLIENT_SITE_URL}/portal/campaigns` },
+    { label: "Regional map", href: `${CLIENT_SITE_URL}/portal/regional` },
+    { label: "Profile", href: `${CLIENT_SITE_URL}/portal/profile` },
   ],
   Services: [
-    { label: "Tech & Data", href: "https://5th-avenue-client-front.vercel.app/tech" },
-    { label: "Creatives", href: "https://5th-avenue-client-front.vercel.app/creatives" },
-    { label: "Regional network", href: "https://5th-avenue-client-front.vercel.app/regional" },
-    { label: "International", href: "https://5th-avenue-client-front.vercel.app/international" },
+    { label: "Tech & Data", href: `${CLIENT_SITE_URL}/tech` },
+    { label: "Creatives", href: `${CLIENT_SITE_URL}/creatives` },
+    { label: "Regional network", href: `${CLIENT_SITE_URL}/regional` },
+    { label: "International", href: `${CLIENT_SITE_URL}/international` },
   ],
   Company: [
-    { label: "Portfolio", href: "https://5th-avenue-client-front.vercel.app/portfolio" },
-    { label: "Careers", href: "https://5th-avenue-client-front.vercel.app/careers" },
-    { label: "Creators", href: "https://5th-avenue-client-front.vercel.app/apply" },
-    { label: "Start a project", href: "https://5th-avenue-client-front.vercel.app/start" },
-    { label: "Client login", href: "https://5th-avenue-client-front.vercel.app/login" },
+    { label: "Portfolio", href: `${CLIENT_SITE_URL}/portfolio` },
+    { label: "Careers", href: `${CLIENT_SITE_URL}/careers` },
+    { label: "Creators", href: `${CLIENT_SITE_URL}/apply` },
+    { label: "Start a project", href: `${CLIENT_SITE_URL}/start` },
+    { label: "Client login", href: `${CLIENT_SITE_URL}/login` },
   ],
   Legal: [
-    { label: "Privacy", href: "https://5th-avenue-client-front.vercel.app/legal/privacy" },
-    { label: "Terms", href: "https://5th-avenue-client-front.vercel.app/legal/terms" },
-    { label: "Security", href: "https://5th-avenue-client-front.vercel.app/legal/security" },
-    { label: "GST", href: "https://5th-avenue-client-front.vercel.app/legal/gst" },
+    { label: "Privacy", href: `${CLIENT_SITE_URL}/legal/privacy` },
+    { label: "Terms", href: `${CLIENT_SITE_URL}/legal/terms` },
+    { label: "Security", href: `${CLIENT_SITE_URL}/legal/security` },
+    { label: "GST", href: `${CLIENT_SITE_URL}/legal/gst` },
   ],
 };
 
@@ -7671,7 +7681,7 @@ function Footer() {
             {/* Brand column */}
             <Reveal>
               <div>
-                <a href="https://5th-avenue-client-front.vercel.app/" target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}>
+                <a href={CLIENT_SITE_URL} target="_blank" rel="noopener noreferrer" style={{ textDecoration: "none" }}>
                   <div style={{ fontFamily: T.display, fontStyle: "italic", fontSize: 26, color: "#FFFFFF", marginBottom: 18 }}>
                     Fifth Avenue
                   </div>

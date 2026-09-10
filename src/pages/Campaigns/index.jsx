@@ -4,16 +4,17 @@
  * The IM board. Brand-grouped campaign tiles, a forked finance/execution
  * pipeline per campaign, and the deliverables + team + P&L tabs behind each.
  */
- import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect, forwardRef } from "react";
+ import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect, forwardRef, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
-import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI, CreatorsAPI } from "../../lib/api";
+import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI, CreatorsAPI, VendorsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
 import { fmtCompact, fmtINR, fmtCPV, prettyDate, prettyDateTime, initials, ISO_DATE, todayISO, isoDay } from "../../lib/format";
 import { useBrandAccents } from "../../lib/brandAccent";
 import { settleSchedule } from "../../lib/invoiceMoney";
+import { payeeOf, payeeFor, isPayable, canInvoice } from "../../lib/payee";
 import { creatorBudgetOf, numReqOf, costOf, clientCostOf, agencyFeeOf, baseBudgetOf, normCreator, creatorExpensePlan, isLockedCreator, canSeeCampaign, creatorKeyOf,
          PIPELINE, PL_IDS, COMMON_STAGES, FIN_STAGES, EXEC_STAGES, EXEC_NODES,
          normStage, stageIdx, extUrl, rosterReady, rosterGap, poGaps, hasBudget, budgetPending, lockedCountOf,
@@ -307,15 +308,43 @@ const teamFromUsers = (users) => (users || [])
 //
 // Fetched once per page load and shared — the roster search and Generate both
 // want the same list, and each open campaign remounting this tab should not
-// re-hit the endpoint. Cached as the PROMISE so concurrent mounts share one
-// request; the cache is dropped on failure so a transient outage doesn't
-// poison the tab for the rest of the session.
-let directoryPromise = null;
-const loadDirectory = () => {
-  if (!directoryPromise) {
-    directoryPromise = CreatorsAPI.list().catch(err => { directoryPromise = null; throw err; });
-  }
-  return directoryPromise;
+// re-hit the endpoint. See cachedList below.
+//
+// `handleKey` is what lets a typed profile LINK be looked up against it: the
+// directory is keyed by lower-cased handle (keyOf in the backend's
+// creatorSync.js), so "https://instagram.com/username/", "@username" and
+// "username" all have to land on the same string.
+const handleKey = (raw) => String(raw || "").trim().split(/[?#]/)[0]
+  .replace(/\/+$/, "").split("/").pop().replace(/^@/, "").toLowerCase();
+
+// Cached as the PROMISE, not the rows, so concurrent mounts share one request
+// rather than racing; dropped on failure so a transient outage doesn't poison
+// the tab for the rest of the session.
+const cachedList = (fetchList) => {
+  let promise = null;
+  return () => (promise ||= fetchList().catch(err => { promise = null; throw err; }));
+};
+
+const loadDirectory = cachedList(() => CreatorsAPI.list());
+// Vendors are wanted here for the same reason the directory is: the roster
+// needs to say who a creator is billed through, and the invoice modal needs
+// that vendor's account to bill from. Small collection, one fetch per session.
+const loadVendors = cachedList(() => VendorsAPI.list());
+
+// The directory row for a profile link, if we already hold this creator.
+// Platform-specific match first — the same handle can exist on Instagram and
+// YouTube and be two different people. A directory that won't load returns null
+// rather than throwing: it is an optimisation in front of the platform fetch,
+// not a precondition for it.
+const findInDirectory = async (url, platform) => {
+  const key = handleKey(url);
+  if (!key) return null;
+  try {
+    const rows = await loadDirectory();
+    return rows.find(r => r.platform === platform && handleKey(r.handle) === key)
+      || rows.find(r => handleKey(r.handle) === key)
+      || null;
+  } catch { return null; }
 };
 
 // A directory row has no single "cost": what a creator charges is negotiated
@@ -332,16 +361,31 @@ const priorFeeOf = inf => {
   return costs.length ? costs[costs.length - 1] : 0;
 };
 
-function useCreatorDirectory() {
+function useCachedList(load, errorMessage) {
   const [state, setState] = useState({ rows: [], loading: true, error: null });
   useEffect(() => {
     let alive = true;
-    loadDirectory()
+    load()
       .then(rows => alive && setState({ rows: rows || [], loading: false, error: null }))
-      .catch(err => alive && setState({ rows: [], loading: false, error: err.message || "Could not load creators" }));
+      .catch(err => alive && setState({ rows: [], loading: false, error: err.message || errorMessage }));
     return () => { alive = false; };
-  }, []);
+  }, [load, errorMessage]);
   return state;
+}
+
+const useCreatorDirectory = () => useCachedList(loadDirectory, "Could not load creators");
+
+/**
+ * The vendor directory as a Map by id, for payeeFor().
+ *
+ * Failure is silent and yields an empty map: a vendor lookup that doesn't
+ * answer means creators fall back to billing under their own details, which is
+ * exactly what they did before vendors existed — the roster must not become
+ * unusable because a side collection is down.
+ */
+function useVendorMap() {
+  const { rows } = useCachedList(loadVendors, "Could not load vendors");
+  return useMemo(() => new Map(rows.map(v => [v.id, v])), [rows]);
 }
 
 // The statuses the brand's own answer sets, keyed by the answer. A stored
@@ -391,6 +435,12 @@ const mkCreator = (src={}, cost) => ({
   collab:   src.collab  || null,
   payType:  src.payType || null,
   payId:    src.payId   || null,
+  // Present only when there IS one. `vendorId` is a directory-owned field
+  // (PROFILE_FIELDS), and splitCreatorsForStorage $sets every such key it finds
+  // on a roster entry — so a default of null here would make hand-adding a
+  // creator to any campaign silently clear the vendor assigned to them on the
+  // Creators page. Absent means "this roster has nothing to say about it".
+  ...(src.vendorId ? { vendorId: src.vendorId } : {}),
   concept:  {status:"yet_to_receive",fileLink:null},
   demo:     {status:"yet_to_receive",fileLink:null},
   live:     {postUrl:null,postedDate:null},
@@ -462,9 +512,19 @@ function amtInWords(n) {
   return ("INR " + result.trim() + " Only").replace(/\s+/g, " ");
 }
 
-function generateInvoiceHTML(creator, camp, invoiceNo, dated) {
+// `payee` is who the invoice is FROM — the creator, or the vendor that bills on
+// their behalf (see lib/payee.js). The backend PDF is the real document; this
+// stays as the offline fallback, and the two have to say the same thing.
+//
+// One deliberate exception: names are NOT put through the backend's winAnsi()
+// here. That transform exists because pdfkit's built-in fonts are WinAnsi and
+// silently mangle anything outside it; a browser has no such limit, so
+// "Shoaib🦇" renders correctly in this HTML and is stripped to "Shoaib" in the
+// PDF. Each renders as well as its medium allows — this is not a second copy of
+// the encoder waiting to be written. This path also never stamps an invoiceNo
+// (see the catch in InvoiceDetailsModal), so it is not the document of record.
+function generateInvoiceHTML(creator, camp, invoiceNo, dated, payee) {
   const cost = costOf(creator);
-  const pd   = creator.personalDetails || {};
   const fmt  = n => "₹" + (n || 0).toLocaleString("en-IN");  // full format, e.g. ₹74,000
   const rows = Array(8).fill('<tr><td></td><td></td><td></td><td class="rt"></td><td class="rt"></td></tr>').join("");
   return `<!DOCTYPE html><html><head><meta charset="UTF-8">
@@ -489,11 +549,13 @@ function generateInvoiceHTML(creator, camp, invoiceNo, dated) {
   <tr class="title"><td colspan="5">INVOICE</td></tr>
   <tr>
     <td colspan="3">
-      <p><strong>NAME: ${creator.name || ""}</strong></p>
-      ${pd.address  ? `<p>ADDRESS: ${pd.address}</p>`        : ""}
-      ${pd.pan      ? `<p><strong>PAN: ${pd.pan}</strong></p>` : ""}
-      ${creator.phone    ? `<p>CONTACT NO.: ${creator.phone}</p>`      : ""}
-      ${pd.email    ? `<p>EMAIL ID: ${pd.email}</p>`         : ""}
+      <p><strong>NAME: ${payee.name || ""}</strong></p>
+      ${payee.onBehalfOf ? `<p>ON BEHALF OF: ${payee.onBehalfOf}</p>`      : ""}
+      ${payee.address    ? `<p>ADDRESS: ${payee.address}</p>`              : ""}
+      ${payee.gstin      ? `<p><strong>GSTIN: ${payee.gstin}</strong></p>` : ""}
+      ${payee.pan        ? `<p><strong>PAN: ${payee.pan}</strong></p>`     : ""}
+      ${payee.phone      ? `<p>CONTACT NO.: ${payee.phone}</p>`            : ""}
+      ${payee.email      ? `<p>EMAIL ID: ${payee.email}</p>`               : ""}
     </td>
     <td colspan="2" class="noborder">
       <table class="meta">
@@ -517,7 +579,7 @@ function generateInvoiceHTML(creator, camp, invoiceNo, dated) {
   </tr>
   <tr>
     <td class="cen">1</td>
-    <td>Influencer Marketing Services — ${camp.name}</td>
+    <td>Influencer Marketing Services — ${camp.name}${payee.onBehalfOf ? ` (${payee.onBehalfOf}${creator.handle ? ` · ${creator.handle}` : ""})` : ""}</td>
     <td class="cen">1</td>
     <td class="rt">${fmt(cost)}</td>
     <td class="rt">${fmt(cost)}</td>
@@ -528,23 +590,23 @@ function generateInvoiceHTML(creator, camp, invoiceNo, dated) {
     <td class="rt" style="font-weight:bold">${fmt(cost)}</td>
   </tr>
   <tr><td colspan="5">Tax Amount (in words): ${amtInWords(cost)}</td></tr>
-  ${creator.payType === "upi" && pd.upiId ? `<tr><td colspan="5">
+  ${payee.payType === "upi" && payee.upiId ? `<tr><td colspan="5">
     <p><strong>Payment Details</strong></p>
     <div class="bg">
-      <span>UPI ID</span><span>: ${pd.upiId}</span>
+      <span>UPI ID</span><span>: ${payee.upiId}</span>
     </div>
-  </td></tr>` : pd.bankName || pd.bankAccount ? `<tr><td colspan="5">
+  </td></tr>` : payee.bankName || payee.bankAccount ? `<tr><td colspan="5">
     <p><strong>Bank Details</strong></p>
     <div class="bg">
-      ${pd.bankName    ? `<span>Bank Name</span><span>: ${pd.bankName}</span>`       : ""}
-      ${pd.bankAccount ? `<span>A/c No.</span><span>: ${pd.bankAccount}</span>`      : ""}
-      ${pd.bankBranch  ? `<span>Branch</span><span>: ${pd.bankBranch}</span>`        : ""}
-      ${pd.ifsc        ? `<span>IFS Code</span><span>: ${pd.ifsc}</span>`            : ""}
+      ${payee.bankName    ? `<span>Bank Name</span><span>: ${payee.bankName}</span>`       : ""}
+      ${payee.bankAccount ? `<span>A/c No.</span><span>: ${payee.bankAccount}</span>`      : ""}
+      ${payee.bankBranch  ? `<span>Branch</span><span>: ${payee.bankBranch}</span>`        : ""}
+      ${payee.ifsc        ? `<span>IFS Code</span><span>: ${payee.ifsc}</span>`            : ""}
     </div>
   </td></tr>` : ""}
   <tr><td colspan="5" class="sig">
     <p>for NAME</p><br/><br/>
-    <p><strong>${(creator.name || "").toUpperCase()}</strong></p>
+    <p><strong>${(payee.name || "").toUpperCase()}</strong></p>
     <p>Authorised Signatory</p>
   </td></tr>
 </table>
@@ -2266,6 +2328,9 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
   const [fetching,setFetching]=useState(false);
   const [fetchErr,setFetchErr]=useState(null);
   const [igFetched,setIgFetched]=useState(null);
+  // The directory row this form was filled from, when it was — so the notice
+  // can say the platform was never called, and offer to call it anyway.
+  const [fromDirectory,setFromDirectory]=useState(null);
   // Three-state, same contract as every other AvatarPicker in the app:
   // undefined = untouched, null = remove, data URI = new photo.
   const [avatarImage,setAvatarImage]=useState(undefined);
@@ -2280,15 +2345,69 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
   // be filled later; InvoiceDetailsModal enforces them when they're needed.
   const Err=({k})=>errors[k]?<div style={{fontSize:9.5,color:T.red,marginTop:3}}>{errors[k]}</div>:null;
 
-  // Per-platform profile lookup — only Instagram has a backend endpoint today;
-  // other platforms keep the link field but Fetch stays disabled.
+  // Per-platform profile lookup — see PROFILE_LOOKUP for which platforms have a
+  // backend endpoint. Everything else keeps the link field, because the
+  // directory check below works on any platform.
   const lookup=PROFILE_LOOKUP[f.platform];
-  const handleFetch=async()=>{
-    if(!lookup||!f.igUrl.trim())return;
+
+  // A directory row is the same shape this form edits, so filling from it is a
+  // merge that never overwrites what someone has already typed here.
+  const applyDirectory=(row)=>{
+    const pd=row.personalDetails||{};
+    setIgFetched(null);
+    setFromDirectory(row);
+    setF(p=>({
+      ...p,
+      platform:  row.platform||p.platform,
+      handle:    p.handle    ||row.handle||"",
+      name:      p.name      ||row.name||"",
+      phone:     p.phone     ||row.phone||"",
+      niche:     p.niche     ||row.niche||"",
+      state:     p.state     ||row.state||"",
+      followers: p.followers ||String(row.followers??""),
+      avgLikes:  p.avgLikes  ||String(row.avgLikes??""),
+      avgER:     p.avgER     ||String(row.avgER??""),
+      payType:   p.payType   ||row.payType||"",
+      vendorId:  p.vendorId  ||row.vendorId||null,
+      vendorCode:p.vendorCode||(row.payType==="vendor"?row.payId||"":""),
+      pan:       p.pan       ||pd.pan||"",
+      email:     p.email     ||pd.email||"",
+      address:   p.address   ||pd.address||"",
+      bankName:  p.bankName  ||pd.bankName||"",
+      bankAccount:p.bankAccount||pd.bankAccount||"",
+      bankBranch:p.bankBranch||pd.bankBranch||"",
+      ifsc:      p.ifsc      ||pd.ifsc||"",
+      upiId:     p.upiId     ||pd.upiId||"",
+    }));
+  };
+
+  /**
+   * The directory is checked BEFORE the platform.
+   *
+   * A creator we already hold has everything a lookup would return — and the
+   * contact, PAN and bank details it never could — so calling HikerAPI for them
+   * is a paid request that can only tell us less than our own record. Only
+   * someone genuinely new costs a lookup.
+   *
+   * `force` is the explicit "refresh from the platform" path, for when the point
+   * IS to re-pull stale follower counts. Editing an existing creator always
+   * takes it: the only directory row that could match is the creator themselves.
+   */
+  const handleFetch=async(force=false)=>{
+    if(!f.igUrl.trim())return;
     setFetching(true);setFetchErr(null);
     try{
+      if(!force&&!editing){
+        const hit=await findInDirectory(f.igUrl,f.platform);
+        if(hit){applyDirectory(hit);return;}
+      }
+      if(!lookup){
+        setFetchErr(`We don't have ${f.platform} on file for this profile, and auto-fetch only covers ${Object.keys(PROFILE_LOOKUP).join(" and ")} — fill the stats in below.`);
+        return;
+      }
       const data=await lookup.fetch(f.igUrl.trim());
       setIgFetched(data);
+      setFromDirectory(null);
       setF(p=>({
         ...p,
         handle: p.handle || (data.username?`@${data.username}`:p.handle),
@@ -2351,6 +2470,7 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
     }
     onAdd(mkCreator({
       ...f,
+      dbId:fromDirectory?.id||null,
       avgER:parseFloat(f.avgER)||null,
       askingPrice:parseInt(askingPrice)||null,
       igFetched,
@@ -2386,10 +2506,21 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
         <Lbl style={{display:"block",marginBottom:6}}>{lookup?.label||`${f.platform} profile link`}</Lbl>
         <div style={{display:"flex",gap:8,marginBottom:6}}>
           <input value={f.igUrl} onChange={e=>u("igUrl",e.target.value)} placeholder={lookup?.placeholder||"https://…"} style={{...INP,resize:"none",flex:1}}/>
-          <Btn variant="ghost" onClick={handleFetch} disabled={!lookup||fetching||!f.igUrl.trim()}>{fetching?"Fetching…":"Fetch"}</Btn>
+          {/* Arrow function, not the handler by reference: the click event would
+              otherwise arrive as `force` and skip the directory check entirely. */}
+          <Btn variant="ghost" onClick={()=>handleFetch()} disabled={fetching||!f.igUrl.trim()}>{fetching?"Fetching…":"Fetch"}</Btn>
         </div>
-        {!lookup&&<div style={{fontSize:9.5,color:T.label,marginBottom:10}}>Auto-fetch supports Instagram only for now — fill the stats below manually.</div>}
+        {!lookup&&<div style={{fontSize:9.5,color:T.label,marginBottom:10}}>Fetch checks the creators directory first; live auto-fetch covers {Object.keys(PROFILE_LOOKUP).join(" and ")} only, so fill the stats below manually if we don't already hold them.</div>}
         {fetchErr&&<div style={{fontSize:10.5,color:T.red,marginBottom:10}}>{fetchErr}</div>}
+        {fromDirectory&&!fetchErr&&(
+          <div style={{marginBottom:14,padding:"11px 13px",borderRadius:10,background:T.raised,border:`1px solid ${T.teal}30`,display:"flex",alignItems:"center",gap:10}}>
+            <div style={{flex:1,minWidth:0,fontSize:10.5,color:T.sub,lineHeight:1.5}}>
+              <span style={{color:T.teal,fontWeight:600}}>Already in the directory</span> — profile, contact and payment
+              details filled from our own record for <strong style={{color:"#1D1D1F"}}>{fromDirectory.name}</strong>. No {f.platform} lookup was made.
+            </div>
+            {lookup&&<Btn variant="subtle" onClick={()=>handleFetch(true)} disabled={fetching}>Refresh from {f.platform}</Btn>}
+          </div>
+        )}
         {igFetched&&!fetchErr&&(
           <div style={{marginBottom:14,padding:"14px",borderRadius:10,background:T.raised,border:`1px solid ${T.green}25`}}>
             <div style={{display:"flex",alignItems:"center",gap:12}}>
@@ -2536,7 +2667,7 @@ const PAYTYPE_FIELDS = {
   ],
 };
 
-function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreators, onLogTimeline }) {
+function InvoiceDetailsModal({ camp, creator, vendor, creators, onClose, onUpdateCreators, onLogTimeline }) {
   const { user } = useOutletContext() || {};
   const pd0 = creator.personalDetails || {};
   const [form, setForm] = useState({
@@ -2546,8 +2677,17 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
   });
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);    // backend PDF generation in flight
-  const required = requiredForPayType(creator.payType);
-  const fields = [...INVOICE_BASE_FIELDS, ...(PAYTYPE_FIELDS[creator.payType] || [])];
+  const payee = payeeOf(creator, vendor);
+  // A vendor-billed creator is invoiced by the vendor, so there is nothing to
+  // collect here: the seller, the GSTIN and the account are all the vendor's
+  // record, edited once on Creators › Vendors. Asking for the creator's own
+  // bank details on this screen would be collecting a number nobody will pay
+  // into — and the second copy of an account is how the two start disagreeing.
+  const viaVendor = payee.kind === "vendor";
+  const required = viaVendor ? [] : requiredForPayType(creator.payType);
+  const fields = viaVendor
+    ? INVOICE_BASE_FIELDS.filter(([, k]) => k !== "pan")
+    : [...INVOICE_BASE_FIELDS, ...(PAYTYPE_FIELDS[creator.payType] || [])];
   const u = (k, v) => {
     const clean = FIELD_SANITIZE[k] ? sanitizeField(FIELD_SANITIZE[k], v) : v;
     setForm(p => ({ ...p, [k]: clean }));
@@ -2559,7 +2699,10 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
     const errs = validateCreatorDetails(form, required);
     setErrors(errs);
     if (Object.keys(errs).length) return;
-    const payId = creator.payType === "vendor" ? form.vendorCode
+    // Untouched when a vendor bills: payId is the creator's own payment route,
+    // and this screen no longer edits it.
+    const payId = viaVendor ? creator.payId
+                : creator.payType === "vendor" ? form.vendorCode
                 : creator.payType === "net_banking" ? form.bankAccount
                 : creator.payType === "upi" ? form.upiId : creator.payId;
     const updatedCr = {
@@ -2581,9 +2724,12 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
     // is saved server-side; we then open the stored PDF in a new tab.
     setBusy(true);
     try {
+      // Rebuilt from the just-edited creator so an address typed above lands on
+      // the document; a vendor payee is unaffected by anything on this form.
+      const finalPayee = payeeOf(updatedCr, vendor);
       await InvoicePdfAPI.generate(invoiceNo, {
         campaignId: camp.id, campaignName: camp.name, brandId: camp.brandId || null,
-        creator: updatedCr, dated, actor: user?.name,
+        creator: updatedCr, payee: finalPayee, dated, actor: user?.name,
       });
       setBusy(false);
       // Stamp the invoiceNo on the creator — the table's Invoice button
@@ -2603,7 +2749,7 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
       onUpdateCreators(creators.map(c => c._id === creator._id ? updatedCr : c));
       setBusy(false);
     }
-    const blob = new Blob([generateInvoiceHTML(updatedCr, camp, invoiceNo, dated)], { type: "text/html" });
+    const blob = new Blob([generateInvoiceHTML(updatedCr, camp, invoiceNo, dated, payeeOf(updatedCr, vendor))], { type: "text/html" });
     const url  = URL.createObjectURL(blob);
     const w = window.open(url, "_blank");
     if (!w) {
@@ -2618,9 +2764,39 @@ function InvoiceDetailsModal({ camp, creator, creators, onClose, onUpdateCreator
 
   return (
     <Panel title={`Invoice Details — ${creator.name}`} width={460} maxHeight="88vh" onClose={onClose}
-      sub={<>{PAYMENT_TYPES.find(p=>p.id===creator.payType)?.label||"—"} · <CreatorHandle creator={creator} style={{fontSize:9.5}}/> · {fmtINR(costOf(creator))}</>}
+      sub={<>{viaVendor ? `via ${payee.name}` : PAYMENT_TYPES.find(p=>p.id===creator.payType)?.label||"—"} · <CreatorHandle creator={creator} style={{fontSize:9.5}}/> · {fmtINR(costOf(creator))}</>}
       footer={<Btn variant="primary" onClick={generate} disabled={busy}>{busy ? "Generating…" : "Save & Generate"}</Btn>}>
-          <div style={{fontSize:10.5,color:T.sub,marginBottom:14}}>Fill in the billing details for this creator. Saved to the campaign before the invoice is generated.</div>
+          {/* Where the money is going, said before anything is filled in — the
+              one fact on this screen someone could otherwise get wrong. */}
+          {viaVendor&&<div style={{marginBottom:14,padding:"12px 14px",borderRadius:10,background:T.raised,border:`1px solid ${T.gold}35`}}>
+            <div style={{fontSize:9.5,fontWeight:600,color:T.gold,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:7}}>Billed through vendor</div>
+            <div style={{fontSize:12,fontWeight:600,color:"#1D1D1F",marginBottom:2}}>{payee.name}</div>
+            <div style={{fontSize:10,color:T.sub,marginBottom:8}}>on behalf of {creator.name}</div>
+            <div style={{display:"grid",gridTemplateColumns:"78px 1fr",gap:"2px 8px",fontSize:10.5}}>
+              {[
+                ["GSTIN", payee.gstin],
+                ["PAN", payee.pan],
+                ["Pay Type", PAYMENT_TYPES.find(p=>p.id===payee.payType)?.label],
+                ...(payee.payType==="upi"
+                  ? [["UPI ID", payee.upiId]]
+                  : [["Bank", payee.bankName], ["A/c No.", payee.bankAccount], ["IFSC", payee.ifsc]]),
+              ].map(([l,v])=>(
+                <Fragment key={l}>
+                  <span style={{color:T.label}}>{l}</span>
+                  <span style={{color:v?"#1D1D1F":T.label}}>{v||"—"}</span>
+                </Fragment>
+              ))}
+            </div>
+            {!isPayable(payee)&&<div style={{fontSize:10,color:T.amber,marginTop:8,lineHeight:1.5}}>
+              This vendor has no payable account on file — add it on Creators › Vendors before the invoice goes out.
+            </div>}
+            <div style={{fontSize:9.5,color:T.label,marginTop:8}}>Edited on Creators › Vendors, so every creator they front bills the same way.</div>
+          </div>}
+          <div style={{fontSize:10.5,color:T.sub,marginBottom:14}}>
+            {viaVendor
+              ? "The vendor is the seller on this invoice. Only the creator's own contact details are collected here, for our records."
+              : "Fill in the billing details for this creator. Saved to the campaign before the invoice is generated."}
+          </div>
           <div style={{marginBottom:12}}>
             <Lbl style={{display:"block",marginBottom:4}}>Address (for invoice)</Lbl>
             <textarea value={form.address} onChange={e=>u("address",e.target.value)} rows={2}
@@ -2731,6 +2907,9 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const [invoiceTarget,setInvoiceTarget]=useState(null); // creator to invoice
   const [dirQuery,setDirQuery]=useState("");             // roster search over the creators directory
   const directory=useCreatorDirectory();
+  // Who each rostered creator is actually billed through — one lookup for the
+  // whole table, the invoice button's gate and the invoice modal alike.
+  const vendorById=useVendorMap();
   // Null when the scope hasn't been agreed — a budgetless campaign can be raised
   // without one. `capped` is the question the roster UI actually asks: is there
   // a planned count to fill, and is it full?
@@ -2920,6 +3099,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
             // Only nag on rows that are still heading for a lock: a Backed Off
             // or Brand Reject creator never needs a Collab type.
             const collabDue=!!lockBlock&&!isLocked(cr)&&!CR_JOURNEY.find(j=>j.id===cr.status)?.neg;
+            const payee=payeeFor(cr,vendorById);
             return(<tr key={cr._id} style={{background:i%2===0?"transparent":T.hover}}>
               <td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={22}/><div><div style={{fontSize:11,fontWeight:500,color:T.text}}>{cr.name}</div><CreatorHandle creator={cr} style={{fontSize:9,color:T.label,display:"block"}}/></div></div></td>
               <td style={tdS}>{cr.platform}</td>
@@ -3022,7 +3202,14 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
                   select (index.css), so a bordered box with a value in it was
                   indistinguishable from the plain text in the cells either side
                   — nobody could tell the pay type was theirs to choose. */}
-              {canCrInv(role)&&<td style={tdS}>{canEdit
+              {/* A creator billed through a vendor has no pay type of their own
+                  to choose: the money goes to the vendor's account, set once on
+                  Creators › Vendors. Showing the select here would offer a
+                  choice that changes nothing about where the payment lands. */}
+              {canCrInv(role)&&<td style={tdS}>{payee.kind==="vendor"
+                ? <span title={`Billed through ${payee.name} — pay route set on Creators › Vendors`}
+                    style={{fontSize:10,color:T.gold,cursor:"help",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"inline-block",maxWidth:100}}>via {payee.name}</span>
+                : canEdit
                 ? <span style={{position:"relative",display:"inline-block"}}>
                     <select value={cr.payType||""} onChange={e=>patch(cr._id,{payType:e.target.value||null,payId:null})}
                       title="How this creator gets paid"
@@ -3038,7 +3225,12 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
                 {can(role,"editCreatorDetails")&&<button onClick={()=>setEditTarget(cr)} title="Edit all creator details" style={{fontSize:9,color:T.sub,background:"transparent",border:`1px solid ${T.borderMid}`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Edit</button>}
                 {canCrInv(role)&&(cr.invoiceNo
                   ?<button onClick={()=>window.open(InvoicePdfAPI.url(cr.invoiceNo),"_blank")} title={`Download ${cr.invoiceNo} — already generated`} style={{fontSize:9,color:T.green,background:"transparent",border:`1px solid ${T.green}30`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>↓ Download Invoice</button>
-                  :<button onClick={()=>cr.payType&&setInvoiceTarget(cr)} disabled={!cr.payType} title={cr.payType?"Generate invoice":"Select a pay type first"} style={{fontSize:9,color:cr.payType?T.accent:T.label,background:"transparent",border:`1px solid ${cr.payType?`${T.accent}30`:T.border}`,borderRadius:4,padding:"3px 8px",cursor:cr.payType?"pointer":"not-allowed",opacity:cr.payType?1:0.5,fontFamily:"'Sora'"}}>Invoice</button>)}
+                  :(()=>{const ready=canInvoice(payee);return(
+                    <button onClick={()=>ready&&setInvoiceTarget(cr)} disabled={!ready}
+                      title={ready
+                        ? (payee.kind==="vendor" ? `Generate invoice — billed through ${payee.name}` : "Generate invoice")
+                        : payee.kind==="vendor" ? `${payee.name} has no payable account on file — add it on Creators › Vendors` : "Select a pay type first"}
+                      style={{fontSize:9,color:ready?T.accent:T.label,background:"transparent",border:`1px solid ${ready?`${T.accent}30`:T.border}`,borderRadius:4,padding:"3px 8px",cursor:ready?"pointer":"not-allowed",opacity:ready?1:0.5,fontFamily:"'Sora'"}}>Invoice</button>);})())}
                 {can(role,"removeCreator")&&<button onClick={()=>setRemoveTarget(cr)} style={{fontSize:9,color:T.red,background:"transparent",border:`1px solid ${T.red}22`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Remove</button>}
               </div></td>}
             </tr>);
@@ -3073,7 +3265,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
     {editTarget&&<AddCreatorModal editing={editTarget} costLocked={costFrozen(role,creators.find(c=>c._id===editTarget._id)||editTarget)}
       onAdd={cr=>sync(creators.map(c=>c._id===cr._id?cr:c))} onClose={()=>setEditTarget(null)}/>}
     {invoiceTarget && (
-      <InvoiceDetailsModal camp={camp} creator={creators.find(c=>c._id===invoiceTarget._id)||invoiceTarget} creators={creators} onClose={()=>setInvoiceTarget(null)} onUpdateCreators={sync} onLogTimeline={onLogTimeline}/>
+      <InvoiceDetailsModal camp={camp} creator={creators.find(c=>c._id===invoiceTarget._id)||invoiceTarget} vendor={vendorById.get(invoiceTarget.vendorId)} creators={creators} onClose={()=>setInvoiceTarget(null)} onUpdateCreators={sync} onLogTimeline={onLogTimeline}/>
     )}
   </div>);
 }

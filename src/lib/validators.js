@@ -12,6 +12,9 @@ const RULES = {
   ifsc:    { re: /^[A-Z]{4}0[A-Z0-9]{6}$/,       msg: "IFSC must look like CNRB0000684" },
   account: { re: /^\d{9,18}$/,                   msg: "Account number must be 9–18 digits" },
   upi:     { re: /^[\w.\-]{2,}@[a-zA-Z]{2,}$/,   msg: "UPI ID must look like name@bank" },
+  // State code + PAN + entity digit + "Z" + checksum. Collected on vendors,
+  // who invoice us directly; creators bill under their PAN.
+  gstin:   { re: /^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]$/, msg: "GSTIN must look like 29ABCDE1234F1Z5" },
 };
 
 // ── PHONE ────────────────────────────────────────────────────────────────────
@@ -40,6 +43,7 @@ const SANITIZE = {
   account: v => v.replace(/\D/g, "").slice(0, 18),
   pan:     v => v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10),
   ifsc:    v => v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 11),
+  gstin:   v => v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 15),
   upi:     v => v.replace(/\s/g, ""),
   email:   v => v.replace(/\s/g, ""),
 };
@@ -55,7 +59,7 @@ export function validateField(kind, value) {
   let v = (value || "").trim();
   if (!v) return null; // empty = valid; required-ness handled by caller
   if (rule.strip) v = v.replace(rule.strip, "");
-  if (kind === "pan" || kind === "ifsc") v = v.toUpperCase();
+  if (["pan", "ifsc", "gstin"].includes(kind)) v = v.toUpperCase();
   return rule.re.test(v) ? null : rule.msg;
 }
 
@@ -66,7 +70,7 @@ export function validateField(kind, value) {
  * Returns { fieldName: message } — empty object when everything passes.
  */
 const FIELD_KIND = {
-  phone: "phone", email: "email", pan: "pan",
+  phone: "phone", email: "email", pan: "pan", gstin: "gstin",
   ifsc: "ifsc", bankAccount: "account", upiId: "upi",
 };
 

@@ -6,11 +6,12 @@ import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 // RegistryAPI is gone: the registry is derived from campaigns + expenses now
 // (see buildRegistry) rather than read from a collection nothing ever wrote to.
-import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, CampaignsAPI } from "../../lib/api";
+import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, CampaignsAPI, VendorsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { fmtCompact, fmtINR, prettyDate, todayISO } from "../../lib/format";
 import { receivedOf, isOverdue, scheduleOf } from "../../lib/invoiceMoney";
 import { creatorBudgetOf, creatorKeyOf, normStage, stageLabel } from "../../lib/campaign";
+import { payeeFor } from "../../lib/payee";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
 
@@ -1354,7 +1355,7 @@ function TabQuotations({ role, quotes, setQuotes, campsRef }) {
 // embedded in each campaign, money on the expenses those campaigns generate.
 // Deriving it means it populates itself and can never drift from the campaigns
 // it describes — the same reasoning that removed the stored campaign progress.
-function buildRegistry(campsRef, expenses) {
+function buildRegistry(campsRef, expenses, vendorById) {
   const byPayee = new Map();
   // Alias → row. Kept separate from byPayee so the registry still has exactly
   // one entry per person while an expense can be joined by any id it happens
@@ -1374,17 +1375,28 @@ function buildRegistry(campsRef, expenses) {
       const key = creatorKeyOf(cr);
       if (!key) continue;
       if (!byPayee.has(key)) {
-        const pd = cr.personalDetails || {};
+        // The row is still the CREATOR — that is who did the work and whose
+        // campaigns these are — but PAN, bank and TDS describe where the money
+        // actually goes, which is the vendor's when one bills for them. Reading
+        // the creator's own details there would report a PAN we never deduct
+        // against and an account we never pay into. See lib/payee.js.
+        const payee = payeeFor(cr, vendorById);
         byPayee.set(key, {
           id: `REG-${key.replace(/[^a-z0-9]+/gi, "_")}`, type:"creator", name: cr.name,
           handle: cr.handle || "", platform: cr.platform || "", followers: Number(cr.followers) || 0,
-          pan: pd.pan || null, panCollected: !!pd.pan,
-          bank: pd.bankAccount ? `${pd.bankName || "Bank"} ····${String(pd.bankAccount).slice(-4)}` : (cr.payType === "vendor" ? `Vendor ${cr.payId || ""}`.trim() : null),
-          gstin: pd.gstin || null,
+          pan: payee.pan, panCollected: !!payee.pan,
+          bank: payee.bankAccount ? `${payee.bankName || "Bank"} ····${String(payee.bankAccount).slice(-4)}`
+              : payee.payType === "upi" && payee.upiId ? payee.upiId
+              : payee.payId ? `Vendor ${payee.payId}` : null,
+          gstin: payee.gstin,
           // TDS 194J at 10% on professional fees is the standing treatment for
           // creator work; without a PAN on file it is 20% under s.206AA.
-          tdsSection: "194J", tdsRate: pd.pan ? 10 : 20,
-          mcnVendor: cr.payType === "vendor" ? (cr.payId || "MCN") : null,
+          tdsSection: "194J", tdsRate: payee.pan ? 10 : 20,
+          // Who the payment is routed through, if not the creator themselves —
+          // an assigned vendor, or the legacy hand-typed code before vendors
+          // were records.
+          mcnVendor: payee.kind === "vendor" ? payee.name
+                   : cr.payType === "vendor" ? (cr.payId || "MCN") : null,
           campaigns: [], totalPaid: 0, totalCommitted: 0, tdsDeducted: 0,
         });
       }
@@ -1414,10 +1426,10 @@ function buildRegistry(campsRef, expenses) {
   return [...byPayee.values()].sort((a, b) => b.totalCommitted - a.totalCommitted);
 }
 
-function TabRegistry({ role, campsRef, expenses }) {
+function TabRegistry({ role, campsRef, expenses, vendorById }) {
   const [type, setType] = useState("all");
   const [selId,setSelId]= useState(null);
-  const registry = useMemo(() => buildRegistry(campsRef, expenses), [campsRef, expenses]);
+  const registry = useMemo(() => buildRegistry(campsRef, expenses, vendorById), [campsRef, expenses, vendorById]);
   const filtered = registry.filter(r => type === "all" || r.type === type);
   const r = registry.find(x => x.id === selId) || null;
 
@@ -1702,6 +1714,8 @@ export default function InternalBilling() {
   const [quotes,    setQuotesRaw]    = useState([]);
   const [pos,       setPosRaw]       = useState([]);
   const [clientPOs, setClientPOsRaw] = useState([]);
+  // Read only by the registry, to resolve who a creator is actually paid through.
+  const [vendors, setVendors] = useState([]);
   const [campsRef,  setCampsRef]  = useState([]); // real campaigns from DB
   const [toast,     setToast]     = useState(null);
   const [loading,   setLoading]   = useState(true);
@@ -1806,10 +1820,16 @@ export default function InternalBilling() {
   const setPos       = useMemo(() => makeSetter(posRef,       setPosRaw,       PurchaseOrdersAPI),  [makeSetter]);
   const setClientPOs = useMemo(() => makeSetter(clientPOsRef, setClientPOsRaw, ClientPOsAPI),       [makeSetter]);
 
+  const vendorById = useMemo(() => new Map(vendors.map(v => [v.id, v])), [vendors]);
+
   useEffect(() => {
     let cancelled = false;
-    Promise.all([InvoicesAPI.list(), ExpensesAPI.list(), QuotesAPI.list(), PurchaseOrdersAPI.list(), ClientPOsAPI.list(), CampaignsAPI.list()])
-      .then(([inv, exp, qts, posList, cpos, camps]) => {
+    // Vendors degrade to empty rather than rejecting: the registry is the only
+    // thing that reads them, and a creator whose vendor we can't resolve simply
+    // falls back to billing under their own details — which is what every row
+    // did before vendors existed.
+    Promise.all([InvoicesAPI.list(), ExpensesAPI.list(), QuotesAPI.list(), PurchaseOrdersAPI.list(), ClientPOsAPI.list(), CampaignsAPI.list(), VendorsAPI.list().catch(() => [])])
+      .then(([inv, exp, qts, posList, cpos, camps, vends]) => {
         if (cancelled) return;
         // Seed both the state and the mirror refs the setters diff against —
         // a ref left at [] would make the next edit look like a create and
@@ -1819,6 +1839,7 @@ export default function InternalBilling() {
         setQuotesRaw(quotesRef.current       = qts);
         setPosRaw(posRef.current             = posList);
         setClientPOsRaw(clientPOsRef.current = cpos);
+        setVendors(vends);
         // Map real campaigns into the billing reference shape
         setCampsRef(camps.map(c => ({
           id: c.id,
@@ -1974,7 +1995,7 @@ export default function InternalBilling() {
         {tab === "income"         && <TabIncome         role={role} invoices={displayInvoices} setInvoices={setInvoices} setClientPOs={setClientPOs} campsRef={displayCampsRef} />}
         {tab === "purchase_orders"&& <TabPurchaseOrders role={role} currentUser={currentUser} pos={displayPos} setPos={setPos} setExpenses={setExpenses} clientPOs={displayClientPOs} setClientPOs={setClientPOs} invoices={displayInvoices} expenses={displayExpenses} campsRef={displayCampsRef} />}
         {tab === "quotations"     && <TabQuotations     role={role} quotes={displayQuotes} setQuotes={setQuotes} campsRef={displayCampsRef} />}
-        {tab === "registry"       && <TabRegistry       role={role} campsRef={displayCampsRef} expenses={displayExpenses} />}
+        {tab === "registry"       && <TabRegistry       role={role} campsRef={displayCampsRef} expenses={displayExpenses} vendorById={vendorById} />}
         {tab === "campaign_pl"    && <TabCampaignPL     role={role} expenses={displayExpenses} setExpenses={setExpenses} invoices={displayInvoices} campsRef={displayCampsRef} />}
       </div>
 

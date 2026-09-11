@@ -12,7 +12,7 @@
  * database cannot answer renders as "—", never as a plausible stand-in.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import {
   motion,
@@ -24,7 +24,7 @@ import {
 } from "motion/react";
 import {
   CampaignsAPI, ClientsAPI, InvoicesAPI, UsersAPI, CreatorsAPI,
-  QuotesAPI, ClientRequestsAPI, CreatorRequestsAPI,
+  QuotesAPI, ClientRequestsAPI, CreatorRequestsAPI, TrendingAPI,
 } from "../../lib/api";
 import { buildSummary } from "../../lib/summaryMetrics";
 import { useBrandAccent } from "../../lib/brandAccent";
@@ -7517,6 +7517,275 @@ function LivePostGrowth({ growth }) {
 }
 
 /* ────────────────────────────────────────────────────────────────
+ * INSIGHTS — four placeholder sections, structure only. Each is empty by
+ * design until the founder specifies what belongs in it; this chapter exists
+ * so the shape is there to fill in, not to guess at content ahead of that.
+ * ──────────────────────────────────────────────────────────────── */
+
+const INSIGHTS_SECTIONS = [
+  { id: "questions",    label: "Questions",    note: "Questions worth asking about the account right now.", color: F.gold },
+  { id: "trending",     label: "Trending",     note: "What's moving across the roster and the wider platforms.", color: F.forest },
+  { id: "market-watch", label: "Market Watch", note: "Signals from outside the agency — category and competitor moves.", color: F.plum },
+  { id: "newsletter",   label: "Newsletter",   note: "The latest from Fifth Avenue.", color: F.rust },
+];
+
+// Small pill button shared by the two add-forms below — same visual weight
+// as the rest of this page's flat, bordered controls, never a filled CTA:
+// this is an editing surface bolted onto a report, not a marketing page.
+function InsightBtn({ children, ...rest }) {
+  return (
+    <button
+      type="button"
+      {...rest}
+      style={{
+        flexShrink: 0,
+        fontFamily: T.ui, fontSize: 11.5, fontWeight: 700, letterSpacing: "0.02em",
+        color: rest.disabled ? F.muted : "#FFFFFF",
+        background: rest.disabled ? F.hairline : F.ink,
+        border: "none", borderRadius: 9,
+        padding: "0 16px",
+        cursor: rest.disabled ? "default" : "pointer",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+const inputStyle = {
+  flex: 1, minWidth: 0,
+  fontFamily: T.ui, fontSize: 12.5, color: F.ink,
+  padding: "9px 12px", borderRadius: 9,
+  border: `1px solid ${F.hairline}`, background: F.surface,
+  outline: "none",
+};
+
+const newTrendingId = () =>
+  `trend_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+
+/**
+ * The internal team's own editing surface for one brand's Trending shelf —
+ * Instagram links and short typed notes, both landing in the same
+ * TrendingItem collection (kind: "reel" | "note") and both read straight
+ * through to the client portal's Insights → Trending tab (GET
+ * /api/portal/trending). Everything else on this page is read-only; this is
+ * the one place that writes, which is why it is scoped tightly to whichever
+ * single brand the founder's brand filter has selected — there is no sane
+ * "add this for every client at once".
+ */
+// Universal — one shelf, not one per brand. Every client's portal shows the
+// same Trending feed (see GET /api/portal/trending in the backend), so this
+// editor is never gated behind picking a brand: it always shows the add-forms
+// and the live list. Brand-scoping this was tried and explicitly dropped.
+function TrendingEditor() {
+  const [items, setItems] = useState(null); // null = loading
+  const [linkInput, setLinkInput] = useState("");
+  const [noteInput, setNoteInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [retryingId, setRetryingId] = useState(null);
+
+  const load = useCallback(() => {
+    TrendingAPI.list()
+      .then((rows) => setItems(
+        [...rows].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
+      ))
+      .catch((e) => setErr(e.message));
+  }, []);
+
+  useEffect(() => { setItems(null); setErr(null); load(); }, [load]);
+
+  const addLinks = async () => {
+    // One paste can carry several links — split on whitespace/commas/newlines
+    // so "add multiple" doesn't mean clicking Add once per URL.
+    const urls = linkInput.split(/[\s,]+/).map((u) => u.trim()).filter(Boolean);
+    if (!urls.length || busy) return;
+    setBusy(true); setErr(null);
+    try {
+      for (const url of urls) {
+        await TrendingAPI.create({ id: newTrendingId(), kind: "reel", url, author: "Internal team" });
+      }
+      setLinkInput("");
+      load();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const addNote = async () => {
+    const text = noteInput.trim();
+    if (!text || busy) return;
+    setBusy(true); setErr(null);
+    try {
+      await TrendingAPI.create({ id: newTrendingId(), kind: "note", text, author: "Internal team" });
+      setNoteInput("");
+      load();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const remove = async (id) => {
+    setBusy(true); setErr(null);
+    try { await TrendingAPI.remove(id); load(); }
+    catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  // Re-spends one HikerAPI call on an already-saved reel — for a link added
+  // before preview-fetching existed, or one whose first fetch failed. Keyed
+  // per-row rather than the shared `busy` flag so retrying one reel doesn't
+  // grey out the rest of the list.
+  const retry = async (id) => {
+    setRetryingId(id); setErr(null);
+    try { await TrendingAPI.refetch(id); load(); }
+    catch (e) { setErr(e.message); }
+    setRetryingId(null);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <input
+          value={linkInput}
+          onChange={(e) => setLinkInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLinks(); } }}
+          placeholder="Paste one or more Instagram links — space, comma or newline between each"
+          style={inputStyle}
+        />
+        <InsightBtn onClick={addLinks} disabled={busy || !linkInput.trim()}>Add link</InsightBtn>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "flex-start" }}>
+        <textarea
+          value={noteInput}
+          onChange={(e) => setNoteInput(e.target.value)}
+          placeholder="Type an insight…"
+          rows={2}
+          style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5, paddingTop: 8 }}
+        />
+        <InsightBtn onClick={addNote} disabled={busy || !noteInput.trim()} style={{ height: 34 }}>Add insight</InsightBtn>
+      </div>
+
+      {err && (
+        <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.rust, marginBottom: 10 }}>{err}</div>
+      )}
+
+      {items == null ? (
+        <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
+      ) : items.length === 0 ? (
+        <div style={{ padding: "14px 16px", borderTop: `1px solid ${F.hairline}`, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+          Nothing added yet — the client sees whatever lands here.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {items.map((it) => (
+            <div key={it.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", borderRadius: 10, border: `1px solid ${F.hairline}` }}>
+              <span style={{
+                flexShrink: 0, marginTop: 1, padding: "2px 8px", borderRadius: 999,
+                fontFamily: T.ui, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+                color: it.kind === "reel" ? F.forest : F.plum,
+                background: it.kind === "reel" ? F.forestTint : F.plumTint,
+              }}>
+                {it.kind === "reel" ? "Reel" : "Note"}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {it.kind === "reel" ? (
+                  <>
+                    <a href={it.url} target="_blank" rel="noreferrer" style={{ fontFamily: T.ui, fontSize: 12, color: F.ink, wordBreak: "break-all", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}>
+                      {it.url}
+                    </a>
+                    {/* Whether the server actually managed to fetch this post's
+                        video/poster — the one thing that decides whether the
+                        client portal plays it or just links out. `media` is
+                        absent on anything added before this existed. */}
+                    {it.media?.ok ? (
+                      <div style={{ marginTop: 3, fontFamily: T.ui, fontSize: 10.5, color: F.forest }}>
+                        ● Preview fetched{it.media.video ? " — will play" : " — poster only, no video"}
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: 3, display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontFamily: T.ui, fontSize: 10.5, color: F.rust }}>
+                          {it.media
+                            ? "● Couldn't fetch a preview — private, deleted, or rate-limited. Client sees a plain link."
+                            : "● No preview fetched yet — client sees a plain link."}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => retry(it.id)}
+                          disabled={retryingId === it.id}
+                          style={{
+                            flexShrink: 0, fontFamily: T.ui, fontSize: 10, fontWeight: 700, color: F.rust,
+                            background: "none", border: `1px solid ${F.rust}`, borderRadius: 999,
+                            padding: "1px 8px", cursor: retryingId === it.id ? "default" : "pointer",
+                            opacity: retryingId === it.id ? 0.5 : 1,
+                          }}
+                        >
+                          {retryingId === it.id ? "Retrying…" : "Retry fetch"}
+                        </button>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div style={{ fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.55 }}>{it.text}</div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => remove(it.id)}
+                disabled={busy}
+                style={{
+                  flexShrink: 0, fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.muted,
+                  background: "none", border: "none", cursor: busy ? "default" : "pointer", padding: "2px 4px",
+                }}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Insights() {
+  return (
+    <section style={{ padding: "140px 44px", background: F.surface }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+        <SectionHeader
+          eyebrow="Insights"
+          eyebrowColor={F.gold}
+          title="Beyond the numbers."
+          sub="Questions worth asking, what's trending, what the wider market is doing, and Fifth Avenue's own newsletter."
+        />
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {INSIGHTS_SECTIONS.map((s, i) => (
+            <Reveal key={s.id} delay={i * 0.06}>
+              <div style={{ background: F.surface, border: `1px solid ${F.hairline}`, borderRadius: 14, padding: "20px 24px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.color, flexShrink: 0 }} />
+                  <span style={{ fontFamily: T.ui, fontSize: 13, fontWeight: 700, color: F.ink, letterSpacing: "0.02em" }}>{s.label}</span>
+                </div>
+                <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.inkSoft, marginBottom: 14, maxWidth: 560, lineHeight: 1.6 }}>
+                  {s.note}
+                </div>
+                {s.id === "trending" ? (
+                  <TrendingEditor />
+                ) : (
+                  <div style={{ padding: "14px 16px", borderTop: `1px solid ${F.hairline}`, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+                    Nothing here yet.
+                  </div>
+                )}
+              </div>
+            </Reveal>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────
  * 11 — THE BIG PICTURE
  * ──────────────────────────────────────────────────────────────── */
 
@@ -7847,6 +8116,9 @@ export default function FounderSummary() {
     { eyebrow: "People",              node: <TeamField team={data.team} /> },
     { eyebrow: "Campaign operations", node: <CampaignFlow stages={data.campaigns?.stages || []} awaitingBudget={data.campaigns?.awaitingBudget || 0} /> },
     { eyebrow: "Ahead",               node: <DecisionsHorizon items={data.decisions || []} /> },
+    // Insights is not part of `data` and takes no brand scope — see Insights /
+    // TrendingEditor above, it's deliberately universal.
+    { eyebrow: "Insights",            node: <Insights /> },
   ], [data]);
 
   return (

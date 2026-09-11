@@ -136,6 +136,17 @@ export const PurchaseOrdersAPI = crud("/api/purchase-orders");
 export const ClientPOsAPI = crud("/api/client-pos");
 export const QuotesAPI = crud("/api/quotes");
 
+// Insights → Trending shelf (Instagram links + typed notes) on the Founder
+// Summary page. Same plain CRUD as the rest; the client portal's own
+// read-only copy is a separate route (/api/portal/trending) on the backend.
+export const TrendingAPI = {
+  ...crud("/api/trending"),
+  // Re-fetches a reel's video/poster/stats without deleting and re-pasting
+  // the link — for an item added before fetchReelSnapshot existed, or one
+  // whose first fetch failed (private at the time, rate-limited, etc.).
+  refetch: (id) => request(`/api/trending/${id}/refetch`, { method: "POST" }),
+};
+
 // ── Vendors (Creators › Vendors) ─────────────────────────────────────────────
 // The agencies and talent managers that invoice us for a creator. Plain CRUD:
 // which creators belong to a vendor is `creator.vendorId`, so the roster is

@@ -7583,7 +7583,6 @@ function TrendingEditor() {
   const [noteInput, setNoteInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
-  const [retryingId, setRetryingId] = useState(null);
 
   const load = useCallback(() => {
     TrendingAPI.list()
@@ -7628,17 +7627,6 @@ function TrendingEditor() {
     try { await TrendingAPI.remove(id); load(); }
     catch (e) { setErr(e.message); }
     setBusy(false);
-  };
-
-  // Re-spends one HikerAPI call on an already-saved reel — for a link added
-  // before preview-fetching existed, or one whose first fetch failed. Keyed
-  // per-row rather than the shared `busy` flag so retrying one reel doesn't
-  // grey out the rest of the list.
-  const retry = async (id) => {
-    setRetryingId(id); setErr(null);
-    try { await TrendingAPI.refetch(id); load(); }
-    catch (e) { setErr(e.message); }
-    setRetryingId(null);
   };
 
   return (
@@ -7689,41 +7677,9 @@ function TrendingEditor() {
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 {it.kind === "reel" ? (
-                  <>
-                    <a href={it.url} target="_blank" rel="noreferrer" style={{ fontFamily: T.ui, fontSize: 12, color: F.ink, wordBreak: "break-all", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}>
-                      {it.url}
-                    </a>
-                    {/* Whether the server actually managed to fetch this post's
-                        video/poster — the one thing that decides whether the
-                        client portal plays it or just links out. `media` is
-                        absent on anything added before this existed. */}
-                    {it.media?.ok ? (
-                      <div style={{ marginTop: 3, fontFamily: T.ui, fontSize: 10.5, color: F.forest }}>
-                        ● Preview fetched{it.media.video ? " — will play" : " — poster only, no video"}
-                      </div>
-                    ) : (
-                      <div style={{ marginTop: 3, display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontFamily: T.ui, fontSize: 10.5, color: F.rust }}>
-                          {it.media
-                            ? "● Couldn't fetch a preview — private, deleted, or rate-limited. Client sees a plain link."
-                            : "● No preview fetched yet — client sees a plain link."}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => retry(it.id)}
-                          disabled={retryingId === it.id}
-                          style={{
-                            flexShrink: 0, fontFamily: T.ui, fontSize: 10, fontWeight: 700, color: F.rust,
-                            background: "none", border: `1px solid ${F.rust}`, borderRadius: 999,
-                            padding: "1px 8px", cursor: retryingId === it.id ? "default" : "pointer",
-                            opacity: retryingId === it.id ? 0.5 : 1,
-                          }}
-                        >
-                          {retryingId === it.id ? "Retrying…" : "Retry fetch"}
-                        </button>
-                      </div>
-                    )}
-                  </>
+                  <a href={it.url} target="_blank" rel="noreferrer" style={{ fontFamily: T.ui, fontSize: 12, color: F.ink, wordBreak: "break-all", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}>
+                    {it.url}
+                  </a>
                 ) : (
                   <div style={{ fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.55 }}>{it.text}</div>
                 )}

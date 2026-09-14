@@ -143,6 +143,49 @@ export const QuotesAPI = crud("/api/quotes");
 // on the client, which embeds it directly via Instagram's own oEmbed widget.
 export const TrendingAPI = crud("/api/trending");
 
+// Insights → Questions shelf (Founder Summary Insights tab) — unlike
+// TrendingAPI above this IS per brand: one document per brandId, fetched and
+// upserted by that id rather than a plain list. The client portal's read-only
+// copy is a separate route (/api/portal/questions) on the backend.
+export const AccountQuestionsAPI = {
+  get: (brandId) => request(`/api/account-questions/${brandId}`),
+  update: (brandId, patch) =>
+    request(`/api/account-questions/${brandId}`, { method: "PATCH", body: JSON.stringify(patch) }),
+};
+
+// Insights → Market Watch shelf (Founder Summary Insights tab) — the same
+// Reels/Insights shape as TrendingAPI above, but per brand: every list/create
+// call takes a brandId, unlike Trending's single universal shelf. The client
+// portal's read-only copy is a separate route (/api/portal/market-watch) on
+// the backend, scoped the same way /api/portal/questions is.
+export const MarketWatchAPI = {
+  list: (brandId) => request(`/api/market-watch?brandId=${encodeURIComponent(brandId)}`),
+  create: (item) => request(`/api/market-watch`, { method: "POST", body: JSON.stringify(item) }),
+  remove: (id) => request(`/api/market-watch/${id}`, { method: "DELETE" }),
+};
+
+// Market Watch's read-only "Latest News" list — industry headlines the
+// backend fetches from Google News on a cached schedule (see
+// /api/news/influencer-marketing in 5th-internal-back/newsFeed.js +
+// server.js). Not internal-team-authored, and universal like TrendingAPI's
+// own shelf: no brandId, same feed for every brand.
+export const NewsAPI = {
+  influencerMarketing: () => request(`/api/news/influencer-marketing`).then((r) => r.items || []),
+};
+
+// Insights → Newsletter — a brand's history of newsletter PDFs the internal
+// team has uploaded for them (see /api/newsletter in
+// 5th-internal-back/server.js + newsletterStore.js). Brand-scoped like
+// MarketWatchAPI above, not universal like NewsAPI/TrendingAPI: each brand
+// keeps its own list.
+export const NewsletterAPI = {
+  list: (brandId) => request(`/api/newsletter?brandId=${encodeURIComponent(brandId)}`),
+  create: (item) => request(`/api/newsletter`, { method: "POST", body: JSON.stringify(item) }),
+  remove: (id) => request(`/api/newsletter/${id}`, { method: "DELETE" }),
+  // Not a request() call — this is a URL for an <a href>, not JSON to parse.
+  fileUrl: (id) => `${BASE}/api/newsletter/${id}/file`,
+};
+
 // ── Vendors (Creators › Vendors) ─────────────────────────────────────────────
 // The agencies and talent managers that invoice us for a creator. Plain CRUD:
 // which creators belong to a vendor is `creator.vendorId`, so the roster is

@@ -24,10 +24,12 @@ import {
 } from "motion/react";
 import {
   CampaignsAPI, ClientsAPI, InvoicesAPI, UsersAPI, CreatorsAPI,
-  QuotesAPI, ClientRequestsAPI, CreatorRequestsAPI, TrendingAPI,
+  QuotesAPI, ClientRequestsAPI, CreatorRequestsAPI, TrendingAPI, AccountQuestionsAPI,
+  MarketWatchAPI, NewsAPI, NewsletterAPI,
 } from "../../lib/api";
 import { buildSummary } from "../../lib/summaryMetrics";
 import { useBrandAccent } from "../../lib/brandAccent";
+import { readPdfAsDataUri, NEWSLETTER_ACCEPT } from "../../lib/pdf";
 
 
 /* ────────────────────────────────────────────────────────────────
@@ -7523,10 +7525,30 @@ function LivePostGrowth({ growth }) {
  * ──────────────────────────────────────────────────────────────── */
 
 const INSIGHTS_SECTIONS = [
-  { id: "questions",    label: "Questions",    note: "Questions worth asking about the account right now.", color: F.gold },
-  { id: "trending",     label: "Trending",     note: "What's moving across the roster and the wider platforms.", color: F.forest },
-  { id: "market-watch", label: "Market Watch", note: "Signals from outside the agency — category and competitor moves.", color: F.plum },
-  { id: "newsletter",   label: "Newsletter",   note: "The latest from Fifth Avenue.", color: F.rust },
+  {
+    id: "questions", label: "Questions",
+    headline: "What's actually happening on this account.",
+    note: "Questions worth asking about the account right now.",
+    color: F.gold, tint: F.goldTint,
+  },
+  {
+    id: "trending", label: "Trending",
+    headline: "What's moving right now.",
+    note: "What's moving across the roster and the wider platforms.",
+    color: F.forest, tint: F.forestTint,
+  },
+  {
+    id: "market-watch", label: "Market Watch",
+    headline: "Signals from beyond the account.",
+    note: "Signals from outside the agency — category and competitor moves.",
+    color: F.plum, tint: F.plumTint,
+  },
+  {
+    id: "newsletter", label: "Newsletter",
+    headline: "Straight from Fifth Avenue.",
+    note: "The latest from Fifth Avenue.",
+    color: F.rust, tint: F.rustTint,
+  },
 ];
 
 // Small pill button shared by the two add-forms below — same visual weight
@@ -7562,6 +7584,126 @@ const inputStyle = {
 
 const newTrendingId = () =>
   `trend_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+
+// The four fixed prompts on the Questions shelf — same keys the backend
+// stores under (see models/AccountQuestions.js) and the client portal reads
+// by (GET /api/portal/questions). Fixed, not editable: the founder asked for
+// these four specifically, not an open-ended list.
+const QUESTION_FIELDS = [
+  { key: "whatWorked", label: "What Worked", color: F.forest, tint: F.forestTint },
+  { key: "whatDidntWork", label: "What Didn't Work", color: F.rust, tint: F.rustTint },
+  { key: "nextActions", label: "Next Actions", color: F.navy, tint: F.navyTint },
+  { key: "areasToImprove", label: "Areas to Improve", color: F.gold, tint: F.goldTint },
+];
+
+/**
+ * The internal team's own editing surface for one brand's Questions shelf —
+ * four fixed prompts, one text answer each, read straight through to that
+ * brand's portal (GET /api/portal/questions). Unlike TrendingEditor this IS
+ * per-brand, so the first thing here is a small brand select scoped to this
+ * editor alone — independent of the page's own brand filter, so switching
+ * pages away and back never loses which brand's answers were being edited,
+ * and picking "All brands" up top never leaves this with nothing to save to.
+ *
+ * Draft-on-blur, same as the rest of the internal app's text fields: local
+ * state while typing, one PATCH when the field loses focus, not one per
+ * keystroke.
+ */
+function QuestionsEditor() {
+  const [clients, setClients] = useState(null);
+  const [brandId, setBrandId] = useState("");
+  const [answers, setAnswers] = useState(null); // null = no brand picked yet, or loading
+  const [drafts, setDrafts] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    ClientsAPI.list()
+      .then((rows) => setClients([...rows].sort((a, b) => (a.name || "").localeCompare(b.name || ""))))
+      .catch((e) => setErr(e.message));
+  }, []);
+
+  useEffect(() => {
+    if (!brandId) { setAnswers(null); setDrafts({}); return; }
+    setAnswers(null);
+    setErr(null);
+    AccountQuestionsAPI.get(brandId)
+      .then((a) => { setAnswers(a); setDrafts(a); })
+      .catch((e) => setErr(e.message));
+  }, [brandId]);
+
+  const commit = async (key) => {
+    const value = (drafts[key] || "").trim();
+    if (value === (answers?.[key] || "")) return; // unchanged — nothing to save
+    setBusy(true); setErr(null);
+    try {
+      const updated = await AccountQuestionsAPI.update(brandId, { [key]: value });
+      setAnswers(updated);
+      setDrafts(updated);
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div>
+      <select
+        value={brandId}
+        onChange={(e) => setBrandId(e.target.value)}
+        style={{ ...inputStyle, flex: "none", width: 240, marginBottom: 14 }}
+      >
+        <option value="">Select a brand…</option>
+        {(clients || []).map((c) => (
+          <option key={c.id || c._id} value={c.id || c._id}>{c.name}</option>
+        ))}
+      </select>
+
+      {err && (
+        <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.rust, marginBottom: 10 }}>{err}</div>
+      )}
+
+      {!brandId ? (
+        <div style={{ padding: "14px 16px", borderTop: `1px solid ${F.hairline}`, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+          Pick a brand to see or edit their answers.
+        </div>
+      ) : answers == null ? (
+        <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
+          {QUESTION_FIELDS.map((q) => (
+            <div
+              key={q.key}
+              style={{
+                position: "relative",
+                background: q.tint,
+                border: `1px solid ${F.hairline}`,
+                borderLeft: `3px solid ${q.color}`,
+                borderRadius: 10,
+                padding: "14px 14px 12px",
+              }}
+            >
+              <div style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: q.color, marginBottom: 8 }}>
+                {q.label}
+              </div>
+              <textarea
+                value={drafts[q.key] || ""}
+                onChange={(e) => setDrafts((d) => ({ ...d, [q.key]: e.target.value }))}
+                onBlur={() => commit(q.key)}
+                placeholder={`Type the answer for ${q.label.toLowerCase()}…`}
+                rows={4}
+                disabled={busy}
+                style={{
+                  width: "100%", resize: "vertical", lineHeight: 1.6,
+                  fontFamily: T.ui, fontSize: 12.5, color: F.ink,
+                  padding: 0, border: "none", background: "transparent", outline: "none",
+                }}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * The internal team's own editing surface for one brand's Trending shelf —
@@ -7629,74 +7771,507 @@ function TrendingEditor() {
     setBusy(false);
   };
 
+  // Split by kind so Reels and Insights each get their own add-form and
+  // their own running list — the founder asked for the link section first,
+  // its own items visible and removable right there, and the note section
+  // after it with the same treatment, rather than one shelf mixing both
+  // kinds in a single chronological list.
+  const reels = (items || []).filter((it) => it.kind === "reel");
+  const notes = (items || []).filter((it) => it.kind === "note");
+
   return (
-    <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-        <input
-          value={linkInput}
-          onChange={(e) => setLinkInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLinks(); } }}
-          placeholder="Paste one or more Instagram links — space, comma or newline between each"
-          style={inputStyle}
-        />
-        <InsightBtn onClick={addLinks} disabled={busy || !linkInput.trim()}>Add link</InsightBtn>
-      </div>
-
-      <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "flex-start" }}>
-        <textarea
-          value={noteInput}
-          onChange={(e) => setNoteInput(e.target.value)}
-          placeholder="Type an insight…"
-          rows={2}
-          style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5, paddingTop: 8 }}
-        />
-        <InsightBtn onClick={addNote} disabled={busy || !noteInput.trim()} style={{ height: 34 }}>Add insight</InsightBtn>
-      </div>
-
+    <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
       {err && (
-        <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.rust, marginBottom: 10 }}>{err}</div>
+        <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.rust }}>{err}</div>
       )}
 
-      {items == null ? (
-        <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
-      ) : items.length === 0 ? (
-        <div style={{ padding: "14px 16px", borderTop: `1px solid ${F.hairline}`, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
-          Nothing added yet — the client sees whatever lands here.
+      {/* ── Reels ──────────────────────────────────────────────────────── */}
+      <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: F.forest, flexShrink: 0 }} />
+          <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: F.forest }}>
+            Reels
+          </span>
         </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {items.map((it) => (
-            <div key={it.id} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", borderRadius: 10, border: `1px solid ${F.hairline}` }}>
-              <span style={{
-                flexShrink: 0, marginTop: 1, padding: "2px 8px", borderRadius: 999,
-                fontFamily: T.ui, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
-                color: it.kind === "reel" ? F.forest : F.plum,
-                background: it.kind === "reel" ? F.forestTint : F.plumTint,
-              }}>
-                {it.kind === "reel" ? "Reel" : "Note"}
-              </span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                {it.kind === "reel" ? (
-                  <a href={it.url} target="_blank" rel="noreferrer" style={{ fontFamily: T.ui, fontSize: 12, color: F.ink, wordBreak: "break-all", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}>
-                    {it.url}
-                  </a>
-                ) : (
-                  <div style={{ fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.55 }}>{it.text}</div>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => remove(it.id)}
-                disabled={busy}
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <input
+            value={linkInput}
+            onChange={(e) => setLinkInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLinks(); } }}
+            placeholder="Paste one or more Instagram links — space, comma or newline between each"
+            style={inputStyle}
+          />
+          <InsightBtn onClick={addLinks} disabled={busy || !linkInput.trim()}>Add link</InsightBtn>
+        </div>
+
+        {items == null ? (
+          <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
+        ) : reels.length === 0 ? (
+          <div style={{ padding: "12px 14px", borderRadius: 10, border: `1px dashed ${F.hairlineStrong}`, background: F.forestTint, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+            No reels yet — paste a link above.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {reels.map((it) => (
+              <div
+                key={it.id}
                 style={{
-                  flexShrink: 0, fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.muted,
-                  background: "none", border: "none", cursor: busy ? "default" : "pointer", padding: "2px 4px",
+                  display: "flex", alignItems: "center", gap: 10,
+                  padding: "10px 12px", borderRadius: 10,
+                  border: `1px solid ${F.hairline}`, borderLeft: `3px solid ${F.forest}`,
                 }}
               >
-                Remove
-              </button>
+                <a
+                  href={it.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, wordBreak: "break-all", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}
+                >
+                  {it.url}
+                </a>
+                <button
+                  type="button"
+                  onClick={() => remove(it.id)}
+                  disabled={busy}
+                  style={{
+                    flexShrink: 0, fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.muted,
+                    background: "none", border: "none", cursor: busy ? "default" : "pointer", padding: "2px 4px",
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Insights ───────────────────────────────────────────────────── */}
+      <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: F.plum, flexShrink: 0 }} />
+          <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: F.plum }}>
+            Insights
+          </span>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "flex-start" }}>
+          <textarea
+            value={noteInput}
+            onChange={(e) => setNoteInput(e.target.value)}
+            placeholder="Type an insight…"
+            rows={2}
+            style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5, paddingTop: 8 }}
+          />
+          <InsightBtn onClick={addNote} disabled={busy || !noteInput.trim()} style={{ height: 34 }}>Add insight</InsightBtn>
+        </div>
+
+        {items == null ? (
+          <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
+        ) : notes.length === 0 ? (
+          <div style={{ padding: "12px 14px", borderRadius: 10, border: `1px dashed ${F.hairlineStrong}`, background: F.plumTint, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+            No insights yet — type one above.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {notes.map((it) => (
+              <div
+                key={it.id}
+                style={{
+                  display: "flex", alignItems: "flex-start", gap: 10,
+                  padding: "10px 12px", borderRadius: 10,
+                  border: `1px solid ${F.hairline}`, borderLeft: `3px solid ${F.plum}`,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.55 }}>{it.text}</div>
+                <button
+                  type="button"
+                  onClick={() => remove(it.id)}
+                  disabled={busy}
+                  style={{
+                    flexShrink: 0, fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.muted,
+                    background: "none", border: "none", cursor: busy ? "default" : "pointer", padding: "2px 4px",
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The internal team's own editing surface for one brand's Market Watch
+ * shelf — identical Reels/Insights logic to TrendingEditor above (same
+ * add-forms, same fetchReelSnapshot-backed reel creation, same per-kind
+ * lists with a Remove button), but PER BRAND: a small brand select up top
+ * (same pattern as QuestionsEditor's own, scoped to this editor alone)
+ * picks which brand's shelf is being viewed, added to, or removed from, and
+ * every call carries that brandId. Trending stays the one universal shelf;
+ * this is not it.
+ */
+function MarketWatchEditor() {
+  const [clients, setClients] = useState(null);
+  const [brandId, setBrandId] = useState("");
+  const [items, setItems] = useState(null); // null = no brand picked yet, or loading
+  const [linkInput, setLinkInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  // Latest News — auto-fetched, read-only, and universal (same list for
+  // every brand, unlike everything else in this editor), so it loads once
+  // on mount rather than being gated on a brand being picked below.
+  const [news, setNews] = useState(null);
+  const [newsErr, setNewsErr] = useState(null);
+
+  useEffect(() => {
+    ClientsAPI.list()
+      .then((rows) => setClients([...rows].sort((a, b) => (a.name || "").localeCompare(b.name || ""))))
+      .catch((e) => setErr(e.message));
+  }, []);
+
+  useEffect(() => {
+    NewsAPI.influencerMarketing()
+      .then((rows) => setNews(rows))
+      .catch((e) => setNewsErr(e.message));
+  }, []);
+
+  const load = useCallback(() => {
+    if (!brandId) { setItems(null); return; }
+    MarketWatchAPI.list(brandId)
+      .then((rows) => setItems(
+        [...rows].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
+      ))
+      .catch((e) => setErr(e.message));
+  }, [brandId]);
+
+  useEffect(() => { setItems(null); setErr(null); load(); }, [load]);
+
+  const addLinks = async () => {
+    // One paste can carry several links — same multi-add as Trending.
+    const urls = linkInput.split(/[\s,]+/).map((u) => u.trim()).filter(Boolean);
+    if (!urls.length || busy || !brandId) return;
+    setBusy(true); setErr(null);
+    try {
+      for (const url of urls) {
+        await MarketWatchAPI.create({ id: newTrendingId(), brandId, kind: "reel", url, author: "Internal team" });
+      }
+      setLinkInput("");
+      load();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const remove = async (id) => {
+    setBusy(true); setErr(null);
+    try { await MarketWatchAPI.remove(id); load(); }
+    catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const reels = (items || []).filter((it) => it.kind === "reel");
+
+  return (
+    <div>
+      {/* ── Latest News — auto-fetched, read-only, universal ────────────── */}
+      <div style={{ marginBottom: 24, paddingBottom: 20, borderBottom: `1px solid ${F.hairline}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: F.navy, flexShrink: 0 }} />
+          <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: F.navy }}>
+            Latest News
+          </span>
+        </div>
+
+        {newsErr ? (
+          <div style={{ padding: "12px 14px", borderRadius: 10, border: `1px dashed ${F.hairlineStrong}`, background: F.navyTint, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+            Couldn't load the news feed right now.
+          </div>
+        ) : news == null ? (
+          <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
+        ) : news.length === 0 ? (
+          <div style={{ padding: "12px 14px", borderRadius: 10, border: `1px dashed ${F.hairlineStrong}`, background: F.navyTint, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+            Nothing here yet.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {news.map((n) => (
+              <a
+                key={n.link}
+                href={n.link}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  display: "block", padding: "10px 12px", borderRadius: 10,
+                  border: `1px solid ${F.hairline}`, borderLeft: `3px solid ${F.navy}`,
+                  textDecoration: "none",
+                }}
+              >
+                <div style={{ fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.5 }}>{n.title}</div>
+                {n.source && (
+                  <div style={{ marginTop: 3, fontFamily: T.ui, fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: F.muted }}>
+                    {n.source}
+                  </div>
+                )}
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <select
+        value={brandId}
+        onChange={(e) => setBrandId(e.target.value)}
+        style={{ ...inputStyle, flex: "none", width: 240, marginBottom: 16 }}
+      >
+        <option value="">Select a brand…</option>
+        {(clients || []).map((c) => (
+          <option key={c.id || c._id} value={c.id || c._id}>{c.name}</option>
+        ))}
+      </select>
+
+      {!brandId ? (
+        <div style={{ padding: "14px 16px", borderTop: `1px solid ${F.hairline}`, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+          Pick a brand to see or edit their Market Watch shelf.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
+          {err && (
+            <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.rust }}>{err}</div>
+          )}
+
+          {/* ── Reels ──────────────────────────────────────────────────── */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: F.forest, flexShrink: 0 }} />
+              <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: F.forest }}>
+                Reels
+              </span>
             </div>
-          ))}
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <input
+                value={linkInput}
+                onChange={(e) => setLinkInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLinks(); } }}
+                placeholder="Paste one or more Instagram links — space, comma or newline between each"
+                style={inputStyle}
+              />
+              <InsightBtn onClick={addLinks} disabled={busy || !linkInput.trim()}>Add link</InsightBtn>
+            </div>
+
+            {items == null ? (
+              <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
+            ) : reels.length === 0 ? (
+              <div style={{ padding: "12px 14px", borderRadius: 10, border: `1px dashed ${F.hairlineStrong}`, background: F.forestTint, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+                No reels yet — paste a link above.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {reels.map((it) => (
+                  <div
+                    key={it.id}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "10px 12px", borderRadius: 10,
+                      border: `1px solid ${F.hairline}`, borderLeft: `3px solid ${F.forest}`,
+                    }}
+                  >
+                    <a
+                      href={it.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, wordBreak: "break-all", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}
+                    >
+                      {it.url}
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => remove(it.id)}
+                      disabled={busy}
+                      style={{
+                        flexShrink: 0, fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.muted,
+                        background: "none", border: "none", cursor: busy ? "default" : "pointer", padding: "2px 4px",
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The internal team's own editing surface for one brand's Newsletter
+ * history — brand-scoped like MarketWatchEditor above: a brand select, then
+ * that brand's own list of uploaded PDFs (newest first), each with its
+ * upload date and a Remove control, plus a small upload form (an optional
+ * title, defaulting to the file's own name, and a file picker capped at
+ * 2MB — see lib/pdf.js). Unlike Market Watch/Trending this keeps every
+ * upload rather than a small curated shelf, so a brand's own portal can
+ * show its whole dated newsletter history (GET /api/portal/newsletter).
+ */
+function NewsletterEditor() {
+  const [clients, setClients] = useState(null);
+  const [brandId, setBrandId] = useState("");
+  const [items, setItems] = useState(null); // null = no brand picked yet, or loading
+  const [titleInput, setTitleInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const fileRef = useRef(null);
+
+  useEffect(() => {
+    ClientsAPI.list()
+      .then((rows) => setClients([...rows].sort((a, b) => (a.name || "").localeCompare(b.name || ""))))
+      .catch((e) => setErr(e.message));
+  }, []);
+
+  const load = useCallback(() => {
+    if (!brandId) { setItems(null); return; }
+    NewsletterAPI.list(brandId)
+      .then((rows) => setItems(
+        [...rows].sort((a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0)),
+      ))
+      .catch((e) => setErr(e.message));
+  }, [brandId]);
+
+  useEffect(() => { setItems(null); setErr(null); load(); }, [load]);
+
+  const upload = async (file) => {
+    if (!file || busy || !brandId) return;
+    setBusy(true); setErr(null);
+    try {
+      const dataUri = await readPdfAsDataUri(file);
+      await NewsletterAPI.create({
+        id: newTrendingId(),
+        brandId,
+        title: titleInput.trim() || file.name,
+        file: dataUri,
+        author: "Internal team",
+      });
+      setTitleInput("");
+      load();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const remove = async (id) => {
+    setBusy(true); setErr(null);
+    try { await NewsletterAPI.remove(id); load(); }
+    catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div>
+      <select
+        value={brandId}
+        onChange={(e) => setBrandId(e.target.value)}
+        style={{ ...inputStyle, flex: "none", width: 240, marginBottom: 16 }}
+      >
+        <option value="">Select a brand…</option>
+        {(clients || []).map((c) => (
+          <option key={c.id || c._id} value={c.id || c._id}>{c.name}</option>
+        ))}
+      </select>
+
+      {!brandId ? (
+        <div style={{ padding: "14px 16px", borderTop: `1px solid ${F.hairline}`, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+          Pick a brand to see or upload their newsletter history.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {err && (
+            <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.rust }}>{err}</div>
+          )}
+
+          <div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input
+                value={titleInput}
+                onChange={(e) => setTitleInput(e.target.value)}
+                placeholder="Title (optional — defaults to the file name)"
+                style={inputStyle}
+              />
+              <InsightBtn
+                onClick={() => fileRef.current?.click()}
+                disabled={busy}
+                style={{ height: 34 }}
+              >
+                {busy ? "Uploading…" : "Upload PDF"}
+              </InsightBtn>
+              <input
+                ref={fileRef}
+                type="file"
+                accept={NEWSLETTER_ACCEPT}
+                hidden
+                onChange={(e) => upload(e.target.files?.[0])}
+              />
+            </div>
+            <div style={{ fontFamily: T.ui, fontSize: 10, color: F.muted, marginTop: 6 }}>
+              PDF only · up to 2MB
+            </div>
+          </div>
+
+          {items == null ? (
+            <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
+          ) : items.length === 0 ? (
+            <div style={{ padding: "12px 14px", borderRadius: 10, border: `1px dashed ${F.hairlineStrong}`, background: F.rustTint, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+              No newsletters uploaded yet.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {items.map((it) => (
+                <div
+                  key={it.id}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "10px 12px", borderRadius: 10,
+                    border: `1px solid ${F.hairline}`, borderLeft: `3px solid ${F.rust}`,
+                  }}
+                >
+                  <a
+                    href={NewsletterAPI.fileUrl(it.id)}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}
+                  >
+                    {it.title || "Newsletter.pdf"}
+                  </a>
+                  <span style={{ flexShrink: 0, fontFamily: T.ui, fontSize: 10.5, color: F.muted }}>
+                    {it.uploadedAt
+                      ? new Date(it.uploadedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+                      : "—"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => remove(it.id)}
+                    disabled={busy}
+                    style={{
+                      flexShrink: 0, fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.muted,
+                      background: "none", border: "none", cursor: busy ? "default" : "pointer", padding: "2px 4px",
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -7714,24 +8289,87 @@ function Insights() {
           sub="Questions worth asking, what's trending, what the wider market is doing, and Fifth Avenue's own newsletter."
         />
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(440px, 1fr))",
+            gap: 20,
+            alignItems: "stretch",
+          }}
+        >
           {INSIGHTS_SECTIONS.map((s, i) => (
-            <Reveal key={s.id} delay={i * 0.06}>
-              <div style={{ background: F.surface, border: `1px solid ${F.hairline}`, borderRadius: 14, padding: "20px 24px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+            <Reveal key={s.id} delay={i * 0.06} style={{ height: "100%" }}>
+              <div
+                style={{
+                  position: "relative",
+                  height: "100%",
+                  display: "flex",
+                  flexDirection: "column",
+                  background: F.surface,
+                  border: `1px solid ${F.hairline}`,
+                  borderTop: `3px solid ${s.color}`,
+                  borderRadius: 16,
+                  padding: "26px 26px 24px",
+                  overflow: "hidden",
+                }}
+              >
+                {/* A faint serif numeral watermark — the same "01/02/03/04"
+                    idiom used for the stages elsewhere in this report,
+                    here marking which of the four quadrants this is. */}
+                <span
+                  aria-hidden="true"
+                  style={{
+                    position: "absolute", top: -10, right: 18,
+                    fontFamily: T.display, fontStyle: "italic", fontWeight: 500,
+                    fontSize: 92, lineHeight: 1, color: s.color, opacity: 0.07,
+                    userSelect: "none", pointerEvents: "none",
+                  }}
+                >
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+
+                <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                   <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.color, flexShrink: 0 }} />
-                  <span style={{ fontFamily: T.ui, fontSize: 13, fontWeight: 700, color: F.ink, letterSpacing: "0.02em" }}>{s.label}</span>
+                  <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: s.color }}>
+                    {s.label}
+                  </span>
                 </div>
-                <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.inkSoft, marginBottom: 14, maxWidth: 560, lineHeight: 1.6 }}>
+
+                <div style={{ position: "relative", fontFamily: T.display, fontStyle: "italic", fontWeight: 500, fontSize: 19, color: F.ink, marginBottom: 8, lineHeight: 1.3 }}>
+                  {s.headline}
+                </div>
+
+                <div style={{ position: "relative", fontFamily: T.ui, fontSize: 11.5, color: F.inkSoft, marginBottom: 18, maxWidth: 520, lineHeight: 1.6 }}>
                   {s.note}
                 </div>
-                {s.id === "trending" ? (
-                  <TrendingEditor />
-                ) : (
-                  <div style={{ padding: "14px 16px", borderTop: `1px solid ${F.hairline}`, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
-                    Nothing here yet.
-                  </div>
-                )}
+
+                <div style={{ position: "relative", flex: 1, display: "flex", flexDirection: "column" }}>
+                  {s.id === "trending" ? (
+                    <TrendingEditor />
+                  ) : s.id === "questions" ? (
+                    <QuestionsEditor />
+                  ) : s.id === "market-watch" ? (
+                    <MarketWatchEditor />
+                  ) : s.id === "newsletter" ? (
+                    <NewsletterEditor />
+                  ) : (
+                    <div
+                      style={{
+                        flex: 1,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        minHeight: 120,
+                        borderRadius: 12,
+                        border: `1px dashed ${F.hairlineStrong}`,
+                        background: s.tint,
+                        fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic",
+                      }}
+                    >
+                      Nothing here yet.
+                    </div>
+                  )}
+                </div>
               </div>
             </Reveal>
           ))}

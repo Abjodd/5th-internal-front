@@ -93,6 +93,22 @@ const ASSET_STATUSES = [
   {id:"pending_brand",label:"Pending Brand"},{id:"locked",label:"Locked"},
 ];
 const ASSET_COLOR = { yet_to_receive:T.label,received:T.accent,rework:T.amber,approved:T.green,pending_brand:T.amber,locked:T.green };
+// `live.status` distinguishes WHY a reel isn't up yet, distinct from
+// ASSET_STATUSES above (that tracks the demo video, not the final post): the
+// team needs to know whether the finished reel is still with the creator or
+// the internal team, or sitting with the client for sign-off, versus
+// actually in hand and ready to post. Only "received" unlocks the
+// link-paste UI below — see the Live cell in TabDeliverables. Exposed to the
+// client portal unchanged (the `live` object travels through CREATOR_PUBLIC
+// wholesale), so "pending_client" is what puts a reel in the brand's
+// "Needs you" queue on the portal.
+const LIVE_STATUSES = [
+  {id:"pending_creator",label:"Pending — Creator"},
+  {id:"pending_team",label:"Pending — Team"},
+  {id:"pending_client",label:"Pending — Client Approval"},
+  {id:"received",label:"Received"},
+];
+const LIVE_COLOR = { pending_creator:T.label,pending_team:T.accent,pending_client:T.amber,received:T.green };
 // `suggested` is where every generated or hand-added creator starts: put to the
 // brand, not yet answered. Their yes/no in the client portal sets this field to
 // shortlisted or brand_reject (5th-internal-back, the decision route), and
@@ -3642,7 +3658,30 @@ const externalCpv = totV > 0 && campaignBudget > 0
                   posted
                 </span>
               </div>
-              {!demoReceived(dem.status)?<div style={{fontSize:10.5,color:T.label,fontStyle:"italic"}}>Unlocks once the demo video is received.</div>:<>
+              {!demoReceived(dem.status)?<div style={{fontSize:10.5,color:T.label,fontStyle:"italic"}}>Unlocks once the demo video is received.</div>:(()=>{
+                // Existing links pasted before this status existed default to
+                // "received" rather than hiding behind a status nobody ever
+                // set — the alternative would regress every in-flight or
+                // completed campaign that already has a link on file.
+                const liveStatus=liv.status||(links.length>0?"received":"pending_creator");
+                return(<>
+                <div style={{marginBottom:8}}>
+                  {canEdit
+                    ? <select value={liveStatus} onChange={e=>pLiv(cr._id,{status:e.target.value})}
+                        style={{background:"transparent",border:`1px solid ${T.border}`,color:LIVE_COLOR[liveStatus]||T.sub,fontSize:10,fontFamily:"'Sora'",outline:"none",borderRadius:4,padding:"3px 6px",width:"100%"}}>
+                        {LIVE_STATUSES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}
+                      </select>
+                    : <span style={{fontSize:10,color:LIVE_COLOR[liveStatus]||T.sub,fontWeight:500,padding:"2px 6px",background:`${LIVE_COLOR[liveStatus]||T.sub}12`,borderRadius:3}}>
+                        {LIVE_STATUSES.find(s=>s.id===liveStatus)?.label}
+                      </span>}
+                </div>
+                {liveStatus!=="received"
+                  ? <div style={{fontSize:10.5,color:T.label,fontStyle:"italic"}}>
+                      {liveStatus==="pending_client"
+                        ? "Waiting on the client's approval before this goes up — the brand sees this on their Needs you queue."
+                        : "Waiting on the finished reel before a link can be pasted."}
+                    </div>
+                  : <>
               <LiveLinks links={links} platform={cr.platform} canEdit={canEdit}
                 onChange={urls=>pCr(cr._id,{live:withLiveLinks(cr.live,urls),
                   // Editing or removing a link invalidates the proof — the
@@ -3666,7 +3705,9 @@ const externalCpv = totV > 0 && campaignBudget > 0
                     ? <DateInput value={liv.postedDate||""} onChange={v=>pLiv(cr._id,{postedDate:v})} max={today()} placeholder="First posted date" style={{...INP,fontSize:10,padding:"5px 8px",marginTop:6}}/>
                     : liv.postedDate&&<div style={{fontSize:9.5,color:T.sub,marginTop:6}}>Posted: {prettyDate(liv.postedDate)}</div>)
                 : !canEdit&&<div style={{fontSize:11,color:T.label,fontStyle:"italic"}}>Not posted</div>}
-              </>}
+                  </>}
+                </>);
+              })()}
             </div>
             {/* Tracking */}
             <div style={{padding:"12px 14px"}}>

@@ -1,4 +1,4 @@
-// Profile-photo handling, shared by the Auth page's modals and the Profile page.
+// Profile-photo handling, shared by the Settings page's modals and the Profile page.
 //
 // The photo renders as a 24-40px icon and never above ~90px, so the browser
 // centre-crops to a square, downscales to 256px and re-encodes as JPEG before

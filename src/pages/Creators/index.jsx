@@ -390,14 +390,24 @@ export default function Creators() {
             style={{ ...INP, width: 260 }}
           />
           {tab === "creators" && (
-            <select value={mgmt} onChange={e => setMgmt(e.target.value)}
-              title="Filter by creator type"
-              style={{ ...INP, cursor: "pointer", color: mgmt === "all" ? T.sub : T.text }}>
-              <option value="all">All creators ({mgmtCounts.all})</option>
-              {MANAGEMENT.map(m => (
-                <option key={m.id} value={m.id}>{m.label} ({mgmtCounts[m.id]})</option>
-              ))}
-            </select>
+            // The caret is drawn rather than left to the browser: appearance
+            // is reset so the native one can't sit beside it, and without it
+            // the control reads as a text field.
+            <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+              <select value={mgmt} onChange={e => setMgmt(e.target.value)}
+                title="Filter by creator type"
+                style={{
+                  ...INP, cursor: "pointer", paddingRight: 26,
+                  appearance: "none", WebkitAppearance: "none", MozAppearance: "none",
+                  color: mgmt === "all" ? T.sub : T.text,
+                }}>
+                <option value="all">All creators ({mgmtCounts.all})</option>
+                {MANAGEMENT.map(m => (
+                  <option key={m.id} value={m.id}>{m.label} ({mgmtCounts[m.id]})</option>
+                ))}
+              </select>
+              <span aria-hidden style={{ position: "absolute", right: 9, fontSize: 10, color: T.label, pointerEvents: "none" }}>▾</span>
+            </div>
           )}
           {tab === "vendors" && canEdit && (
             <button onClick={() => setVendorModal({})} style={{

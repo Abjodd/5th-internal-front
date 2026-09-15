@@ -274,7 +274,7 @@ function KineticText({ text, style, delayStart = 0 }) {
 export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  // `?email=` is how the founder's Auth page hands a login across (see
+  // `?email=` is how the founder's Settings page hands a login across (see
   // openClientLogin there). Read once as the initial value rather than synced
   // in an effect — the field is the user's the moment the page is up, and an
   // effect would fight anything they typed before it ran. The password is
@@ -441,7 +441,7 @@ export default function LoginPage() {
                 label so the field also has an accessible name.
 
                 autoFocus lands on whichever field is still empty — arriving
-                from the Auth page's login link, the email is already in. */}
+                from the Settings page's login link, the email is already in. */}
             <form onSubmit={handleSubmit}>
               <div style={{ marginBottom: 16, animation: "fieldIn 0.5s 0.45s cubic-bezier(0.16,1,0.3,1) both" }}>
                 <label htmlFor="login-email" style={{ display: "block", fontSize: 10.5, fontWeight: 600, color: C.faint, marginBottom: 6, letterSpacing: "0.06em", textTransform: "uppercase" }}>

@@ -1,7 +1,7 @@
 /**
  * AvatarPicker — the one control for setting a profile photo.
  *
- * Used by the Auth page's modals and the Profile page, so the 2MB rule, the
+ * Used by the Settings page's modals and the Profile page, so the 2MB rule, the
  * compression step and the empty-state answer are decided once.
  *
  * THE THREE-STATE VALUE CONTRACT mirrors what the backend's PATCH expects, and

@@ -40,7 +40,7 @@ const BANK_FIELDS = [
 ];
 
 // The id is the name slugged, exactly like a brand's (see onCreateBrand on the
-// Auth page): one readable key, and the backend's unique index turns a repeat
+// Settings page): one readable key, and the backend's unique index turns a repeat
 // of a name into a 409 rather than two vendors nobody can tell apart.
 const slugOf = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 

@@ -166,7 +166,7 @@ export default function Profile() {
   const { user, logout, updateUser } = useAuth();
   const navigate = useNavigate();
 
-  // Three-state, same contract as the Auth page's modal: undefined = untouched,
+  // Three-state, same contract as the Settings page's modal: undefined = untouched,
   // null = remove, data URI = new photo. See components/AvatarPicker.
   const [avatarImage, setAvatarImage] = useState(undefined);
   const [saving, setSaving] = useState(false);

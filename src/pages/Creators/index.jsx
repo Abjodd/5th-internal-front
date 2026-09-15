@@ -29,7 +29,7 @@ import { AddCreatorModal } from "../Campaigns";
 import VendorsPanel from "./VendorsPanel";
 import { MANAGEMENT, MANAGEMENT_CHOICES, MANAGEMENT_LABEL, managementOf } from "../../lib/management";
 import {
-  Card, CardGrid, CARD_CSS, Fact, GhostBtn, INP, Notice, PAY_LABELS, Pill, panel, panelTitle,
+  Card, CardGrid, CARD_CSS, Fact, GhostBtn, INP, Notice, PAY_LABELS, Pill, Select, panel, panelTitle,
 } from "./shared";
 
 // ── INVOICES PANEL ───────────────────────────────────────────────────────────
@@ -86,6 +86,12 @@ function InvoicesPanel({ invoices, campaigns }) {
   );
 }
 
+// Management and Vendor sit in the same label column and swap between a select
+// and a ghost trigger, so both states share one width and one set of metrics —
+// otherwise the rows shift and re-weight as the card changes.
+const PICK = { width: 150, padding: "4px 8px", fontSize: 10 };
+const PICK_BTN = { ...PICK, textAlign: "left", boxSizing: "border-box" };
+
 // ── VENDOR ASSIGNMENT ────────────────────────────────────────────────────────
 /**
  * Assigning a creator to a vendor is one field on the creator record
@@ -101,24 +107,24 @@ function VendorAssign({ creator, vendors, onAssign }) {
 
   if (!vendors.length) {
     return <GhostBtn color={T.label} disabled title="Add a vendor on the Vendors tab first"
-      style={{ cursor: "not-allowed" }}>Assign to vendor</GhostBtn>;
+      style={{ ...PICK_BTN, cursor: "not-allowed" }}>Assign to vendor</GhostBtn>;
   }
   if (!picking) {
-    return <GhostBtn color={T.gold} onClick={() => setPicking(true)}>
+    return <GhostBtn color={T.gold} onClick={() => setPicking(true)} style={PICK_BTN}>
       {creator.vendorId ? "Change vendor" : "Assign to vendor"}
     </GhostBtn>;
   }
   return (
-    <select
+    <Select
       autoFocus
       value={creator.vendorId || ""}
       onChange={e => { onAssign(e.target.value || null); setPicking(false); }}
       onBlur={() => setPicking(false)}
-      style={{ ...INP, width: 150, padding: "3px 7px", fontSize: 10, cursor: "pointer" }}
+      style={PICK}
     >
       <option value="">— No vendor —</option>
       {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-    </select>
+    </Select>
   );
 }
 
@@ -128,16 +134,16 @@ function VendorAssign({ creator, vendors, onAssign }) {
 function ManagementPick({ creator, onSet }) {
   if (creator.vendorId) {
     return <GhostBtn color={T.gold} disabled title="Set by the vendor assignment below"
-      style={{ cursor: "default" }}>{MANAGEMENT_LABEL.vendor}</GhostBtn>;
+      style={{ ...PICK_BTN, cursor: "default" }}>{MANAGEMENT_LABEL.vendor}</GhostBtn>;
   }
   return (
-    <select
+    <Select
       value={managementOf(creator)}
       onChange={e => onSet(e.target.value)}
-      style={{ ...INP, width: 150, padding: "3px 7px", fontSize: 10, cursor: "pointer" }}
+      style={PICK}
     >
       {MANAGEMENT_CHOICES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
-    </select>
+    </Select>
   );
 }
 
@@ -154,16 +160,17 @@ function CreatorDetail({ inf, vendor, vendors, canEdit, onEdit, onAssign, onSetM
     <>
       {/* Onboarding & billing details */}
       <div style={panel}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
-          <div style={panelTitle}>Onboarding & Billing</div>
-          {canEdit && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
-              <GhostBtn onClick={() => onEdit(inf)}>Edit</GhostBtn>
-              <ManagementPick creator={inf} onSet={onSetManagement} />
-              <VendorAssign creator={inf} vendors={vendors} onAssign={onAssign} />
-            </div>
-          )}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+          <div style={{ ...panelTitle, marginBottom: 0 }}>Onboarding & Billing</div>
+          {canEdit && <GhostBtn onClick={() => onEdit(inf)}>Edit</GhostBtn>}
         </div>
+        {/* The two settings are Facts whose value happens to be editable, so
+            they share the label column with everything under them instead of
+            stacking unlabelled against the right edge. */}
+        {canEdit && <>
+          <Fact label="Management" value={<ManagementPick creator={inf} onSet={onSetManagement} />} />
+          <Fact label="Vendor"     value={<VendorAssign creator={inf} vendors={vendors} onAssign={onAssign} />} />
+        </>}
         {/* The creator's own contact details stay theirs either way. */}
         <Fact label="Phone"    value={inf.phone} />
         <Fact label="Email"    value={pd.email} />
@@ -390,14 +397,14 @@ export default function Creators() {
             style={{ ...INP, width: 260 }}
           />
           {tab === "creators" && (
-            <select value={mgmt} onChange={e => setMgmt(e.target.value)}
+            <Select value={mgmt} onChange={e => setMgmt(e.target.value)}
               title="Filter by creator type"
-              style={{ ...INP, cursor: "pointer", color: mgmt === "all" ? T.sub : T.text }}>
+              style={{ color: mgmt === "all" ? T.sub : T.text }}>
               <option value="all">All creators ({mgmtCounts.all})</option>
               {MANAGEMENT.map(m => (
                 <option key={m.id} value={m.id}>{m.label} ({mgmtCounts[m.id]})</option>
               ))}
-            </select>
+            </Select>
           )}
           {tab === "vendors" && canEdit && (
             <button onClick={() => setVendorModal({})} style={{

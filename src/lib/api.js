@@ -217,7 +217,7 @@ export const AuthAPI = {
     request("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
 };
 
-// Founder-only credential management (Auth page). Both clients share the
+// Founder-only credential management (Settings page). Both clients share the
 // backend's registerAuthCrudRoutes shape: password → hashKey + encrypted
 // passKey server-side, ids are backend-assigned (u10, bc3, …), DELETE is a
 // hard delete so the id sequence stays consistent. `password(id)` decrypts

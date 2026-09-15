@@ -3,7 +3,7 @@ import { T } from "../theme/tokens";
 import { zoomOf } from "../lib/zoom";
 
 // Single searchable control for "pick a brand, or create one" — replaces three
-// near-identical hand-rolled copies (Campaigns' CreateModal, Auth's
+// near-identical hand-rolled copies (Campaigns' CreateModal, Settings'
 // CredentialModal, Requests' ClientRequestsPanel).
 //
 // Two explicit modes, not one input doing both. The first cut only offered

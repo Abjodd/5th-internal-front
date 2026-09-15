@@ -15,6 +15,28 @@ export const INP = {
   fontFamily: "'Sora'", outline: "none",
 };
 
+// A <select> that looks like one. The native arrow renders inconsistently
+// inside our styled box, so it is reset and a caret drawn in its place —
+// click-through, and the padding is applied last so a caller's own padding
+// can't reclaim the space it sits in.
+export const Select = ({ style = {}, wrapStyle = {}, children, ...rest }) => (
+  // The wrapper is shrink-to-fit, so a full-width select needs it told too —
+  // width:100% against an inline-flex parent resolves to the content width.
+  <div style={{ position: "relative", display: "inline-flex", alignItems: "center", ...wrapStyle }}>
+    <select
+      {...rest}
+      style={{
+        ...INP, cursor: "pointer",
+        appearance: "none", WebkitAppearance: "none", MozAppearance: "none",
+        ...style, paddingRight: 22,
+      }}
+    >{children}</select>
+    <span aria-hidden style={{
+      position: "absolute", right: 8, fontSize: 10, color: T.label, pointerEvents: "none",
+    }}>▾</span>
+  </div>
+);
+
 export const PAY_LABELS = { vendor: "To Vendor", net_banking: "Net Banking", upi: "UPI" };
 
 export const Pill = ({ children, color = T.sub }) => (

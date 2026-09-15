@@ -29,7 +29,7 @@ import { AddCreatorModal } from "../Campaigns";
 import VendorsPanel from "./VendorsPanel";
 import { MANAGEMENT, MANAGEMENT_CHOICES, MANAGEMENT_LABEL, managementOf } from "../../lib/management";
 import {
-  Card, CardGrid, CARD_CSS, Fact, GhostBtn, INP, Notice, PAY_LABELS, Pill, panel, panelTitle,
+  Card, CardGrid, CARD_CSS, Fact, GhostBtn, INP, Notice, PAY_LABELS, Pill, Select, panel, panelTitle,
 } from "./shared";
 
 // ── INVOICES PANEL ───────────────────────────────────────────────────────────
@@ -109,16 +109,16 @@ function VendorAssign({ creator, vendors, onAssign }) {
     </GhostBtn>;
   }
   return (
-    <select
+    <Select
       autoFocus
       value={creator.vendorId || ""}
       onChange={e => { onAssign(e.target.value || null); setPicking(false); }}
       onBlur={() => setPicking(false)}
-      style={{ ...INP, width: 150, padding: "3px 7px", fontSize: 10, cursor: "pointer" }}
+      style={{ width: 150, padding: "3px 7px", fontSize: 10 }}
     >
       <option value="">— No vendor —</option>
       {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-    </select>
+    </Select>
   );
 }
 
@@ -131,13 +131,13 @@ function ManagementPick({ creator, onSet }) {
       style={{ cursor: "default" }}>{MANAGEMENT_LABEL.vendor}</GhostBtn>;
   }
   return (
-    <select
+    <Select
       value={managementOf(creator)}
       onChange={e => onSet(e.target.value)}
-      style={{ ...INP, width: 150, padding: "3px 7px", fontSize: 10, cursor: "pointer" }}
+      style={{ width: 150, padding: "3px 7px", fontSize: 10 }}
     >
       {MANAGEMENT_CHOICES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
-    </select>
+    </Select>
   );
 }
 
@@ -390,24 +390,14 @@ export default function Creators() {
             style={{ ...INP, width: 260 }}
           />
           {tab === "creators" && (
-            // The caret is drawn rather than left to the browser: appearance
-            // is reset so the native one can't sit beside it, and without it
-            // the control reads as a text field.
-            <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
-              <select value={mgmt} onChange={e => setMgmt(e.target.value)}
-                title="Filter by creator type"
-                style={{
-                  ...INP, cursor: "pointer", paddingRight: 26,
-                  appearance: "none", WebkitAppearance: "none", MozAppearance: "none",
-                  color: mgmt === "all" ? T.sub : T.text,
-                }}>
-                <option value="all">All creators ({mgmtCounts.all})</option>
-                {MANAGEMENT.map(m => (
-                  <option key={m.id} value={m.id}>{m.label} ({mgmtCounts[m.id]})</option>
-                ))}
-              </select>
-              <span aria-hidden style={{ position: "absolute", right: 9, fontSize: 10, color: T.label, pointerEvents: "none" }}>▾</span>
-            </div>
+            <Select value={mgmt} onChange={e => setMgmt(e.target.value)}
+              title="Filter by creator type"
+              style={{ color: mgmt === "all" ? T.sub : T.text }}>
+              <option value="all">All creators ({mgmtCounts.all})</option>
+              {MANAGEMENT.map(m => (
+                <option key={m.id} value={m.id}>{m.label} ({mgmtCounts[m.id]})</option>
+              ))}
+            </Select>
           )}
           {tab === "vendors" && canEdit && (
             <button onClick={() => setVendorModal({})} style={{

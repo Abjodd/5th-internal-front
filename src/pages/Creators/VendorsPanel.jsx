@@ -17,7 +17,7 @@ import CreatorAvatar from "../../components/CreatorAvatar";
 import CreatorHandle from "../../components/CreatorHandle";
 import PhoneInput from "../../components/PhoneInput";
 import { T } from "../../theme/tokens";
-import { Card, CardGrid, Fact, GhostBtn, INP, Notice, PAY_LABELS, Pill, panel, panelTitle } from "./shared";
+import { Card, CardGrid, Fact, GhostBtn, INP, Notice, PAY_LABELS, Pill, Select, panel, panelTitle } from "./shared";
 import { ConfirmDialog } from "../Requests/shared";
 
 // A vendor is paid the same two ways a creator is, minus "vendor" itself —
@@ -153,9 +153,11 @@ function VendorModal({ editing, onClose, onSave, onRemove }) {
           <div style={{ ...panelTitle, marginTop: 16 }}>Payment details</div>
           <div style={{ marginBottom: 12 }}>
             <Lbl>Pay type</Lbl>
-            <select {...field("payType")} style={{ ...INP, width: "100%", boxSizing: "border-box", cursor: "pointer" }}>
+            <Select value={f.payType} onChange={e => u("payType", e.target.value)}
+              wrapStyle={{ display: "flex", width: "100%" }}
+              style={{ width: "100%", boxSizing: "border-box" }}>
               {VENDOR_PAY_TYPES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
-            </select>
+            </Select>
           </div>
           {f.payType === "upi" && (
             <div style={{ marginBottom: 12 }}>

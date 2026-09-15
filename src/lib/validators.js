@@ -27,9 +27,13 @@ const RULES = {
 // Slicing the first ten off the raw digits (which is what this used to do) ate
 // the country code instead of the number: "+919876543210" became "9198765432".
 // So a 91/0 prefix is stripped first, and the LAST ten digits win.
+// A written-out "+91" is a country code at ANY length: "+919" is one digit
+// behind the prefix, not the start of a number. Without the "+", only an
+// over-long value can be carrying a code — "9187654321" is a real number.
 export const phoneDigits = (v) => {
-  const d = String(v || "").replace(/\D/g, "");
-  const bare = d.length > 10 ? d.replace(/^(?:0*91|0)/, "") : d;
+  const s = String(v || "").trim();
+  const d = s.replace(/\D/g, "");
+  const bare = s.startsWith("+") ? d.replace(/^91/, "") : d.length > 10 ? d.replace(/^(?:0*91|0)/, "") : d;
   return bare.slice(-10);
 };
 // The canonical stored form. Empty stays empty — a blank phone is not "+91".
@@ -39,7 +43,7 @@ export const toPhone = (v) => { const d = phoneDigits(v); return d ? `+91${d}` :
 // contain and caps length, so e.g. an 11th digit in a phone field is simply
 // not accepted. Pair with validateField for the remaining format checks.
 const SANITIZE = {
-  phone:   v => phoneDigits(v),
+  phone:   v => toPhone(v),
   account: v => v.replace(/\D/g, "").slice(0, 18),
   pan:     v => v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10),
   ifsc:    v => v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 11),

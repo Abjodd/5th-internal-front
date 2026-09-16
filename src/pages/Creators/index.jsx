@@ -16,7 +16,7 @@
  * pages/Requests. A creator appears here once promoted from that inbox, or once
  * a campaign puts them on its creator list.
  */
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
 import { CreatorsAPI, InvoicePdfAPI, VendorsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
@@ -24,6 +24,8 @@ import CreatorHandle from "../../components/CreatorHandle";
 import CreatorAvatar from "../../components/CreatorAvatar";
 import { fmtCompact, fmtINR } from "../../lib/format";
 import { payeeOf } from "../../lib/payee";
+import { readPdfAsDataUri, PDF_ACCEPT } from "../../lib/pdf";
+import { ConfirmDialog } from "../Requests/shared";
 import { T } from "../../theme/tokens";
 import { AddCreatorModal } from "../Campaigns";
 import VendorsPanel from "./VendorsPanel";
@@ -82,6 +84,109 @@ function InvoicesPanel({ invoices, campaigns }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── AGREEMENTS PANEL ─────────────────────────────────────────────────────────
+const HINT = { fontSize: 10.5, color: T.label, fontStyle: "italic" };
+
+// The signed agreement between us and a creator we manage directly — uploaded,
+// unlike the invoices generated per campaign beside it. Every upload is kept:
+// a re-signed copy doesn't void the one in force for work already invoiced.
+function AgreementsPanel({ creator, open, canEdit, onToast }) {
+  const [docs, setDocs] = useState(null);   // null = not loaded yet
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [removing, setRemoving] = useState(null);
+  const fileRef = useRef(null);
+
+  // Loads on expand: the card keeps this mounted while collapsed, so fetching
+  // eagerly would be one request per creator to show nothing.
+  useEffect(() => {
+    if (!open || docs) return;
+    let live = true;
+    CreatorsAPI.docs.list(creator.id)
+      .then(rows => live && setDocs(rows))
+      .catch(e => live && setErr(e.message));
+    return () => { live = false; };
+  }, [open, docs, creator.id]);
+
+  const upload = async (file) => {
+    if (!file || busy) return;
+    setBusy(true); setErr(null);
+    try {
+      const saved = await CreatorsAPI.docs.create(creator.id, { title: file.name, file: await readPdfAsDataUri(file) });
+      setDocs(prev => [saved, ...(prev || [])]);
+      onToast("Agreement uploaded");
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); if (fileRef.current) fileRef.current.value = ""; }
+  };
+
+  const remove = async (doc) => {
+    setBusy(true); setErr(null);
+    try {
+      await CreatorsAPI.docs.remove(creator.id, doc.id);
+      setDocs(prev => (prev || []).filter(d => d.id !== doc.id));
+      onToast("Agreement removed");
+    } catch (e) { setErr(e.message); }
+    setBusy(false); setRemoving(null);
+  };
+
+  const dated = (d) => d ? new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "—";
+
+  return (
+    <div style={panel}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+        <div style={{ ...panelTitle, marginBottom: 0 }}>Agreements{docs ? ` (${docs.length})` : ""}</div>
+        {canEdit && <>
+          <GhostBtn color={T.teal} disabled={busy} onClick={() => fileRef.current?.click()}>
+            {busy ? "Working…" : "Upload PDF"}
+          </GhostBtn>
+          <input ref={fileRef} type="file" accept={PDF_ACCEPT} hidden onChange={e => upload(e.target.files?.[0])} />
+        </>}
+      </div>
+
+      {err && <div style={{ fontSize: 10.5, color: T.red, marginBottom: 6 }}>{err}</div>}
+      {docs === null && !err && <div style={HINT}>Loading…</div>}
+      {docs?.length === 0 && <div style={HINT}>No signed agreement on file. PDF only, up to 2MB.</div>}
+
+      {(docs || []).map((d, i) => (
+        <div key={d.id} style={{
+          display: "flex", alignItems: "center", gap: 8, padding: "7px 0",
+          borderBottom: i < docs.length - 1 ? `1px solid ${T.border}` : "none",
+        }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <a href={CreatorsAPI.docs.fileUrl(creator.id, d.id)} target="_blank" rel="noreferrer" title={d.title}
+              style={{ display: "block", fontSize: 10.5, color: T.text, textDecoration: "none",
+                       whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {d.title}
+            </a>
+            {/* Newest first, so anything below the top row has been replaced. */}
+            <div style={{ fontSize: 9.5, color: T.sub }}>
+              {dated(d.uploadedAt)}{docs.length > 1 ? (i === 0 ? " · current" : " · superseded") : ""}
+            </div>
+          </div>
+          {canEdit && <GhostBtn color={T.red} disabled={busy} onClick={() => setRemoving(d)}>Remove</GhostBtn>}
+        </div>
+      ))}
+
+      {removing && (
+        <ConfirmDialog
+          title="Remove this agreement?"
+          body={<>
+            <div style={{ ...panel, minWidth: 0, background: T.raised, padding: "10px 12px", marginBottom: 10 }}>
+              <Fact label="Creator"  width={80} value={creator.name} />
+              <Fact label="Document" width={80} value={removing.title} />
+              <Fact label="Uploaded" width={80} value={dated(removing.uploadedAt)} />
+            </div>
+            The PDF is deleted from the database. This cannot be undone.
+          </>}
+          busy={busy}
+          onConfirm={() => remove(removing)}
+          onCancel={() => setRemoving(null)}
+        />
+      )}
     </div>
   );
 }
@@ -148,7 +253,7 @@ function ManagementPick({ creator, onSet }) {
 }
 
 // ── EXPANDED DETAIL ──────────────────────────────────────────────────────────
-function CreatorDetail({ inf, vendor, vendors, canEdit, onEdit, onAssign, onSetManagement }) {
+function CreatorDetail({ inf, vendor, vendors, open, canEdit, onEdit, onAssign, onSetManagement, onToast }) {
   const pd = inf.personalDetails || {};
   // Where the money actually goes. A creator assigned to a vendor is invoiced
   // by that vendor and paid into the vendor's account, so showing the creator's
@@ -216,6 +321,12 @@ function CreatorDetail({ inf, vendor, vendors, canEdit, onEdit, onAssign, onSetM
         ))}
       </div>
 
+      {/* Stored managedBy, not managementOf(): assigning a vendor must not hide
+          an agreement we signed and still hold. */}
+      {inf.managedBy === "fifthavenue" && (
+        <AgreementsPanel creator={inf} open={open} canEdit={canEdit} onToast={onToast} />
+      )}
+
       {/* Generated invoices */}
       <InvoicesPanel invoices={inf.invoices} campaigns={inf.campaigns} />
     </>
@@ -223,7 +334,7 @@ function CreatorDetail({ inf, vendor, vendors, canEdit, onEdit, onAssign, onSetM
 }
 
 // ── CREATOR CARD ─────────────────────────────────────────────────────────────
-function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, onAssign, onSetManagement }) {
+function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, onAssign, onSetManagement, onToast }) {
   const kind = managementOf(inf);
   return (
     <Card
@@ -257,7 +368,7 @@ function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, on
         )}
       </>}
     >
-      <CreatorDetail inf={inf} vendor={vendor} vendors={vendors} canEdit={canEdit} onEdit={onEdit} onAssign={onAssign} onSetManagement={onSetManagement} />
+      <CreatorDetail inf={inf} vendor={vendor} vendors={vendors} open={open} canEdit={canEdit} onEdit={onEdit} onAssign={onAssign} onSetManagement={onSetManagement} onToast={onToast} />
     </Card>
   );
 }
@@ -452,6 +563,7 @@ export default function Creators() {
                   onToggle={() => setExpanded(expanded === inf.id ? null : inf.id)}
                   canEdit={canEdit}
                   onEdit={setEditTarget}
+                  onToast={showToast}
                   onSetManagement={managedBy => patchCreator(inf.id, { managedBy },
                     `${inf.name} — ${MANAGEMENT_LABEL[managedBy]}`)}
                   onAssign={vendorId => patchCreator(inf.id, { vendorId },

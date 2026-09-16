@@ -29,7 +29,7 @@ import {
 } from "../../lib/api";
 import { buildSummary } from "../../lib/summaryMetrics";
 import { useBrandAccent } from "../../lib/brandAccent";
-import { readPdfAsDataUri, NEWSLETTER_ACCEPT } from "../../lib/pdf";
+import { readPdfAsDataUri, PDF_ACCEPT } from "../../lib/pdf";
 
 
 /* ────────────────────────────────────────────────────────────────
@@ -8217,7 +8217,7 @@ function NewsletterEditor() {
               <input
                 ref={fileRef}
                 type="file"
-                accept={NEWSLETTER_ACCEPT}
+                accept={PDF_ACCEPT}
                 hidden
                 onChange={(e) => upload(e.target.files?.[0])}
               />

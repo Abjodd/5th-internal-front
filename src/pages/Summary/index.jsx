@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
+import { X } from "lucide-react";
 import {
   motion,
   AnimatePresence,
@@ -7565,12 +7566,66 @@ function InsightBtn({ children, ...rest }) {
         color: rest.disabled ? F.muted : "#FFFFFF",
         background: rest.disabled ? F.hairline : F.ink,
         border: "none", borderRadius: 9,
+        height: 32,
         padding: "0 16px",
         cursor: rest.disabled ? "default" : "pointer",
       }}
     >
       {children}
     </button>
+  );
+}
+
+// A real bordered icon-button for removing one row out of a list — replaces
+// the bare "Remove" text link that used to sit hard up against each row's
+// content with nothing but a gap between them. Same flat, bordered language
+// as the rest of this page's controls, just with actual button chrome.
+function RemoveIconButton({ onClick, disabled, title = "Remove" }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+      style={{
+        flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        width: 26, height: 26, borderRadius: 8,
+        border: `1px solid ${F.hairlineStrong}`,
+        background: F.surface,
+        color: disabled ? F.hairlineStrong : F.muted,
+        cursor: disabled ? "default" : "pointer",
+        transition: "border-color 120ms, color 120ms, background 120ms",
+      }}
+      onMouseEnter={(e) => {
+        if (disabled) return;
+        e.currentTarget.style.borderColor = F.rust;
+        e.currentTarget.style.color = F.rust;
+        e.currentTarget.style.background = F.rustTint;
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = F.hairlineStrong;
+        e.currentTarget.style.color = disabled ? F.hairlineStrong : F.muted;
+        e.currentTarget.style.background = F.surface;
+      }}
+    >
+      <X size={13} strokeWidth={2.4} />
+    </button>
+  );
+}
+
+// Caps a list of rows (reels, notes, news, newsletters — anything that can
+// grow without bound as a brand accumulates more of them) to a fixed height
+// with its own internal scroll, so one long shelf never stretches its whole
+// Insights card — and the page around it — taller and taller.
+function ScrollList({ children, maxHeight = 300 }) {
+  return (
+    <div style={{ maxHeight, overflowY: "auto", paddingRight: 4, marginRight: -4 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -7614,8 +7669,10 @@ function QuestionsEditor() {
   const [brandId, setBrandId] = useState("");
   const [answers, setAnswers] = useState(null); // null = no brand picked yet, or loading
   const [drafts, setDrafts] = useState({});
-  const [busy, setBusy] = useState(false);
+  const [savingKey, setSavingKey] = useState(null);
+  const [savedKey, setSavedKey] = useState(null);
   const [err, setErr] = useState(null);
+  const savedTimer = useRef(null);
 
   useEffect(() => {
     ClientsAPI.list()
@@ -7632,16 +7689,26 @@ function QuestionsEditor() {
       .catch((e) => setErr(e.message));
   }, [brandId]);
 
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
+
+  // Explicit Save per field, not save-on-blur: a click away from the
+  // textarea used to fire a silent PATCH with nothing to show for it, so it
+  // was never clear whether an answer had actually landed. Now nothing
+  // saves until Save is pressed (or ⌘/Ctrl+Enter), and a brief "Saved"
+  // flash confirms it did.
   const commit = async (key) => {
     const value = (drafts[key] || "").trim();
     if (value === (answers?.[key] || "")) return; // unchanged — nothing to save
-    setBusy(true); setErr(null);
+    setSavingKey(key); setErr(null);
     try {
       const updated = await AccountQuestionsAPI.update(brandId, { [key]: value });
       setAnswers(updated);
       setDrafts(updated);
+      setSavedKey(key);
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setSavedKey((k) => (k === key ? null : k)), 1800);
     } catch (e) { setErr(e.message); }
-    setBusy(false);
+    setSavingKey(null);
   };
 
   return (
@@ -7668,37 +7735,57 @@ function QuestionsEditor() {
       ) : answers == null ? (
         <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
-          {QUESTION_FIELDS.map((q) => (
-            <div
-              key={q.key}
-              style={{
-                position: "relative",
-                background: q.tint,
-                border: `1px solid ${F.hairline}`,
-                borderLeft: `3px solid ${q.color}`,
-                borderRadius: 10,
-                padding: "14px 14px 12px",
-              }}
-            >
-              <div style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: q.color, marginBottom: 8 }}>
-                {q.label}
-              </div>
-              <textarea
-                value={drafts[q.key] || ""}
-                onChange={(e) => setDrafts((d) => ({ ...d, [q.key]: e.target.value }))}
-                onBlur={() => commit(q.key)}
-                placeholder={`Type the answer for ${q.label.toLowerCase()}…`}
-                rows={4}
-                disabled={busy}
+        // One column, not a cramped 2-up grid — this panel is already one
+        // narrow quadrant of the Insights page's own grid, so a 2-column
+        // split inside it left each textarea squeezed. Full card width per
+        // question instead.
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {QUESTION_FIELDS.map((q) => {
+            const dirty = (drafts[q.key] || "").trim() !== (answers?.[q.key] || "");
+            const isSaving = savingKey === q.key;
+            const justSaved = savedKey === q.key && !dirty;
+            return (
+              <div
+                key={q.key}
                 style={{
-                  width: "100%", resize: "vertical", lineHeight: 1.6,
-                  fontFamily: T.ui, fontSize: 12.5, color: F.ink,
-                  padding: 0, border: "none", background: "transparent", outline: "none",
+                  position: "relative",
+                  background: q.tint,
+                  border: `1px solid ${F.hairline}`,
+                  borderLeft: `3px solid ${q.color}`,
+                  borderRadius: 10,
+                  padding: "14px 14px 12px",
                 }}
-              />
-            </div>
-          ))}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: q.color }}>
+                    {q.label}
+                  </span>
+                  {justSaved && (
+                    <span style={{ fontFamily: T.ui, fontSize: 10, fontWeight: 700, color: q.color }}>✓ Saved</span>
+                  )}
+                </div>
+                <textarea
+                  value={drafts[q.key] || ""}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [q.key]: e.target.value }))}
+                  onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); commit(q.key); } }}
+                  placeholder={`Type the answer for ${q.label.toLowerCase()}…`}
+                  rows={4}
+                  disabled={isSaving}
+                  style={{
+                    width: "100%", resize: "vertical", lineHeight: 1.6,
+                    fontFamily: T.ui, fontSize: 12.5, color: F.ink,
+                    padding: 0, border: "none", background: "transparent", outline: "none",
+                  }}
+                />
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
+                  <span style={{ fontFamily: T.ui, fontSize: 9.5, color: F.muted }}>⌘/Ctrl+Enter to save</span>
+                  <InsightBtn onClick={() => commit(q.key)} disabled={!dirty || isSaving}>
+                    {isSaving ? "Saving…" : "Save"}
+                  </InsightBtn>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -7778,6 +7865,9 @@ function TrendingEditor() {
   // kinds in a single chronological list.
   const reels = (items || []).filter((it) => it.kind === "reel");
   const notes = (items || []).filter((it) => it.kind === "note");
+  const linkCount = linkInput.trim()
+    ? linkInput.split(/[\s,]+/).map((u) => u.trim()).filter(Boolean).length
+    : 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
@@ -7794,16 +7884,24 @@ function TrendingEditor() {
           </span>
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <input
+        <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "flex-start" }}>
+          <textarea
             value={linkInput}
             onChange={(e) => setLinkInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLinks(); } }}
-            placeholder="Paste one or more Instagram links — space, comma or newline between each"
-            style={inputStyle}
+            onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); addLinks(); } }}
+            placeholder="Paste one or more Instagram links — one per line, or separated by spaces/commas"
+            rows={2}
+            style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5, paddingTop: 8 }}
           />
-          <InsightBtn onClick={addLinks} disabled={busy || !linkInput.trim()}>Add link</InsightBtn>
+          <InsightBtn onClick={addLinks} disabled={busy || !linkInput.trim()} style={{ height: 34 }}>
+            {linkCount > 1 ? `Add ${linkCount} links` : "Add link"}
+          </InsightBtn>
         </div>
+        {linkCount > 0 && (
+          <div style={{ marginBottom: 12, fontFamily: T.ui, fontSize: 10.5, color: F.muted }}>
+            {linkCount} link{linkCount === 1 ? "" : "s"} ready — ⌘/Ctrl+Enter or the button adds {linkCount === 1 ? "it" : "them all at once"}
+          </div>
+        )}
 
         {items == null ? (
           <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
@@ -7812,7 +7910,7 @@ function TrendingEditor() {
             No reels yet — paste a link above.
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <ScrollList>
             {reels.map((it) => (
               <div
                 key={it.id}
@@ -7826,24 +7924,15 @@ function TrendingEditor() {
                   href={it.url}
                   target="_blank"
                   rel="noreferrer"
-                  style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, wordBreak: "break-all", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}
+                  title={it.url}
+                  style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}
                 >
                   {it.url}
                 </a>
-                <button
-                  type="button"
-                  onClick={() => remove(it.id)}
-                  disabled={busy}
-                  style={{
-                    flexShrink: 0, fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.muted,
-                    background: "none", border: "none", cursor: busy ? "default" : "pointer", padding: "2px 4px",
-                  }}
-                >
-                  Remove
-                </button>
+                <RemoveIconButton onClick={() => remove(it.id)} disabled={busy} />
               </div>
             ))}
-          </div>
+          </ScrollList>
         )}
       </div>
 
@@ -7874,7 +7963,7 @@ function TrendingEditor() {
             No insights yet — type one above.
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <ScrollList>
             {notes.map((it) => (
               <div
                 key={it.id}
@@ -7885,20 +7974,10 @@ function TrendingEditor() {
                 }}
               >
                 <div style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.55 }}>{it.text}</div>
-                <button
-                  type="button"
-                  onClick={() => remove(it.id)}
-                  disabled={busy}
-                  style={{
-                    flexShrink: 0, fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.muted,
-                    background: "none", border: "none", cursor: busy ? "default" : "pointer", padding: "2px 4px",
-                  }}
-                >
-                  Remove
-                </button>
+                <RemoveIconButton onClick={() => remove(it.id)} disabled={busy} />
               </div>
             ))}
-          </div>
+          </ScrollList>
         )}
       </div>
     </div>
@@ -7920,6 +7999,7 @@ function MarketWatchEditor() {
   const [brandId, setBrandId] = useState("");
   const [items, setItems] = useState(null); // null = no brand picked yet, or loading
   const [linkInput, setLinkInput] = useState("");
+  const [noteInput, setNoteInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   // Latest News — auto-fetched, read-only, and universal (same list for
@@ -7966,6 +8046,18 @@ function MarketWatchEditor() {
     setBusy(false);
   };
 
+  const addNote = async () => {
+    const text = noteInput.trim();
+    if (!text || busy || !brandId) return;
+    setBusy(true); setErr(null);
+    try {
+      await MarketWatchAPI.create({ id: newTrendingId(), brandId, kind: "note", text, author: "Internal team" });
+      setNoteInput("");
+      load();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
   const remove = async (id) => {
     setBusy(true); setErr(null);
     try { await MarketWatchAPI.remove(id); load(); }
@@ -7973,7 +8065,11 @@ function MarketWatchEditor() {
     setBusy(false);
   };
 
+  const notes = (items || []).filter((it) => it.kind === "note");
   const reels = (items || []).filter((it) => it.kind === "reel");
+  const linkCount = linkInput.trim()
+    ? linkInput.split(/[\s,]+/).map((u) => u.trim()).filter(Boolean).length
+    : 0;
 
   return (
     <div>
@@ -7997,7 +8093,7 @@ function MarketWatchEditor() {
             Nothing here yet.
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <ScrollList>
             {news.map((n) => (
               <a
                 key={n.link}
@@ -8018,7 +8114,7 @@ function MarketWatchEditor() {
                 )}
               </a>
             ))}
-          </div>
+          </ScrollList>
         )}
       </div>
 
@@ -8043,6 +8139,54 @@ function MarketWatchEditor() {
             <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.rust }}>{err}</div>
           )}
 
+          {/* ── Our Watch — brand-specific commentary the client portal shows
+              under Market Watch, right after Latest News (kind: "note" on
+              the same shelf Reels below is kind: "reel" on). Same shape as
+              Trending's own Insights section, renamed and scoped per brand. */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: F.plum, flexShrink: 0 }} />
+              <span style={{ fontFamily: T.ui, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: F.plum }}>
+                Our Watch
+              </span>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "flex-start" }}>
+              <textarea
+                value={noteInput}
+                onChange={(e) => setNoteInput(e.target.value)}
+                placeholder="Type a note for this brand's Market Watch…"
+                rows={2}
+                style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5, paddingTop: 8 }}
+              />
+              <InsightBtn onClick={addNote} disabled={busy || !noteInput.trim()} style={{ height: 34 }}>Add note</InsightBtn>
+            </div>
+
+            {items == null ? (
+              <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
+            ) : notes.length === 0 ? (
+              <div style={{ padding: "12px 14px", borderRadius: 10, border: `1px dashed ${F.hairlineStrong}`, background: F.plumTint, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+                No notes yet — type one above.
+              </div>
+            ) : (
+              <ScrollList>
+                {notes.map((it) => (
+                  <div
+                    key={it.id}
+                    style={{
+                      display: "flex", alignItems: "flex-start", gap: 10,
+                      padding: "10px 12px", borderRadius: 10,
+                      border: `1px solid ${F.hairline}`, borderLeft: `3px solid ${F.plum}`,
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.55 }}>{it.text}</div>
+                    <RemoveIconButton onClick={() => remove(it.id)} disabled={busy} />
+                  </div>
+                ))}
+              </ScrollList>
+            )}
+          </div>
+
           {/* ── Reels ──────────────────────────────────────────────────── */}
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
@@ -8052,16 +8196,24 @@ function MarketWatchEditor() {
               </span>
             </div>
 
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <input
+            <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "flex-start" }}>
+              <textarea
                 value={linkInput}
                 onChange={(e) => setLinkInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLinks(); } }}
-                placeholder="Paste one or more Instagram links — space, comma or newline between each"
-                style={inputStyle}
+                onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); addLinks(); } }}
+                placeholder="Paste one or more Instagram links — one per line, or separated by spaces/commas"
+                rows={2}
+                style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5, paddingTop: 8 }}
               />
-              <InsightBtn onClick={addLinks} disabled={busy || !linkInput.trim()}>Add link</InsightBtn>
+              <InsightBtn onClick={addLinks} disabled={busy || !linkInput.trim()} style={{ height: 34 }}>
+                {linkCount > 1 ? `Add ${linkCount} links` : "Add link"}
+              </InsightBtn>
             </div>
+            {linkCount > 0 && (
+              <div style={{ marginBottom: 12, fontFamily: T.ui, fontSize: 10.5, color: F.muted }}>
+                {linkCount} link{linkCount === 1 ? "" : "s"} ready — ⌘/Ctrl+Enter or the button adds {linkCount === 1 ? "it" : "them all at once"}
+              </div>
+            )}
 
             {items == null ? (
               <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
@@ -8070,7 +8222,7 @@ function MarketWatchEditor() {
                 No reels yet — paste a link above.
               </div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <ScrollList>
                 {reels.map((it) => (
                   <div
                     key={it.id}
@@ -8084,24 +8236,15 @@ function MarketWatchEditor() {
                       href={it.url}
                       target="_blank"
                       rel="noreferrer"
-                      style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, wordBreak: "break-all", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}
+                      title={it.url}
+                      style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}
                     >
                       {it.url}
                     </a>
-                    <button
-                      type="button"
-                      onClick={() => remove(it.id)}
-                      disabled={busy}
-                      style={{
-                        flexShrink: 0, fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.muted,
-                        background: "none", border: "none", cursor: busy ? "default" : "pointer", padding: "2px 4px",
-                      }}
-                    >
-                      Remove
-                    </button>
+                    <RemoveIconButton onClick={() => remove(it.id)} disabled={busy} />
                   </div>
                 ))}
-              </div>
+              </ScrollList>
             )}
           </div>
 
@@ -8234,7 +8377,7 @@ function NewsletterEditor() {
               No newsletters uploaded yet.
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <ScrollList>
               {items.map((it) => (
                 <div
                   key={it.id}
@@ -8248,7 +8391,8 @@ function NewsletterEditor() {
                     href={NewsletterAPI.fileUrl(it.id)}
                     target="_blank"
                     rel="noreferrer"
-                    style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}
+                    title={it.title || "Newsletter.pdf"}
+                    style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}
                   >
                     {it.title || "Newsletter.pdf"}
                   </a>
@@ -8257,20 +8401,10 @@ function NewsletterEditor() {
                       ? new Date(it.uploadedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
                       : "—"}
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => remove(it.id)}
-                    disabled={busy}
-                    style={{
-                      flexShrink: 0, fontFamily: T.ui, fontSize: 10.5, fontWeight: 600, color: F.muted,
-                      background: "none", border: "none", cursor: busy ? "default" : "pointer", padding: "2px 4px",
-                    }}
-                  >
-                    Remove
-                  </button>
+                  <RemoveIconButton onClick={() => remove(it.id)} disabled={busy} />
                 </div>
               ))}
-            </div>
+            </ScrollList>
           )}
         </div>
       )}

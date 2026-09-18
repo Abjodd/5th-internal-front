@@ -4231,6 +4231,67 @@ function TabFinancials({camp,role,onAllocate}){
   return(<div><div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}><Lbl>Financial overview</Lbl><span style={{fontSize:9,color:T.amber,border:`1px solid ${T.amber}25`,borderRadius:3,padding:"1px 6px"}}>Internal only</span></div>{rows.map(({label,value,color},i)=><div key={label}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 0"}}><span style={{fontSize:11.5,color:T.sub}}>{label}</span><span style={{fontSize:12,fontWeight:500,color}}>{value}</span></div>{i<rows.length-1&&<Hr/>}</div>)}{!canFF(role)&&<div style={{marginTop:10,fontSize:10,color:T.label}}>{canFin(role)?"Agency fee and margin visible to Founders only.":"Creator-side budget only — total budget, agency fee and margin are not shown for your role."}</div>}</div>);
 }
 
+// ── INSIGHTS TAB ─────────────────────────────────────────────────────────────
+// Campaign-specific retrospective. Same 4-question shape as the client
+// Insights page's account-level Questions section (What Worked / What Didn't
+// Work / Next Actions / Areas to Improve), but scoped to this one campaign
+// and stored on camp.insights. The team fills these in here; they render on
+// the client portal's campaign detail page right after Observations, so
+// (unlike Financials) this tab is explicitly labelled as client-visible.
+const INSIGHT_FIELDS=[
+  {key:"whatWorked",label:"What Worked",n:"01"},
+  {key:"whatDidntWork",label:"What Didn't Work",n:"02"},
+  {key:"nextActions",label:"Next Actions",n:"03"},
+  {key:"areasToImprove",label:"Areas to Improve",n:"04"},
+];
+function TabInsights({camp,role,currentUser,onSaveInsights}){
+  const [edit,setEdit]=useState(null);
+  const [draft,setDraft]=useState("");
+  // Same authorship rule as the Brief tab: founder/PCM, or whoever raised the
+  // campaign — the people close enough to the work to write a retrospective
+  // on it, not the roster/finance-only roles.
+  const isCreator=!!currentUser?.teamId&&camp.createdBy===currentUser.teamId;
+  const canEdit=["founder","pcm"].includes(role)||isCreator;
+  const insights=camp.insights||{};
+  const open=(key,value)=>{setEdit(key);setDraft(value);};
+  const cancel=()=>{setEdit(null);setDraft("");};
+  const commit=(key)=>{
+    if(draft!==(insights[key]||"")) onSaveInsights({[key]:draft});
+    cancel();
+  };
+  return(<div>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:18}}>
+      <Lbl>Campaign retrospective</Lbl>
+      <span style={{fontSize:9,color:T.gold,border:`1px solid ${T.gold}30`,borderRadius:3,padding:"1px 6px"}}>Shown to client</span>
+    </div>
+    {INSIGHT_FIELDS.map(({key,label,n},i)=>{
+      const on=edit===key;
+      const value=insights[key]||"";
+      return(<div key={key}>
+        <div style={{padding:"16px 0"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+            <div style={{display:"flex",alignItems:"baseline",gap:8}}>
+              <span style={{fontSize:9.5,fontWeight:600,color:T.gold,fontFamily:SF,letterSpacing:"0.04em"}}>{n}</span>
+              <span style={{fontSize:12.5,fontWeight:600,color:T.text,fontFamily:SF}}>{label}</span>
+            </div>
+            {canEdit&&!edit&&<button onClick={()=>open(key,value)} style={{fontSize:9,color:T.gold,background:"none",border:"none",cursor:"pointer",fontFamily:"'Sora'"}}>{value?"Edit":"Add"}</button>}
+          </div>
+          {on
+            ? <>
+                <textarea value={draft} onChange={e=>setDraft(e.target.value)} style={{...INP,minHeight:74}} autoFocus placeholder={`What's the answer for "${label}"?`}/>
+                <div style={{display:"flex",gap:8,marginTop:8}}>
+                  <Btn variant="primary" onClick={()=>commit(key)}>Save</Btn>
+                  <Btn variant="ghost" onClick={cancel}>Cancel</Btn>
+                </div>
+              </>
+            : <div style={{fontSize:12,color:value?T.text:T.label,lineHeight:1.6,fontStyle:value?"normal":"italic"}}>{value||"Not filled in yet"}</div>}
+        </div>
+        {i<INSIGHT_FIELDS.length-1&&<Hr/>}
+      </div>);
+    })}
+  </div>);
+}
+
 // ── TIMELINE TAB ─────────────────────────────────────────────────────────────
 function TabTimeline({camp}){const events=camp.timeline||[];if(!events.length)return <div style={{padding:"20px 0",color:T.label,fontSize:11,textAlign:"center"}}>No events yet.</div>;return(<div>{events.map((ev,i)=><div key={i} style={{display:"flex",gap:12,marginBottom:i<events.length-1?16:0}}><div style={{display:"flex",flexDirection:"column",alignItems:"center",flexShrink:0}}><div style={{width:5,height:5,borderRadius:"50%",marginTop:4,background:i===events.length-1?T.accent:T.green}}/>{i<events.length-1&&<div style={{width:1,flex:1,background:T.border,marginTop:5}}/>}</div><div><div style={{fontSize:11.5,color:T.text,lineHeight:1.5}}>{ev.event}</div><div style={{fontSize:9.5,color:T.sub,marginTop:2}}>{ev.actor} &middot; {ev.date}</div></div></div>)}</div>);}
 
@@ -4331,7 +4392,7 @@ function WorkflowActions({camp, role, onAction}) {
 }
 
 // ── DETAIL ───────────────────────────────────────────────────────────────────
-function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCampaign,onUpdateCreators,onDelete,onLogTimeline,onBack,onPrev,onNext,hasPrev,hasNext}){
+function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCampaign,onSaveInsights,onUpdateCreators,onDelete,onLogTimeline,onBack,onPrev,onNext,hasPrev,hasNext}){
   const navigate=useNavigate();
   const [tab,setTab]=useState("brief");
   const [confirmDelete,setConfirmDelete]=useState(false);
@@ -4372,7 +4433,7 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
   // The EA works the campaign, not its audit trail — their execution rail
   // already says where it stands, and the timeline is mostly commercial events
   // (PO raised, advance confirmed) that sit outside their view entirely.
-  const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},...(role==="ea"?[]:[{id:"timeline",label:"Timeline"}]),...(canFin(role)||canCrFin(role)?[{id:"financials",label:"Financials"}]:[])];
+  const tabs=[{id:"brief",label:"Brief"},{id:"team",label:"Team"},{id:"creators",label:`Creators (${camp.creators?.length||0})`},{id:"deliverables",label:"Deliverables"},...(role==="ea"?[]:[{id:"timeline",label:"Timeline"}]),...(canFin(role)||canCrFin(role)?[{id:"financials",label:"Financials"}]:[]),{id:"insights",label:"Insights"}];
   const navBtn={display:"flex",alignItems:"center",gap:4,background:"transparent",border:"none",cursor:"pointer",fontSize:11.5,fontWeight:500,color:"#6E6E73",fontFamily:SF,padding:"5px 8px",borderRadius:6};
   // Card chrome shared by the header and content panels — floating rounded
   // surfaces on the grey page rather than full-bleed white bands, so the
@@ -4492,6 +4553,7 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
             {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} currentUser={currentUser} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
             {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
             {tab==="financials"   &&(canFin(role)||canCrFin(role))&&<TabFinancials camp={camp} role={role} onAllocate={canAllocate?()=>setAllocating(true):null}/>}
+            {tab==="insights"     &&<TabInsights     camp={camp} role={role} currentUser={currentUser} onSaveInsights={onSaveInsights}/>}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -5155,6 +5217,7 @@ export default function InternalCampaigns(){
     setPendingAction({action,data});
   },[onAction]);
   const onSaveBrief=useCallback(patch=>{setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,brief:{...c.brief,...patch}}));CampaignsAPI.update(selectedId,{brief:{...(campaigns.find(c=>c.id===selectedId)?.brief||{}),...patch}}).catch(()=>showToast("Save failed — check connection"));showToast("Brief updated");},[selectedId,showToast,campaigns]);
+  const onSaveInsights=useCallback(patch=>{setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,insights:{...c.insights,...patch}}));CampaignsAPI.update(selectedId,{insights:{...(campaigns.find(c=>c.id===selectedId)?.insights||{}),...patch}}).catch(()=>showToast("Save failed — check connection"));showToast("Insights updated");},[selectedId,showToast,campaigns]);
   // Appends an audit entry to the selected campaign's timeline and persists it.
   const onLogTimeline=useCallback(event=>{
     const entry={date:today(),event,actor:currentUser.name||role};
@@ -5358,7 +5421,7 @@ export default function InternalCampaigns(){
     {toast&&<div style={{position:"fixed",bottom:24,right:24,zIndex:9999,padding:"11px 18px",background:"rgba(29,29,31,0.92)",backdropFilter:"blur(16px)",borderRadius:12,fontSize:12,color:"#FFFFFF",fontFamily:SF,boxShadow:"0 8px 32px rgba(0,0,0,0.24)",letterSpacing:"-0.01em"}}>{toast}</div>}
     <AnimatePresence mode="wait">
       {selected ? (
-        <Detail key={selected.id} camp={selected} role={role} currentUser={currentUser} expenseById={expenseById} onAction={requestAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign}
+        <Detail key={selected.id} camp={selected} role={role} currentUser={currentUser} expenseById={expenseById} onAction={requestAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign} onSaveInsights={onSaveInsights}
           onUpdateCreators={onUpdateCreators} onDelete={onDeleteCampaign} onLogTimeline={onLogTimeline}
           onBack={()=>setSelId(null)} onPrev={goPrev} onNext={goNext} hasPrev={hasPrev} hasNext={hasNext}/>
       ) : (

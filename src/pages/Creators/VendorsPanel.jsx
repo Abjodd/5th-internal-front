@@ -17,7 +17,8 @@ import CreatorAvatar from "../../components/CreatorAvatar";
 import CreatorHandle from "../../components/CreatorHandle";
 import PhoneInput from "../../components/PhoneInput";
 import { T } from "../../theme/tokens";
-import { Card, CardGrid, Fact, GhostBtn, INP, Notice, PAY_LABELS, Pill, panel, panelTitle } from "./shared";
+import { Card, CardGrid, Fact, GhostBtn, INP, Notice, PAY_LABELS, Pill, Select, panel, panelTitle } from "./shared";
+import { ConfirmDialog } from "../Requests/shared";
 
 // A vendor is paid the same two ways a creator is, minus "vendor" itself —
 // which would only point back here.
@@ -39,7 +40,7 @@ const BANK_FIELDS = [
 ];
 
 // The id is the name slugged, exactly like a brand's (see onCreateBrand on the
-// Auth page): one readable key, and the backend's unique index turns a repeat
+// Settings page): one readable key, and the backend's unique index turns a repeat
 // of a name into a 409 rather than two vendors nobody can tell apart.
 const slugOf = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
@@ -152,9 +153,11 @@ function VendorModal({ editing, onClose, onSave, onRemove }) {
           <div style={{ ...panelTitle, marginTop: 16 }}>Payment details</div>
           <div style={{ marginBottom: 12 }}>
             <Lbl>Pay type</Lbl>
-            <select {...field("payType")} style={{ ...INP, width: "100%", boxSizing: "border-box", cursor: "pointer" }}>
+            <Select value={f.payType} onChange={e => u("payType", e.target.value)}
+              wrapStyle={{ display: "flex", width: "100%" }}
+              style={{ width: "100%", boxSizing: "border-box" }}>
               {VENDOR_PAY_TYPES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
-            </select>
+            </Select>
           </div>
           {f.payType === "upi" && (
             <div style={{ marginBottom: 12 }}>
@@ -197,8 +200,35 @@ function VendorModal({ editing, onClose, onSave, onRemove }) {
   );
 }
 
+// ── UNASSIGN CONFIRMATION ────────────────────────────────────────────────────
+// Which creator, off which vendor, and where the money goes instead.
+function UnassignSummary({ vendor, creator }) {
+  const campaigns = (creator.campaigns || []).length;
+  const invoices = (creator.invoices || []).length;
+  const ownPay = creator.payType ? PAY_LABELS[creator.payType] || creator.payType : null;
+
+  return (
+    <>
+      <div style={{ ...panel, minWidth: 0, background: T.raised, padding: "10px 12px", marginBottom: 10 }}>
+        <Fact label="Creator" width={80} value={creator.name} />
+        <Fact label="Handle" width={80} value={<CreatorHandle creator={creator} style={{ fontSize: 11 }} />} />
+        <Fact label="Platform" width={80} value={creator.platform} />
+        <Fact label="Activity" width={80} value={`${campaigns} campaign${campaigns === 1 ? "" : "s"} · ${invoices} invoice${invoices === 1 ? "" : "s"} raised`} />
+        <Fact label="Vendor" width={80} value={vendor.name} />
+        <Fact label="Billed as" width={80} value={vendor.gstin || vendor.pan} />
+        <Fact label="Paid into" width={80} value={vendor.payType === "upi" ? vendor.upiId : vendor.bankAccount} />
+      </div>
+      {vendor.name} stops invoicing on {creator.name}&rsquo;s behalf. New invoices bill under
+      the creator&rsquo;s own identity and pay to {ownPay ? <>their own <b style={{ color: T.text }}>{ownPay}</b> details</>
+        : <b style={{ color: T.red }}>nothing — no payment details are on their card yet</b>}.
+      The {invoices ? `${invoices} invoice${invoices === 1 ? "" : "s"} already raised ${invoices === 1 ? "keeps" : "keep"} the vendor as payee` : "vendor record itself is untouched"},
+      and you can reassign them at any time from the Creators tab.
+    </>
+  );
+}
+
 // ── VENDOR CARD ──────────────────────────────────────────────────────────────
-function VendorCard({ vendor, creators, open, onToggle, canEdit, onEdit }) {
+function VendorCard({ vendor, creators, open, onToggle, canEdit, onEdit, onUnassign }) {
   // Campaigns and invoices are the vendor's reach, summed off the creators it
   // fronts — a campaign booking two of them is still one campaign.
   const campaigns = new Set(creators.flatMap(c => (c.campaigns || []).map(x => x.id))).size;
@@ -281,6 +311,11 @@ function VendorCard({ vendor, creators, open, onToggle, canEdit, onEdit }) {
             <Pill color={(c.campaigns || []).length ? T.teal : T.label}>
               {(c.campaigns || []).length} campaign{(c.campaigns || []).length === 1 ? "" : "s"}
             </Pill>
+            {canEdit && (
+              <GhostBtn color={T.red} onClick={() => onUnassign(vendor, c)} title={`Unassign ${c.name} from ${vendor.name}`}>
+                Unassign
+              </GhostBtn>
+            )}
           </div>
         ))}
       </div>
@@ -289,7 +324,7 @@ function VendorCard({ vendor, creators, open, onToggle, canEdit, onEdit }) {
 }
 
 // ── PANEL ────────────────────────────────────────────────────────────────────
-export default function VendorsPanel({ vendors, creators, query, canEdit, onSave, onRemove, modal, onModal }) {
+export default function VendorsPanel({ vendors, creators, query, canEdit, onSave, onRemove, onUnassign, modal, onModal }) {
   // One pass over the directory keyed by vendor, rather than a filter per card.
   const creatorsByVendor = useMemo(() => {
     const map = new Map();
@@ -301,6 +336,8 @@ export default function VendorsPanel({ vendors, creators, query, canEdit, onSave
   }, [creators]);
 
   const [expanded, setExpanded] = useState(null);
+  // { vendor, creator } while the confirmation is up.
+  const [unassigning, setUnassigning] = useState(null);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -330,6 +367,7 @@ export default function VendorsPanel({ vendors, creators, query, canEdit, onSave
             onToggle={() => setExpanded(expanded === v.id ? null : v.id)}
             canEdit={canEdit}
             onEdit={onModal}
+            onUnassign={(vendor, creator) => setUnassigning({ vendor, creator })}
           />
         ))}
       </CardGrid>
@@ -339,6 +377,15 @@ export default function VendorsPanel({ vendors, creators, query, canEdit, onSave
           onClose={() => onModal(null)}
           onSave={onSave}
           onRemove={onRemove}
+        />
+      )}
+      {unassigning && (
+        <ConfirmDialog
+          title={`Unassign ${unassigning.creator.name}?`}
+          confirmLabel="Unassign"
+          body={<UnassignSummary {...unassigning} />}
+          onConfirm={() => { onUnassign(unassigning.creator, unassigning.vendor); setUnassigning(null); }}
+          onCancel={() => setUnassigning(null)}
         />
       )}
     </>

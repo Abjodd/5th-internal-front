@@ -1,5 +1,5 @@
 /**
- * 5th Avenue — Access & Credentials (founder-only)
+ * 5th Avenue — Settings: access & credentials (founder-only)
  * ─────────────────────────────────────────────────────────────────
  * The founder's view of every login in the system:
  *   · Internal — platform users (pcm, cm, am, ea, accounts…) from /api/users
@@ -329,7 +329,7 @@ function RemoveModal({ record, onClose, onConfirm }) {
 }
 
 // ── PAGE ─────────────────────────────────────────────────────────────────────
-export default function Auth() {
+export default function Settings() {
   const { user, brands = [], brandFilter, refreshBrands } = useOutletContext() || {};
   const role = user?.role;
 
@@ -364,7 +364,7 @@ export default function Auth() {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { if (can(role, "manageAuth")) load(); }, [role, load]);
+  useEffect(() => { if (can(role, "manageSettings")) load(); }, [role, load]);
 
   const brandName = id => brands.find(b => b.id === id)?.name || id || "—";
 
@@ -427,7 +427,7 @@ export default function Auth() {
   };
 
   // Defense in depth — the shell already hides this section from non-founders.
-  if (!can(role, "manageAuth")) {
+  if (!can(role, "manageSettings")) {
     return <div style={{ padding: 40, fontSize: 12, color: T.sub }}>This page is restricted to the founder.</div>;
   }
 
@@ -442,7 +442,7 @@ export default function Auth() {
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 18 }}>
         <div>
           <div style={{ fontFamily: "'Newsreader', serif", fontStyle: "italic", fontSize: 24, fontWeight: 600, color: T.text }}>
-            Access & Credentials
+            Settings
           </div>
           <div style={{ fontSize: 11, color: T.sub, marginTop: 4 }}>
             Every login in the system — internal team and brand portal. The DB stores hash keys; reveal shows the actual password (founder only).

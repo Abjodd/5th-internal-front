@@ -1,12 +1,8 @@
-// PDF upload handling for Insights → Newsletter — same shape as
-// lib/avatar.js's photo handling (a 2MB cap checked against the ORIGINAL
-// file so the error names the file the user actually picked, the backend
-// enforcing the same cap independently on decoded bytes), minus the
-// compress-and-resize step: a PDF isn't an image to re-encode, so this just
-// reads the file straight into a data URI ready to POST as `file`.
+// PDF uploads. Capped against the ORIGINAL file so the error names what the
+// user picked; the backend enforces the same cap on decoded bytes (pdfUpload.js).
 
-export const MAX_NEWSLETTER_BYTES = 2 * 1024 * 1024; // 2MB — matches the backend
-export const NEWSLETTER_ACCEPT = "application/pdf";
+export const MAX_PDF_BYTES = 2 * 1024 * 1024; // 2MB — matches pdfUpload.js
+export const PDF_ACCEPT = "application/pdf";
 
 const readable = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)}MB`;
 
@@ -17,7 +13,7 @@ export function readPdfAsDataUri(file) {
     if (!file) return reject(new Error("No file selected."));
     const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
     if (!isPdf) return reject(new Error("Choose a PDF file."));
-    if (file.size > MAX_NEWSLETTER_BYTES)
+    if (file.size > MAX_PDF_BYTES)
       return reject(new Error(`That PDF is ${readable(file.size)} — the limit is 2MB.`));
 
     const reader = new FileReader();

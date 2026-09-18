@@ -41,7 +41,7 @@ function genPassword() {
 // ── GENERATE CREDENTIALS MODAL ────────────────────────────────────────────────
 // Turns a triaged lead into an actual Brand Portal login: resolves (or creates)
 // the Client doc for req.organisation, then creates a BrandCredential the same
-// way the founder-only Auth page does. Mirrors CredentialModal's new-brand
+// way the founder-only Settings page does. Mirrors CredentialModal's new-brand
 // staging pattern so nothing is written until the founder actually submits.
 function GenerateCredentialsModal({ req, brands, onClose, onCreated, onCreateBrand }) {
   const existingBrand = brands.find(b => b.name.toLowerCase() === (req.organisation || "").trim().toLowerCase());
@@ -228,7 +228,7 @@ export default function ClientRequestsPanel({ query, showToast, onCount }) {
     onCount?.(requests.length);
   }, [requests, onCount]);
 
-  // Same slug scheme as the Auth page's inline "Add new brand…" flow.
+  // Same slug scheme as the Settings page's inline "Add new brand…" flow.
   const onCreateBrand = useCallback(async (name) => {
     const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     const created = await ClientsAPI.create({ id, name });

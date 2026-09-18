@@ -269,7 +269,7 @@ const FIELD_SANITIZE = { phone:"phone", email:"email", pan:"pan", ifsc:"ifsc", b
 // ── TEAM ─────────────────────────────────────────────────────────────────────
 // Hardcoded fallback only. The live directory (TEAM_DIR below) is derived from
 // the backend `users` collection: each auth user's `teamId` IS the t-id that
-// campaigns store in amId/cmId/eaId — so someone added on the founder's Auth
+// campaigns store in amId/cmId/eaId — so someone added on the founder's Settings
 // page becomes assignable here without a code change. getM() and the Team-tab
 // dropdowns all read TEAM_DIR.
 const TEAM = [

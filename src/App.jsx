@@ -13,7 +13,7 @@ import Billing from "./pages/Billing";
 import Summary from "./pages/Summary";
 import Creators from "./pages/Creators";
 import Requests from "./pages/Requests";
-import Auth from "./pages/Auth";
+import Settings from "./pages/Settings";
 import Profile from "./pages/Profile";
 
 // Lazy because it is the only consumer of three.js (~600KB). Statically
@@ -45,7 +45,7 @@ export default function App() {
             {/* Founder-only — AppShell blocks other roles via sections.js */}
             <Route path="/creators"  element={<Creators />} />
             <Route path="/requests"  element={<Requests />} />
-            <Route path="/auth"      element={<Auth />} />
+            <Route path="/settings"  element={<Settings />} />
             {/* Not a SECTION — deliberately absent from routes/sections.js, so
                 it never appears as a nav tab or in the command palette. It is
                 reached from the shell's user chip, and it is every role's own
@@ -55,6 +55,7 @@ export default function App() {
                 merged — keep old bookmarks working rather than bouncing them
                 to Summary via the catch-all below. */}
             <Route path="/client-requests" element={<Navigate to="/requests" replace />} />
+            <Route path="/auth"      element={<Navigate to="/settings" replace />} />
             <Route path="/"          element={<Navigate to="/summary" replace />} />
             <Route path="*"          element={<Navigate to="/summary" replace />} />
           </Route>

@@ -16,7 +16,7 @@
  * pages/Requests. A creator appears here once promoted from that inbox, or once
  * a campaign puts them on its creator list.
  */
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
 import { CreatorsAPI, InvoicePdfAPI, VendorsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
@@ -24,11 +24,14 @@ import CreatorHandle from "../../components/CreatorHandle";
 import CreatorAvatar from "../../components/CreatorAvatar";
 import { fmtCompact, fmtINR } from "../../lib/format";
 import { payeeOf } from "../../lib/payee";
+import { readPdfAsDataUri, PDF_ACCEPT } from "../../lib/pdf";
+import { ConfirmDialog } from "../Requests/shared";
 import { T } from "../../theme/tokens";
 import { AddCreatorModal } from "../Campaigns";
 import VendorsPanel from "./VendorsPanel";
+import { MANAGEMENT, MANAGEMENT_CHOICES, MANAGEMENT_LABEL, managementOf } from "../../lib/management";
 import {
-  Card, CardGrid, CARD_CSS, Fact, GhostBtn, INP, Notice, PAY_LABELS, Pill, panel, panelTitle,
+  Card, CardGrid, CARD_CSS, Fact, GhostBtn, INP, Notice, PAY_LABELS, Pill, Select, panel, panelTitle,
 } from "./shared";
 
 // ── INVOICES PANEL ───────────────────────────────────────────────────────────
@@ -85,6 +88,115 @@ function InvoicesPanel({ invoices, campaigns }) {
   );
 }
 
+// ── AGREEMENTS PANEL ─────────────────────────────────────────────────────────
+const HINT = { fontSize: 10.5, color: T.label, fontStyle: "italic" };
+
+// The signed agreement between us and a creator we manage directly — uploaded,
+// unlike the invoices generated per campaign beside it. Every upload is kept:
+// a re-signed copy doesn't void the one in force for work already invoiced.
+function AgreementsPanel({ creator, open, canEdit, onToast }) {
+  const [docs, setDocs] = useState(null);   // null = not loaded yet
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [removing, setRemoving] = useState(null);
+  const fileRef = useRef(null);
+
+  // Loads on expand: the card keeps this mounted while collapsed, so fetching
+  // eagerly would be one request per creator to show nothing.
+  useEffect(() => {
+    if (!open || docs) return;
+    let live = true;
+    CreatorsAPI.docs.list(creator.id)
+      .then(rows => live && setDocs(rows))
+      .catch(e => live && setErr(e.message));
+    return () => { live = false; };
+  }, [open, docs, creator.id]);
+
+  const upload = async (file) => {
+    if (!file || busy) return;
+    setBusy(true); setErr(null);
+    try {
+      const saved = await CreatorsAPI.docs.create(creator.id, { title: file.name, file: await readPdfAsDataUri(file) });
+      setDocs(prev => [saved, ...(prev || [])]);
+      onToast("Agreement uploaded");
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); if (fileRef.current) fileRef.current.value = ""; }
+  };
+
+  const remove = async (doc) => {
+    setBusy(true); setErr(null);
+    try {
+      await CreatorsAPI.docs.remove(creator.id, doc.id);
+      setDocs(prev => (prev || []).filter(d => d.id !== doc.id));
+      onToast("Agreement removed");
+    } catch (e) { setErr(e.message); }
+    setBusy(false); setRemoving(null);
+  };
+
+  const dated = (d) => d ? new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "—";
+
+  return (
+    <div style={panel}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+        <div style={{ ...panelTitle, marginBottom: 0 }}>Agreements{docs ? ` (${docs.length})` : ""}</div>
+        {canEdit && <>
+          <GhostBtn color={T.teal} disabled={busy} onClick={() => fileRef.current?.click()}>
+            {busy ? "Working…" : "Upload PDF"}
+          </GhostBtn>
+          <input ref={fileRef} type="file" accept={PDF_ACCEPT} hidden onChange={e => upload(e.target.files?.[0])} />
+        </>}
+      </div>
+
+      {err && <div style={{ fontSize: 10.5, color: T.red, marginBottom: 6 }}>{err}</div>}
+      {docs === null && !err && <div style={HINT}>Loading…</div>}
+      {docs?.length === 0 && <div style={HINT}>No signed agreement on file. PDF only, up to 2MB.</div>}
+
+      {(docs || []).map((d, i) => (
+        <div key={d.id} style={{
+          display: "flex", alignItems: "center", gap: 8, padding: "7px 0",
+          borderBottom: i < docs.length - 1 ? `1px solid ${T.border}` : "none",
+        }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <a href={CreatorsAPI.docs.fileUrl(creator.id, d.id)} target="_blank" rel="noreferrer" title={d.title}
+              style={{ display: "block", fontSize: 10.5, color: T.text, textDecoration: "none",
+                       whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {d.title}
+            </a>
+            {/* Newest first, so anything below the top row has been replaced. */}
+            <div style={{ fontSize: 9.5, color: T.sub }}>
+              {dated(d.uploadedAt)}{docs.length > 1 ? (i === 0 ? " · current" : " · superseded") : ""}
+            </div>
+          </div>
+          {canEdit && <GhostBtn color={T.red} disabled={busy} onClick={() => setRemoving(d)}>Remove</GhostBtn>}
+        </div>
+      ))}
+
+      {removing && (
+        <ConfirmDialog
+          title="Remove this agreement?"
+          body={<>
+            <div style={{ ...panel, minWidth: 0, background: T.raised, padding: "10px 12px", marginBottom: 10 }}>
+              <Fact label="Creator"  width={80} value={creator.name} />
+              <Fact label="Document" width={80} value={removing.title} />
+              <Fact label="Uploaded" width={80} value={dated(removing.uploadedAt)} />
+            </div>
+            The PDF is deleted from the database. This cannot be undone.
+          </>}
+          busy={busy}
+          onConfirm={() => remove(removing)}
+          onCancel={() => setRemoving(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Management and Vendor sit in the same label column and swap between a select
+// and a ghost trigger, so both states share one width and one set of metrics —
+// otherwise the rows shift and re-weight as the card changes.
+const PICK = { width: 150, padding: "4px 8px", fontSize: 10 };
+const PICK_BTN = { ...PICK, textAlign: "left", boxSizing: "border-box" };
+
 // ── VENDOR ASSIGNMENT ────────────────────────────────────────────────────────
 /**
  * Assigning a creator to a vendor is one field on the creator record
@@ -100,29 +212,48 @@ function VendorAssign({ creator, vendors, onAssign }) {
 
   if (!vendors.length) {
     return <GhostBtn color={T.label} disabled title="Add a vendor on the Vendors tab first"
-      style={{ cursor: "not-allowed" }}>Assign to vendor</GhostBtn>;
+      style={{ ...PICK_BTN, cursor: "not-allowed" }}>Assign to vendor</GhostBtn>;
   }
   if (!picking) {
-    return <GhostBtn color={T.gold} onClick={() => setPicking(true)}>
+    return <GhostBtn color={T.gold} onClick={() => setPicking(true)} style={PICK_BTN}>
       {creator.vendorId ? "Change vendor" : "Assign to vendor"}
     </GhostBtn>;
   }
   return (
-    <select
+    <Select
       autoFocus
       value={creator.vendorId || ""}
       onChange={e => { onAssign(e.target.value || null); setPicking(false); }}
       onBlur={() => setPicking(false)}
-      style={{ ...INP, width: 150, padding: "3px 7px", fontSize: 10, cursor: "pointer" }}
+      style={PICK}
     >
       <option value="">— No vendor —</option>
       {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-    </select>
+    </Select>
+  );
+}
+
+// Set on the card for the same reason VendorAssign is: one field, no modal.
+// A vendor assignment outranks it, so with one in place this states the derived
+// answer rather than offering a choice that wouldn't take effect.
+function ManagementPick({ creator, onSet }) {
+  if (creator.vendorId) {
+    return <GhostBtn color={T.gold} disabled title="Set by the vendor assignment below"
+      style={{ ...PICK_BTN, cursor: "default" }}>{MANAGEMENT_LABEL.vendor}</GhostBtn>;
+  }
+  return (
+    <Select
+      value={managementOf(creator)}
+      onChange={e => onSet(e.target.value)}
+      style={PICK}
+    >
+      {MANAGEMENT_CHOICES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+    </Select>
   );
 }
 
 // ── EXPANDED DETAIL ──────────────────────────────────────────────────────────
-function CreatorDetail({ inf, vendor, vendors, canEdit, onEdit, onAssign }) {
+function CreatorDetail({ inf, vendor, vendors, open, canEdit, onEdit, onAssign, onSetManagement, onToast }) {
   const pd = inf.personalDetails || {};
   // Where the money actually goes. A creator assigned to a vendor is invoiced
   // by that vendor and paid into the vendor's account, so showing the creator's
@@ -134,15 +265,17 @@ function CreatorDetail({ inf, vendor, vendors, canEdit, onEdit, onAssign }) {
     <>
       {/* Onboarding & billing details */}
       <div style={panel}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
-          <div style={panelTitle}>Onboarding & Billing</div>
-          {canEdit && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
-              <GhostBtn onClick={() => onEdit(inf)}>Edit</GhostBtn>
-              <VendorAssign creator={inf} vendors={vendors} onAssign={onAssign} />
-            </div>
-          )}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+          <div style={{ ...panelTitle, marginBottom: 0 }}>Onboarding & Billing</div>
+          {canEdit && <GhostBtn onClick={() => onEdit(inf)}>Edit</GhostBtn>}
         </div>
+        {/* The two settings are Facts whose value happens to be editable, so
+            they share the label column with everything under them instead of
+            stacking unlabelled against the right edge. */}
+        {canEdit && <>
+          <Fact label="Management" value={<ManagementPick creator={inf} onSet={onSetManagement} />} />
+          <Fact label="Vendor"     value={<VendorAssign creator={inf} vendors={vendors} onAssign={onAssign} />} />
+        </>}
         {/* The creator's own contact details stay theirs either way. */}
         <Fact label="Phone"    value={inf.phone} />
         <Fact label="Email"    value={pd.email} />
@@ -188,6 +321,12 @@ function CreatorDetail({ inf, vendor, vendors, canEdit, onEdit, onAssign }) {
         ))}
       </div>
 
+      {/* Stored managedBy, not managementOf(): assigning a vendor must not hide
+          an agreement we signed and still hold. */}
+      {inf.managedBy === "fifthavenue" && (
+        <AgreementsPanel creator={inf} open={open} canEdit={canEdit} onToast={onToast} />
+      )}
+
       {/* Generated invoices */}
       <InvoicesPanel invoices={inf.invoices} campaigns={inf.campaigns} />
     </>
@@ -195,7 +334,8 @@ function CreatorDetail({ inf, vendor, vendors, canEdit, onEdit, onAssign }) {
 }
 
 // ── CREATOR CARD ─────────────────────────────────────────────────────────────
-function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, onAssign }) {
+function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, onAssign, onSetManagement, onToast }) {
+  const kind = managementOf(inf);
   return (
     <Card
       open={open}
@@ -218,7 +358,9 @@ function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, on
         <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {inf.platform || "—"}{inf.state ? ` · ${inf.state}` : ""}
         </span>
-        {vendor && <Pill color={T.gold}>{vendor.name}</Pill>}
+        {kind === "vendor"
+          ? <Pill color={T.gold}>{vendor?.name || MANAGEMENT_LABEL.vendor}</Pill>
+          : <Pill color={kind === "fifthavenue" ? T.teal : T.label}>{MANAGEMENT_LABEL[kind]}</Pill>}
         {inf.payType && (
           <span style={{ marginLeft: "auto" }}>
             <Pill color={T.accent}>{PAY_LABELS[inf.payType] || inf.payType}</Pill>
@@ -226,7 +368,7 @@ function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, on
         )}
       </>}
     >
-      <CreatorDetail inf={inf} vendor={vendor} vendors={vendors} canEdit={canEdit} onEdit={onEdit} onAssign={onAssign} />
+      <CreatorDetail inf={inf} vendor={vendor} vendors={vendors} open={open} canEdit={canEdit} onEdit={onEdit} onAssign={onAssign} onSetManagement={onSetManagement} onToast={onToast} />
     </Card>
   );
 }
@@ -247,6 +389,7 @@ export default function Creators() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
   const [query, setQuery]     = useState("");
+  const [mgmt, setMgmt]       = useState("all");   // creator-type filter
   const [expanded, setExpanded] = useState(null);   // creator id
   const [editTarget, setEditTarget] = useState(null); // creator being edited (founder only)
   // null = closed · {} = add · a vendor = edit. One state for the Vendors tab's
@@ -316,14 +459,27 @@ export default function Creators() {
 
   const vendorById = useMemo(() => new Map(vendors.map(v => [v.id, v])), [vendors]);
 
+  const mgmtCounts = useMemo(() => {
+    // Keys come from MANAGEMENT so a renamed or added type can't desync them.
+    const n = { all: creators.length, ...Object.fromEntries(MANAGEMENT.map(m => [m.id, 0])) };
+    for (const c of creators) n[managementOf(c)]++;
+    return n;
+  }, [creators]);
+
+  // Tag then text, so the search box searches within whatever is filtered to.
+  // The tag's own label is part of the haystack — typing "vendor" finds them
+  // without going near the dropdown.
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return creators;
-    return creators.filter(i =>
-      [i.name, i.handle, i.niche, i.state, vendorById.get(i.vendorId)?.name, ...(i.campaigns || []).map(c => c.name)]
-        .filter(Boolean).some(v => String(v).toLowerCase().includes(q))
-    );
-  }, [creators, query, vendorById]);
+    return creators.filter(i => {
+      const kind = managementOf(i);
+      if (mgmt !== "all" && kind !== mgmt) return false;
+      if (!q) return true;
+      return [i.name, i.handle, i.niche, i.state, MANAGEMENT_LABEL[kind],
+              vendorById.get(i.vendorId)?.name, ...(i.campaigns || []).map(c => c.name)]
+        .filter(Boolean).some(v => String(v).toLowerCase().includes(q));
+    });
+  }, [creators, query, mgmt, vendorById]);
 
   // Defense in depth — the shell already hides this section from non-founders.
   if (!can(role, "seeCreators")) {
@@ -351,6 +507,16 @@ export default function Creators() {
             placeholder={active.placeholder}
             style={{ ...INP, width: 260 }}
           />
+          {tab === "creators" && (
+            <Select value={mgmt} onChange={e => setMgmt(e.target.value)}
+              title="Filter by creator type"
+              style={{ color: mgmt === "all" ? T.sub : T.text }}>
+              <option value="all">All creators ({mgmtCounts.all})</option>
+              {MANAGEMENT.map(m => (
+                <option key={m.id} value={m.id}>{m.label} ({mgmtCounts[m.id]})</option>
+              ))}
+            </Select>
+          )}
           {tab === "vendors" && canEdit && (
             <button onClick={() => setVendorModal({})} style={{
               padding: "8px 16px", borderRadius: 6, fontSize: 11.5, fontWeight: 500, fontFamily: "'Sora'",
@@ -363,7 +529,7 @@ export default function Creators() {
       {/* Tabs — same underline treatment the Requests inbox uses */}
       <div style={{ display: "flex", gap: 22, borderBottom: `1px solid ${T.border}`, marginBottom: 18 }}>
         {TABS.map(t => (
-          <button key={t.id} onClick={() => { setTab(t.id); setQuery(""); }}
+          <button key={t.id} onClick={() => { setTab(t.id); setQuery(""); setMgmt("all"); }}
             style={{
               position: "relative", display: "flex", alignItems: "center", gap: 7,
               padding: "0 0 9px", background: "transparent", border: "none", cursor: "pointer",
@@ -384,7 +550,7 @@ export default function Creators() {
 
       {!loading && !error && tab === "creators" && (
         visible.length === 0
-          ? <Notice tone="empty">{query ? "No creators match your search." : "No creators in the directory yet."}</Notice>
+          ? <Notice tone="empty">{query || mgmt !== "all" ? "No creators match your search." : "No creators in the directory yet."}</Notice>
           : (
             <CardGrid>
               {visible.map(inf => (
@@ -397,6 +563,9 @@ export default function Creators() {
                   onToggle={() => setExpanded(expanded === inf.id ? null : inf.id)}
                   canEdit={canEdit}
                   onEdit={setEditTarget}
+                  onToast={showToast}
+                  onSetManagement={managedBy => patchCreator(inf.id, { managedBy },
+                    `${inf.name} — ${MANAGEMENT_LABEL[managedBy]}`)}
                   onAssign={vendorId => patchCreator(inf.id, { vendorId },
                     vendorId ? `Assigned to ${vendorById.get(vendorId)?.name}` : "Vendor cleared")}
                 />
@@ -413,6 +582,9 @@ export default function Creators() {
           canEdit={canEdit}
           onSave={saveVendor}
           onRemove={removeVendor}
+          // Same PATCH as the creator card's picker, from the vendor's end.
+          onUnassign={(creator, vendor) =>
+            patchCreator(creator.id, { vendorId: null }, `${creator.name} unassigned from ${vendor.name}`)}
           modal={vendorModal}
           onModal={setVendorModal}
         />

@@ -58,7 +58,7 @@ export const PERMS = {
   extendCampaignEnd:  ["founder", "pcm", "am"],
   // Creator records are retained: any campaign role can edit
   // details, but only the founder can remove a creator (the underlying
-  // record is only ever deleted from the founder's Auth side).
+  // record is only ever deleted from the founder's Settings side).
   editCreatorDetails: ["founder", "pcm", "cm", "am", "ea"],   // full Edit modal on the creators table
   removeCreator:      ["founder"],
   // Raising a creator's GST invoice and pulling the PDF back down. Split out
@@ -118,7 +118,7 @@ export const PERMS = {
 
   // ── Founder-only pages ──────────────────────────────────────────────────────
   seeCreators:        ["founder"],  // Creators directory (all creators + invoices)
-  manageAuth:         ["founder"],  // Auth page: view/add/edit/soft-delete credentials
+  manageSettings:     ["founder"],  // Settings page: view/add/edit/soft-delete credentials
   // Requests inbox — one permission per tab rather than one for the section,
   // so the inboxes can be opened to different roles later without reworking the
   // page (it renders only the tabs the role can see).

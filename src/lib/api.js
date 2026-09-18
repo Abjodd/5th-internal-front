@@ -217,7 +217,7 @@ export const AuthAPI = {
     request("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
 };
 
-// Founder-only credential management (Auth page). Both clients share the
+// Founder-only credential management (Settings page). Both clients share the
 // backend's registerAuthCrudRoutes shape: password → hashKey + encrypted
 // passKey server-side, ids are backend-assigned (u10, bc3, …), DELETE is a
 // hard delete so the id sequence stays consistent. `password(id)` decrypts
@@ -249,6 +249,17 @@ export const CreatorsAPI = {
   // creator's entries across campaigns so the directory stays the source of truth.
   update: (id, patch) =>
     request(`/api/creators/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+
+  // Signed agreements — uploaded PDFs, not the generated invoices below, and
+  // scoped under the creator so one is only reachable through its own record.
+  docs: {
+    list: (id) => request(`/api/creators/${encodeURIComponent(id)}/documents`),
+    create: (id, doc) =>
+      request(`/api/creators/${encodeURIComponent(id)}/documents`, { method: "POST", body: JSON.stringify(doc) }),
+    remove: (id, docId) =>
+      request(`/api/creators/${encodeURIComponent(id)}/documents/${docId}`, { method: "DELETE" }),
+    fileUrl: (id, docId) => `${BASE}/api/creators/${encodeURIComponent(id)}/documents/${docId}/file`,
+  },
 };
 
 // ── Invoice PDFs ─────────────────────────────────────────────────────────────

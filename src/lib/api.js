@@ -161,6 +161,9 @@ export const AccountQuestionsAPI = {
 export const MarketWatchAPI = {
   list: (brandId) => request(`/api/market-watch?brandId=${encodeURIComponent(brandId)}`),
   create: (item) => request(`/api/market-watch`, { method: "POST", body: JSON.stringify(item) }),
+  // Patches a single item in place — used to add (or fix) a note's topic
+  // after the fact, including on notes added before this field existed.
+  update: (id, patch) => request(`/api/market-watch/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   remove: (id) => request(`/api/market-watch/${id}`, { method: "DELETE" }),
 };
 
@@ -184,6 +187,20 @@ export const NewsletterAPI = {
   remove: (id) => request(`/api/newsletter/${id}`, { method: "DELETE" }),
   // Not a request() call — this is a URL for an <a href>, not JSON to parse.
   fileUrl: (id) => `${BASE}/api/newsletter/${id}/file`,
+};
+
+// Insights → Favourites (Founder Summary Insights tab, read-only) — the
+// reels/notes a brand has starred for itself off the Trending and Market
+// Watch shelves above (see GET /api/favourites in
+// 5th-internal-back/server.js, which joins the brand's stars back onto
+// those two collections). Brand-scoped like MarketWatchAPI/NewsletterAPI:
+// one brand's own picks, newest first. remove() unstars on the brand's
+// behalf — the same toggle the portal itself does
+// (/api/portal/favourites) — exposed here so the internal team can tidy
+// up a stale pick too.
+export const FavouritesAPI = {
+  list: (brandId) => request(`/api/favourites?brandId=${encodeURIComponent(brandId)}`),
+  remove: (id) => request(`/api/favourites/${id}`, { method: "DELETE" }),
 };
 
 // ── Vendors (Creators › Vendors) ─────────────────────────────────────────────

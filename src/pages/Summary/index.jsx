@@ -26,7 +26,7 @@ import {
 import {
   CampaignsAPI, ClientsAPI, InvoicesAPI, UsersAPI, CreatorsAPI,
   QuotesAPI, ClientRequestsAPI, CreatorRequestsAPI, TrendingAPI, AccountQuestionsAPI,
-  MarketWatchAPI, NewsAPI, NewsletterAPI,
+  MarketWatchAPI, NewsAPI, NewsletterAPI, FavouritesAPI,
 } from "../../lib/api";
 import { buildSummary } from "../../lib/summaryMetrics";
 import { useBrandAccent } from "../../lib/brandAccent";
@@ -64,6 +64,8 @@ const F = {
   plumTint: "#F3EDF0",
   rust: "#8C3B2E",
   rustTint: "#F7ECE9",
+  rose: "#7A3B4E",
+  roseTint: "#F5EBEE",
 };
 
 /* Accents that only ever ride on the navy surface. F's inks are mixed to sit
@@ -7550,6 +7552,12 @@ const INSIGHTS_SECTIONS = [
     note: "The latest from Fifth Avenue.",
     color: F.rust, tint: F.rustTint,
   },
+  {
+    id: "favourites", label: "Favourites",
+    headline: "What each brand has starred for itself.",
+    note: "Reels and notes a brand has favourited off its own Trending and Market Watch shelves.",
+    color: F.rose, tint: F.roseTint,
+  },
 ];
 
 // Small pill button shared by the two add-forms below — same visual weight
@@ -8000,6 +8008,11 @@ function MarketWatchEditor() {
   const [items, setItems] = useState(null); // null = no brand picked yet, or loading
   const [linkInput, setLinkInput] = useState("");
   const [noteInput, setNoteInput] = useState("");
+  const [topicInput, setTopicInput] = useState("");
+  // Per-row topic edits for existing notes, keyed by item id — lets a
+  // note added before this field existed have a topic filled in later,
+  // without turning the whole row into a form.
+  const [topicDrafts, setTopicDrafts] = useState({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   // Latest News — auto-fetched, read-only, and universal (same list for
@@ -8051,8 +8064,24 @@ function MarketWatchEditor() {
     if (!text || busy || !brandId) return;
     setBusy(true); setErr(null);
     try {
-      await MarketWatchAPI.create({ id: newTrendingId(), brandId, kind: "note", text, author: "Internal team" });
+      await MarketWatchAPI.create({
+        id: newTrendingId(), brandId, kind: "note", text,
+        topic: topicInput.trim() || null,
+        author: "Internal team",
+      });
       setNoteInput("");
+      setTopicInput("");
+      load();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const saveTopic = async (id) => {
+    const draft = topicDrafts[id];
+    if (draft == null) return;
+    setBusy(true); setErr(null);
+    try {
+      await MarketWatchAPI.update(id, { topic: draft.trim() || null });
       load();
     } catch (e) { setErr(e.message); }
     setBusy(false);
@@ -8151,15 +8180,23 @@ function MarketWatchEditor() {
               </span>
             </div>
 
-            <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "flex-start" }}>
-              <textarea
-                value={noteInput}
-                onChange={(e) => setNoteInput(e.target.value)}
-                placeholder="Type a note for this brand's Market Watch…"
-                rows={2}
-                style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5, paddingTop: 8 }}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+              <input
+                value={topicInput}
+                onChange={(e) => setTopicInput(e.target.value)}
+                placeholder={'Topic (e.g. "Posting frequency")…'}
+                style={{ ...inputStyle, fontWeight: 700 }}
               />
-              <InsightBtn onClick={addNote} disabled={busy || !noteInput.trim()} style={{ height: 34 }}>Add note</InsightBtn>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <textarea
+                  value={noteInput}
+                  onChange={(e) => setNoteInput(e.target.value)}
+                  placeholder="Answer to that topic, for this brand's Market Watch…"
+                  rows={2}
+                  style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5, paddingTop: 8 }}
+                />
+                <InsightBtn onClick={addNote} disabled={busy || !noteInput.trim()} style={{ height: 34 }}>Add note</InsightBtn>
+              </div>
             </div>
 
             {items == null ? (
@@ -8174,13 +8211,22 @@ function MarketWatchEditor() {
                   <div
                     key={it.id}
                     style={{
-                      display: "flex", alignItems: "flex-start", gap: 10,
+                      display: "flex", flexDirection: "column", gap: 6,
                       padding: "10px 12px", borderRadius: 10,
                       border: `1px solid ${F.hairline}`, borderLeft: `3px solid ${F.plum}`,
                     }}
                   >
-                    <div style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.55 }}>{it.text}</div>
-                    <RemoveIconButton onClick={() => remove(it.id)} disabled={busy} />
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        value={topicDrafts[it.id] ?? (it.topic || "")}
+                        onChange={(e) => setTopicDrafts((d) => ({ ...d, [it.id]: e.target.value }))}
+                        onBlur={() => saveTopic(it.id)}
+                        placeholder="Add a topic…"
+                        style={{ ...inputStyle, flex: 1, padding: "6px 10px", fontSize: 12, fontWeight: 700 }}
+                      />
+                      <RemoveIconButton onClick={() => remove(it.id)} disabled={busy} />
+                    </div>
+                    <div style={{ fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.55 }}>{it.text}</div>
                   </div>
                 ))}
               </ScrollList>
@@ -8412,6 +8458,115 @@ function NewsletterEditor() {
   );
 }
 
+/**
+ * The internal team's own read-only view of one brand's Favourites shelf —
+ * every reel or note that brand has starred for itself off its own Trending
+ * and Market Watch feeds (see GET /api/favourites in the backend, which
+ * joins the brand's stars back onto those two collections). Same own-brand-
+ * select pattern as the other per-brand editors on this page. There's
+ * nothing to add here — favouriting only ever happens from the brand's own
+ * portal — but Remove lets the internal team clear a stale pick on the
+ * brand's behalf, exactly what their own portal star button does.
+ */
+function FavouritesEditor() {
+  const [clients, setClients] = useState(null);
+  const [brandId, setBrandId] = useState("");
+  const [items, setItems] = useState(null); // null = no brand picked yet, or loading
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    ClientsAPI.list()
+      .then((rows) => setClients([...rows].sort((a, b) => (a.name || "").localeCompare(b.name || ""))))
+      .catch((e) => setErr(e.message));
+  }, []);
+
+  const load = useCallback(() => {
+    if (!brandId) { setItems(null); return; }
+    FavouritesAPI.list(brandId)
+      .then((rows) => setItems(rows))
+      .catch((e) => setErr(e.message));
+  }, [brandId]);
+
+  useEffect(() => { setItems(null); setErr(null); load(); }, [load]);
+
+  const remove = async (favouriteId) => {
+    setBusy(true); setErr(null);
+    try { await FavouritesAPI.remove(favouriteId); load(); }
+    catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div>
+      <select
+        value={brandId}
+        onChange={(e) => setBrandId(e.target.value)}
+        style={{ ...inputStyle, flex: "none", width: 240, marginBottom: 16 }}
+      >
+        <option value="">Select a brand…</option>
+        {(clients || []).map((c) => (
+          <option key={c.id || c._id} value={c.id || c._id}>{c.name}</option>
+        ))}
+      </select>
+
+      {!brandId ? (
+        <div style={{ padding: "14px 16px", borderTop: `1px solid ${F.hairline}`, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+          Pick a brand to see what they've favourited.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {err && (
+            <div style={{ fontFamily: T.ui, fontSize: 11.5, color: F.rust }}>{err}</div>
+          )}
+          {items == null ? (
+            <div style={{ fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>Loading…</div>
+          ) : items.length === 0 ? (
+            <div style={{ padding: "12px 14px", borderRadius: 10, border: `1px dashed ${F.hairlineStrong}`, background: F.roseTint, fontFamily: T.ui, fontSize: 12, color: F.muted, fontStyle: "italic" }}>
+              Nothing favourited yet.
+            </div>
+          ) : (
+            <ScrollList>
+              {items.map((it) => (
+                <div
+                  key={it.favouriteId}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "10px 12px", borderRadius: 10,
+                    border: `1px solid ${F.hairline}`, borderLeft: `3px solid ${F.rose}`,
+                  }}
+                >
+                  <span style={{
+                    flexShrink: 0, fontFamily: T.ui, fontSize: 9.5, fontWeight: 700,
+                    letterSpacing: "0.08em", textTransform: "uppercase", color: F.rose,
+                    padding: "2px 7px", borderRadius: 999, background: F.roseTint,
+                  }}>
+                    {it.source === "market-watch" ? "Industry" : "General"}
+                  </span>
+                  {it.kind === "reel" ? (
+                    <a
+                      href={it.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={it.url}
+                      style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "none", borderBottom: `1px solid ${F.hairlineStrong}` }}
+                    >
+                      {it.url}
+                    </a>
+                  ) : (
+                    <div style={{ flex: 1, minWidth: 0, fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.55 }}>{it.text}</div>
+                  )}
+                  <RemoveIconButton onClick={() => remove(it.favouriteId)} disabled={busy} />
+                </div>
+              ))}
+            </ScrollList>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Insights() {
   return (
     <section style={{ padding: "140px 44px", background: F.surface }}>
@@ -8486,6 +8641,8 @@ function Insights() {
                     <MarketWatchEditor />
                   ) : s.id === "newsletter" ? (
                     <NewsletterEditor />
+                  ) : s.id === "favourites" ? (
+                    <FavouritesEditor />
                   ) : (
                     <div
                       style={{

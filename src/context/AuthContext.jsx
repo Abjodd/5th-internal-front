@@ -11,7 +11,7 @@ import {
   useState,
   useCallback,
 } from "react";
-import { AuthAPI } from "../lib/api";
+import { AuthAPI, invalidateLists } from "../lib/api";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTEXT
@@ -31,6 +31,9 @@ export function AuthProvider({ children }) {
 
   // Persist authenticated user
   const persist = useCallback((safeUser) => {
+    // The list cache outlives a sign-out (module state, not React state), so it
+    // has to be dropped here or the next user is served the last one's rows.
+    invalidateLists();
     setUser(safeUser);
     sessionStorage.setItem("5av_user", JSON.stringify(safeUser));
 
@@ -87,6 +90,7 @@ export function AuthProvider({ children }) {
 
   // Logout
   const logout = useCallback(() => {
+    invalidateLists();
     setUser(null);
     sessionStorage.removeItem("5av_user");
   }, []);

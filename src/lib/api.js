@@ -2,9 +2,13 @@
 // Set VITE_API_URL in a .env file to point at your backend, defaults to
 // localhost:4000 for local dev.
 
+import { cachedList, invalidate } from "./listCache";
+
+export { invalidate as invalidateLists } from "./listCache";
+
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
-async function request(path, options = {}) {
+async function send(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options,
@@ -21,6 +25,36 @@ async function request(path, options = {}) {
   if (res.status === 204) return null;
   return res.json();
 }
+
+// Writes that also change a second collection. Declared once, rather than at
+// every call site: promoting an application writes a creator row, and a
+// campaign's roster drives its creator expenses.
+const COUPLED = {
+  "/api/creator-requests": ["/api/creators"],
+  "/api/campaigns": ["/api/expenses"],
+};
+
+// "/api/campaigns/cam1?purge=1" → ["/api/campaigns", "/api/expenses"]
+const collectionsOf = (path) => {
+  const base = path.split("?")[0].split("/").slice(0, 3).join("/");
+  return [base, ...(COUPLED[base] || [])];
+};
+
+// Every write drops the collection it touched, so a new endpoint cannot forget
+// to. Dropped on failure too: the server may have applied it anyway, and a
+// needless refetch is cheaper than serving a row we know might be stale.
+async function request(path, options = {}) {
+  if ((options.method || "GET") === "GET") return send(path, options);
+  try {
+    return await send(path, options);   // awaited: `finally` must run before the caller resumes
+  } finally {
+    invalidate(...collectionsOf(path));
+  }
+}
+
+// Read-through cache for a collection list. The path is the cache key, so the
+// key and the URL cannot drift apart.
+const cachedGet = (path) => cachedList(path, () => send(path));
 
 /**
  * Builds the `<img src>` for a photo served from `${basePath}/:id/avatar` — used
@@ -47,7 +81,7 @@ const avatarUrlFor = (basePath) => (record) => {
 };
 
 export const ClientsAPI = {
-  list: () => request("/api/clients"),
+  list: () => cachedGet("/api/clients"),
   create: (client) =>
     request("/api/clients", { method: "POST", body: JSON.stringify(client) }),
   update: (id, patch) =>
@@ -75,7 +109,7 @@ export const FindingsAPI = {
 // The landing page's "Start a project" form POSTs; the founder inbox uses
 // list/update. Backend fires the founder email on create (mailer.js).
 export const ClientRequestsAPI = {
-  list: () => request("/api/client-requests"),
+  list: () => cachedGet("/api/client-requests"),
   create: (req) => request("/api/client-requests", { method: "POST", body: JSON.stringify(req) }),
   // Called once a BrandCredential login has been generated for this lead —
   // the request is removed rather than flagged, mirroring creator-request promote.
@@ -86,7 +120,7 @@ export const ClientRequestsAPI = {
 // The landing page's "Apply as a creator" form POSTs; the founder inbox uses
 // list/update. Backend fires the founder email on create (mailer.js).
 export const CreatorRequestsAPI = {
-  list: (status) => request(`/api/creator-requests${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  list: (status) => cachedGet(`/api/creator-requests${status ? `?status=${encodeURIComponent(status)}` : ""}`),
   create: (req) => request("/api/creator-requests", { method: "POST", body: JSON.stringify(req) }),
   update: (id, patch) =>
     request(`/api/creator-requests/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
@@ -114,7 +148,7 @@ export const CreatorRequestsAPI = {
 // platform to graduate an application into, so triage ends at a status and the
 // row is removed when it's done with.
 export const CareerRequestsAPI = {
-  list: (status) => request(`/api/career-requests${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  list: (status) => cachedGet(`/api/career-requests${status ? `?status=${encodeURIComponent(status)}` : ""}`),
   update: (id, patch) =>
     request(`/api/career-requests/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   remove: (id) => request(`/api/career-requests/${id}`, { method: "DELETE" }),
@@ -123,7 +157,7 @@ export const CareerRequestsAPI = {
 // Generic CRUD client factory matching the backend's registerCrudRoutes shape.
 function crud(basePath) {
   return {
-    list: () => request(basePath),
+    list: () => cachedGet(basePath),
     create: (item) => request(basePath, { method: "POST", body: JSON.stringify(item) }),
     update: (id, patch) => request(`${basePath}/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
     remove: (id) => request(`${basePath}/${id}`, { method: "DELETE" }),
@@ -241,7 +275,7 @@ export const AuthAPI = {
 // the stored passKey so the founder can see the actual password.
 function authCrud(basePath) {
   return {
-    list: () => request(basePath),
+    list: () => cachedGet(basePath),
     create: (item) => request(basePath, { method: "POST", body: JSON.stringify(item) }),
     update: (id, patch) => request(`${basePath}/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
     remove: (id) => request(`${basePath}/${id}`, { method: "DELETE" }),
@@ -256,7 +290,7 @@ export const BrandCredentialsAPI = authCrud("/api/brand-credentials");
 
 // ── Creators (founder directory) ─────────────────────────────────────────────
 export const CreatorsAPI = {
-  list: (brandId) => request(`/api/creators${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ""}`),
+  list: (brandId) => cachedGet(`/api/creators${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ""}`),
   // A photo stored against our own creator record, same contract as every other
   // avatar in the app: null unless the record says one exists, so a creator we
   // only know from a platform fetch never issues a request that is certain to
@@ -289,16 +323,16 @@ export const InvoicePdfAPI = {
 };
 
 export const CampaignsAPI = {
-  list: () => request("/api/campaigns"),
+  list: () => cachedGet("/api/campaigns"),
   // Just the brandIds a team member's campaigns belong to. The app shell asks
   // this on every page to scope its brand filter; list() would answer it too,
   // but only by shipping every campaign document plus a creators join per
   // campaign — see the endpoint's own note in the backend's server.js.
-  brandScope: (teamId) => request(`/api/campaigns/brand-scope?teamId=${encodeURIComponent(teamId)}`),
+  brandScope: (teamId) => cachedGet(`/api/campaigns/brand-scope?teamId=${encodeURIComponent(teamId)}`),
   // Brands that have at least one live campaign. Answers "is there anything to
   // filter to?", where brandScope answers "may this user open it" — the shell
   // intersects the two.
-  populatedBrands: () => request("/api/campaigns/brand-scope?all=1"),
+  populatedBrands: () => cachedGet("/api/campaigns/brand-scope?all=1"),
   create: (campaign) =>
     request("/api/campaigns", { method: "POST", body: JSON.stringify(campaign) }),
   update: (id, patch) =>

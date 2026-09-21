@@ -1,13 +1,14 @@
 {
   "name": "5th-avenue-internal-frontend",
   "version": "2.0.0",
-  "description": "5th Avenue — Internal Operations Platform (frontend)",
+  "description": "5th Avenue \u2014 Internal Operations Platform (frontend)",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test \"src/**/*.test.js\""
   },
   "dependencies": {
     "lucide-react": "^1.27.0",

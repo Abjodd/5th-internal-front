@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext, Suspense } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -948,7 +948,13 @@ export default function AppShell() {
         }}
       >
         {hasAccess
-          ? <Outlet context={{ user, role: user.role, brandFilter, setBrandFilter, brands, refreshBrands: loadBrands, topBarHeight: TOPBAR_H }} />
+          // One boundary for every routed page: App.jsx loads them lazily, and
+          // the shell owns the content area, so the shell owns its pending
+          // state. No fallback markup — the page's own background is already
+          // painted behind this, and a spinner would only flash.
+          ? <Suspense fallback={null}>
+              <Outlet context={{ user, role: user.role, brandFilter, setBrandFilter, brands, refreshBrands: loadBrands, topBarHeight: TOPBAR_H }} />
+            </Suspense>
           : <AccessDenied section={activeSec} />
         }
       </div>

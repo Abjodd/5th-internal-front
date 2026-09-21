@@ -8,17 +8,19 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./routes/ProtectedRoute";
 import AppShell from "./layout/AppShell";
-import Campaigns from "./pages/Campaigns";
-import Billing from "./pages/Billing";
-import Summary from "./pages/Summary";
-import Creators from "./pages/Creators";
-import Requests from "./pages/Requests";
-import Settings from "./pages/Settings";
-import Profile from "./pages/Profile";
 
-// Lazy because it is the only consumer of three.js (~600KB). Statically
-// imported, every authenticated page downloaded a renderer it never used.
+// Every page is lazy, so a founder opening /summary no longer downloads
+// Campaigns, Billing and the three admin screens with it. Login was already
+// lazy as the only consumer of three.js (~500KB). AppShell holds the single
+// Suspense boundary the protected pages resolve against.
 const LoginPage = lazy(() => import("./pages/Login"));
+const Summary   = lazy(() => import("./pages/Summary"));
+const Campaigns = lazy(() => import("./pages/Campaigns"));
+const Billing   = lazy(() => import("./pages/Billing"));
+const Creators  = lazy(() => import("./pages/Creators"));
+const Requests  = lazy(() => import("./pages/Requests"));
+const Settings  = lazy(() => import("./pages/Settings"));
+const Profile   = lazy(() => import("./pages/Profile"));
 
 export default function App() {
   return (

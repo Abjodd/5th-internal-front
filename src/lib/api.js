@@ -321,3 +321,84 @@ export const CampaignsAPI = {
     request(`/api/campaigns/${campaignId}/creators/${encodeURIComponent(creatorId)}/${asset}/comments`,
       { method: "POST", body: JSON.stringify({ text, author }) }),
 };
+
+// Pitch Client — the pre-sale step before a creator is committed to a
+// campaign's roster. See 5th-internal-back/routes/pitch.js for the full
+// contract; this is its internal (team-side) half only. The public,
+// access-code-gated half lives in the client portal, not here.
+export const PitchAPI = {
+  // Scoped to ONE campaign — the composer view a team member works in.
+  list: (campaignId) => request(`/api/campaigns/${campaignId}/pitch`),
+  add: (campaignId, profileUrl, addedBy) =>
+    request(`/api/campaigns/${campaignId}/pitch`, {
+      method: "POST",
+      body: JSON.stringify({ profileUrl, addedBy }),
+    }),
+  remove: (campaignId, pitchId) =>
+    request(`/api/campaigns/${campaignId}/pitch/${pitchId}`, { method: "DELETE" }),
+  // Regenerates the whole BRAND's code (one link covers every campaign for
+  // that brand) — this campaign-scoped call is just a convenience wrapper
+  // for when a campaign id is already in hand; see routes/pitch.js.
+  regenerateCode: (campaignId) =>
+    request(`/api/campaigns/${campaignId}/pitch/code/regenerate`, { method: "POST" }),
+  ship: (campaignId, pitchId) =>
+    request(`/api/campaigns/${campaignId}/pitch/${pitchId}/ship`, { method: "POST" }),
+  // Scoped to the whole CLIENT (brand) — every profile pitched to them
+  // across every one of their campaigns, the same set their own link shows.
+  listForClient: (brandId) => request(`/api/clients/${brandId}/pitch`),
+  // A pitched profile's avatar is either a relative path into this backend
+  // (sourced from the Creator directory — see routes/pitch.js) or the raw
+  // external Hiker URL. Only the former needs the API base prefixed.
+  avatarUrl: (avatar) => (avatar ? (avatar.startsWith("/") ? `${BASE}${avatar}` : avatar) : null),
+};
+
+// Pitch Draft — pitching a brand that isn't in the system yet. Everything
+// Pitch Client needs (a brief, suggested content, candidate creators) but
+// for a prospect with no real Client/Campaign to hang it off, until the
+// team promotes it into one. See 5th-internal-back/routes/pitchDrafts.js
+// for the full contract; this is its internal half only — the client link
+// is a public, access-code-gated page, not something this app calls.
+export const PitchDraftAPI = {
+  list: (status) => request(`/api/pitch-drafts${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+  get: (id) => request(`/api/pitch-drafts/${id}`),
+  create: (draft) =>
+    request("/api/pitch-drafts", { method: "POST", body: JSON.stringify(draft) }),
+  update: (id, patch) =>
+    request(`/api/pitch-drafts/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  remove: (id) => request(`/api/pitch-drafts/${id}`, { method: "DELETE" }),
+
+  // Replaces the whole freeform {heading, body} list in one call — the
+  // brief editor works on the list as a whole (add/remove/reorder a
+  // section), same reasoning as the backend route's own comment.
+  saveBrief: (id, sections) =>
+    request(`/api/pitch-drafts/${id}/brief`, { method: "PUT", body: JSON.stringify({ sections }) }),
+
+  addContent: (id, url, note, addedBy) =>
+    request(`/api/pitch-drafts/${id}/content`, {
+      method: "POST",
+      body: JSON.stringify({ url, note, addedBy }),
+    }),
+  removeContent: (id, linkId) =>
+    request(`/api/pitch-drafts/${id}/content/${linkId}`, { method: "DELETE" }),
+
+  addProfile: (id, profileUrl, addedBy) =>
+    request(`/api/pitch-drafts/${id}/profiles`, {
+      method: "POST",
+      body: JSON.stringify({ profileUrl, addedBy }),
+    }),
+  removeProfile: (id, profileId) =>
+    request(`/api/pitch-drafts/${id}/profiles/${profileId}`, { method: "DELETE" }),
+
+  regenerateCode: (id) => request(`/api/pitch-drafts/${id}/code/regenerate`, { method: "POST" }),
+
+  // "Create actual campaign" — the button in the same slot Ship to Creators
+  // occupies on a real pitch. Creates the real Client + Campaign, carries
+  // over only the client-approved candidates (already marked approved on
+  // the new campaign's pitch list), and archives this draft.
+  promote: (id, createdBy) =>
+    request(`/api/pitch-drafts/${id}/promote`, { method: "POST", body: JSON.stringify({ createdBy }) }),
+
+  // A draft candidate's avatar follows the exact same directory-vs-Hiker
+  // URL contract as PitchAPI.avatarUrl above.
+  avatarUrl: (avatar) => (avatar ? (avatar.startsWith("/") ? `${BASE}${avatar}` : avatar) : null),
+};

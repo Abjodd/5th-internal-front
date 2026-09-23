@@ -6,7 +6,7 @@
  */
  import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect, forwardRef, Fragment } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate, useOutletContext } from "react-router-dom";
+import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI, CreatorsAPI, VendorsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
@@ -31,6 +31,9 @@ import { zoomOf } from "../../lib/zoom";
 import CreatorHandle from "../../components/CreatorHandle";
 import AvatarPicker from "../../components/AvatarPicker";
 import Donut from "../../components/Donut";
+import PitchClient from "../PitchClient";
+import PitchDraft from "../PitchDraft";
+import { Send, Users2, MapPin, CalendarDays, Pencil, ChevronDown, ChevronRight } from "lucide-react";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
 import { T as BASE_T } from "../../theme/tokens";
@@ -431,6 +434,12 @@ const mkCreator = (src={}, cost) => ({
   igUrl:    src.igUrl   || null,
   phone:    src.phone   || null,
   niche:    src.niche   || "",
+  // Gender/location/age skew — a directory-owned field like niche/state (see
+  // PROFILE_FIELDS), entered via Add Creator's "Advance details" switch and
+  // shown on the roster table behind "Advance stats". Absent, not an empty
+  // shape, so a creator nobody has ever filled this in for reads as "no data"
+  // rather than as three sections of zeroes.
+  audience: src.audience || null,
   followers:src.followers|| "",
   avgLikes: src.avgLikes || null,
   avgER:    src.avgER !== undefined ? src.avgER : (src.engRate || null),
@@ -796,6 +805,19 @@ const Pill=({tone,dot,children,style={}})=>(
 const Chip=({on,onClick,title,children,style={}})=>(
   <button onClick={onClick} title={title} style={{padding:"5px 11px",borderRadius:20,fontSize:11,cursor:"pointer",fontFamily:SF,
     background:on?`${T.accent}18`:"rgba(0,0,0,0.04)",color:on?T.accent:"#6E6E73",border:`1px solid ${on?`${T.accent}30`:"transparent"}`,...style}}>{children}</button>
+);
+// A real on/off switch — distinct from Chip (a "pick one of several" pill):
+// Advance stats, a new creator's Advance details, and Ship to client are each
+// a plain binary setting, and a switch reads as one at a glance where a chip
+// that happens to say "On" doesn't.
+const Switch=({on,onClick,label,title,disabled,style={}})=>(
+  <button onClick={onClick} title={title} disabled={disabled} style={{display:"inline-flex",alignItems:"center",gap:8,
+    background:"transparent",border:"none",cursor:disabled?"not-allowed":"pointer",padding:0,fontFamily:SF,opacity:disabled?0.5:1,...style}}>
+    {label&&<span style={{fontSize:10.5,fontWeight:600,color:on?T.text:"#6E6E73"}}>{label}</span>}
+    <span style={{position:"relative",width:30,height:17,borderRadius:20,flexShrink:0,transition:"background 0.15s",background:on?T.accent:"rgba(0,0,0,0.16)"}}>
+      <span style={{position:"absolute",top:2,left:on?15:2,width:13,height:13,borderRadius:"50%",background:"#FFF",boxShadow:"0 1px 2px rgba(0,0,0,0.3)",transition:"left 0.15s"}}/>
+    </span>
+  </button>
 );
 const Lbl=({children,color,style={}})=><span style={{fontSize:9.5,fontWeight:600,color:color||"#6E6E73",textTransform:"uppercase",letterSpacing:"0.08em",fontFamily:SF,...style}}>{children}</span>;
 // Caps label over a value. The card's delivery strip and the detail header's
@@ -1497,6 +1519,251 @@ const PctChips = ({value,options,onPick,zeroLabel}) => (
     </Chip>))}
   </div>
 );
+// ── AUDIENCE (Advance details) ───────────────────────────────────────────────
+// A creator's demographic skew — who actually follows them, not who they are.
+// Lives on the creator's directory profile (see PROFILE_FIELDS in the
+// backend's creatorSync.js), same as niche/state, because it's a fact about
+// the creator rather than about one campaign booking. Entered from Add
+// Creator's own "Advance details" switch and shown on the roster table
+// behind the "Advance stats" switch (see TabCreators) — both gated so the
+// ordinary path (name, handle, cost) isn't cluttered with fields most rosters
+// will never fill in.
+const AGE_BRACKETS=["13-17","18-24","25-34","35-44","45-64"];
+const hasAudienceData=(a)=>!!a&&(
+  Object.values(a.gender||{}).some(v=>v!=null&&v!=="")||
+  (a.locations||[]).length>0||
+  Object.values(a.age||{}).some(v=>v!=null&&v!=="")
+);
+// `followers` is optional — passed from the roster table's inline editor
+// (which knows the creator's follower count already) but not always known
+// yet on Add Creator's own form, so the estimate simply doesn't render
+// there until Fetch or a typed number fills it in.
+function AudienceFields({value,onChange,followers}){
+  const v=value||{};
+  const gender=v.gender||{};
+  const age=v.age||{};
+  const locations=v.locations||[];
+  const [locName,setLocName]=useState("");
+  const [locPct,setLocPct]=useState("");
+  const totalFollowers=parseCount(followers);
+  const estOf=(pct)=>totalFollowers!=null&&pct!=null&&pct!==""?Math.round(totalFollowers*clampPct(pct)/100):null;
+  const Est=({pct})=>{
+    const n=estOf(pct);
+    return n!=null?<div style={{fontSize:9,color:T.label,marginTop:3}}>≈{fmtCompact(n)} followers</div>:null;
+  };
+  const setGender=(k,val)=>onChange({...v,gender:{...gender,[k]:val===""?null:clampPct(val)}});
+  const setAge=(k,val)=>onChange({...v,age:{...age,[k]:val===""?null:clampPct(val)}});
+  const addLocation=()=>{
+    const name=locName.trim();
+    if(!name)return;
+    onChange({...v,locations:[...locations,{name,pct:locPct===""?null:clampPct(locPct)}]});
+    setLocName("");setLocPct("");
+  };
+  const removeLocation=(i)=>onChange({...v,locations:locations.filter((_,idx)=>idx!==i)});
+  return(<div>
+    <Lbl style={{display:"block",marginBottom:8}}>Gender</Lbl>
+    <div style={{display:"flex",gap:10,marginBottom:16}}>
+      {[["male","Male"],["female","Female"],["other","Other"]].map(([k,l])=>(
+        <div key={k} style={{flex:1}}>
+          <div style={{fontSize:9.5,color:T.label,marginBottom:4}}>{l}</div>
+          <PctInput value={gender[k]??""} onChange={val=>setGender(k,val)} width="100%"/>
+          <Est pct={gender[k]}/>
+        </div>
+      ))}
+    </div>
+    <Lbl style={{display:"block",marginBottom:8}}>Location</Lbl>
+    <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:8}}>
+      {locations.length===0&&<div style={{fontSize:10,color:T.label}}>No locations added yet.</div>}
+      {locations.map((loc,i)=>{
+        const n=estOf(loc.pct);
+        return(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:8}}>
+            <span style={{flex:1,fontSize:11,color:T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{loc.name}</span>
+            {n!=null&&<span style={{fontSize:9.5,color:T.label,whiteSpace:"nowrap"}}>≈{fmtCompact(n)}</span>}
+            <span style={{fontSize:11,color:T.sub,width:40,textAlign:"right"}}>{loc.pct!=null?`${loc.pct}%`:"—"}</span>
+            <button onClick={()=>removeLocation(i)} title="Remove" style={{background:"none",border:"none",cursor:"pointer",color:T.red,fontSize:14,lineHeight:1,padding:"0 2px"}}>×</button>
+          </div>
+        );
+      })}
+    </div>
+    <div style={{display:"flex",gap:8,marginBottom:4,alignItems:"center"}}>
+      <input value={locName} onChange={e=>setLocName(e.target.value)} placeholder="e.g. Delhi"
+        onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();addLocation();}}}
+        style={{...INP,resize:"none",flex:1}}/>
+      <PctInput value={locPct} onChange={setLocPct} width={80}/>
+      <Btn variant="ghost" onClick={addLocation} disabled={!locName.trim()} style={{fontSize:10,padding:"6px 10px",whiteSpace:"nowrap"}}>+ Add Location</Btn>
+    </div>
+    {estOf(locPct)!=null&&<div style={{fontSize:9,color:T.label,marginBottom:12,textAlign:"right"}}>≈{fmtCompact(estOf(locPct))} followers</div>}
+    <Lbl style={{display:"block",marginBottom:8,marginTop:estOf(locPct)!=null?0:16}}>Age</Lbl>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+      {AGE_BRACKETS.map(b=>(
+        <div key={b}>
+          <div style={{fontSize:9.5,color:T.label,marginBottom:4}}>{b}</div>
+          <PctInput value={age[b]??""} onChange={val=>setAge(b,val)} width="100%"/>
+          <Est pct={age[b]}/>
+        </div>
+      ))}
+    </div>
+  </div>);
+}
+// Followers is stored compact ("820K", "1.2M") as often as raw ("820000"),
+// same as fmtCompact's own input — this is its inverse, needed here because
+// the location split's follower estimate has to do real arithmetic on it
+// rather than just print it. Unrecognized shapes return null rather than a
+// wrong number.
+function parseCount(v){
+  if(v==null||v==="")return null;
+  if(typeof v==="number")return Number.isFinite(v)?v:null;
+  const m=String(v).trim().match(/^([\d,.]+)\s*([kKmM]?)$/);
+  if(!m)return null;
+  const n=Number(m[1].replace(/,/g,""));
+  if(!Number.isFinite(n))return null;
+  const mult=m[2].toLowerCase()==="k"?1e3:m[2].toLowerCase()==="m"?1e6:1;
+  return Math.round(n*mult);
+}
+// One stat row: name, an estimated follower count, the percentage, and a
+// mini bar sized to it — the bar is what makes a column of numbers readable
+// as a *shape* at a glance, the way Instagram's own audience-insights panel
+// reads, rather than a column of numbers. In edit mode the percentage
+// becomes a small inline input — editing happens right on the chart itself,
+// not in a separate form underneath it, so the bar it feeds keeps moving as
+// you type instead of only updating once you're done.
+const AudRow=({label,pct,count,tint,editing,onChange,onRemove})=>(
+  <div>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:4}}>
+      <span style={{fontSize:11,color:T.text,textTransform:"capitalize",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{label}</span>
+      <span style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+        {count!=null&&<span style={{fontSize:9,color:T.label,fontVariantNumeric:"tabular-nums",whiteSpace:"nowrap"}}>≈{fmtCompact(count)}</span>}
+        {editing
+          ? <PctInput value={pct??""} onChange={onChange} width={52}/>
+          : <strong style={{fontSize:11,color:T.text,fontVariantNumeric:"tabular-nums"}}>{pct!=null?`${pct}%`:"—"}</strong>}
+        {editing&&onRemove&&<button onClick={onRemove} title="Remove" style={{background:"none",border:"none",cursor:"pointer",color:T.red,fontSize:14,lineHeight:1,padding:"0 1px",flexShrink:0}}>×</button>}
+      </span>
+    </div>
+    <div style={{height:4,borderRadius:2,background:`${tint}18`,overflow:"hidden"}}>
+      <div style={{height:"100%",borderRadius:2,width:`${Math.min(100,Math.max(0,pct||0))}%`,background:tint,transition:"width 0.3s"}}/>
+    </div>
+  </div>
+);
+// One section — its own card rather than a column sharing one big box, so
+// Gender/Location/Age each read as a distinct little panel (own border,
+// shadow, tinted icon) instead of three lists competing inside one wrapper.
+const AudCard=({icon:Icon,label,tint,children})=>(
+  <div style={{flex:"1 1 200px",minWidth:200,background:T.surface,border:`1px solid ${T.border}`,borderRadius:10,padding:"13px 15px",boxShadow:"0 1px 2px rgba(28,24,16,0.03)"}}>
+    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:12}}>
+      <div style={{width:20,height:20,borderRadius:6,background:`${tint}16`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+        <Icon size={11} color={tint}/>
+      </div>
+      <Lbl style={{color:tint}}>{label}</Lbl>
+    </div>
+    <div style={{display:"flex",flexDirection:"column",gap:10}}>{children}</div>
+  </div>
+);
+// The card grid itself — read-only by default, and editable in place when
+// `editing` is on: the same three cards just grow inline percentage inputs,
+// a remove button per location, and a small "add a location" row, rather
+// than being replaced by a differently-shaped form. Blank sections stay
+// hidden when read-only (a mostly-empty profile shouldn't read as three
+// empty facts) but all three show while editing, even empty, so there's
+// somewhere to type a first value into.
+function AudienceCards({audience,followers,editing,onChange}){
+  const a=audience||{};
+  const gender=a.gender||{};
+  const locations=a.locations||[];
+  const age=a.age||{};
+  const [newLocName,setNewLocName]=useState("");
+  const [newLocPct,setNewLocPct]=useState("");
+  const GENDER_KEYS=[["male","Male"],["female","Female"],["other","Other"]];
+  const genderRows=editing?GENDER_KEYS:GENDER_KEYS.filter(([k])=>gender[k]!=null&&gender[k]!=="");
+  const ageRows=editing?AGE_BRACKETS:AGE_BRACKETS.filter(b=>age[b]!=null&&age[b]!=="");
+  if(!editing&&!genderRows.length&&!locations.length&&!ageRows.length){
+    return <div style={{fontSize:10.5,color:T.label,fontStyle:"italic",padding:"2px 0 4px"}}>No audience data on file yet — click Edit to add it.</div>;
+  }
+  const totalFollowers=parseCount(followers);
+  const countFor=(pct)=>totalFollowers!=null&&pct!=null&&pct!==""?Math.round(totalFollowers*pct/100):null;
+  const setGender=(k,val)=>onChange({...a,gender:{...gender,[k]:val===""?null:clampPct(val)}});
+  const setAge=(b,val)=>onChange({...a,age:{...age,[b]:val===""?null:clampPct(val)}});
+  const setLocPct=(i,val)=>onChange({...a,locations:locations.map((l,idx)=>idx===i?{...l,pct:val===""?null:clampPct(val)}:l)});
+  const removeLoc=(i)=>onChange({...a,locations:locations.filter((_,idx)=>idx!==i)});
+  const addLoc=()=>{
+    const name=newLocName.trim();
+    if(!name)return;
+    onChange({...a,locations:[...locations,{name,pct:newLocPct===""?null:clampPct(newLocPct)}]});
+    setNewLocName("");setNewLocPct("");
+  };
+  return(
+    <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+      {(editing||genderRows.length>0)&&(
+        <AudCard icon={Users2} label="Gender" tint={T.purple}>
+          {genderRows.map(([k,l])=>(
+            <AudRow key={k} label={l} pct={gender[k]} count={countFor(gender[k])} tint={T.purple}
+              editing={editing} onChange={val=>setGender(k,val)}/>
+          ))}
+        </AudCard>
+      )}
+      {(editing||locations.length>0)&&(
+        <AudCard icon={MapPin} label="Location" tint={T.teal}>
+          {locations.map((loc,i)=>(
+            <AudRow key={i} label={loc.name} pct={loc.pct} count={countFor(loc.pct)} tint={T.teal}
+              editing={editing} onChange={val=>setLocPct(i,val)} onRemove={editing?()=>removeLoc(i):undefined}/>
+          ))}
+          {locations.length===0&&!editing&&<div style={{fontSize:10,color:T.label}}>No locations added yet.</div>}
+          {editing&&(
+            <div style={{display:"flex",gap:6,alignItems:"center",paddingTop:locations.length>0?2:0,borderTop:locations.length>0?`1px solid ${T.border}`:"none"}}>
+              <input value={newLocName} onChange={e=>setNewLocName(e.target.value)} placeholder="Add location"
+                onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();addLoc();}}}
+                style={{...INP,resize:"none",flex:1,fontSize:11,padding:"6px 9px"}}/>
+              <PctInput value={newLocPct} onChange={setNewLocPct} width={52}/>
+              <button onClick={addLoc} disabled={!newLocName.trim()} title="Add location"
+                style={{background:newLocName.trim()?`${T.teal}18`:"transparent",border:`1px solid ${newLocName.trim()?`${T.teal}40`:T.border}`,
+                  color:newLocName.trim()?T.teal:T.label,borderRadius:6,width:24,height:24,flexShrink:0,
+                  display:"flex",alignItems:"center",justifyContent:"center",cursor:newLocName.trim()?"pointer":"not-allowed",fontSize:14,lineHeight:1}}>+</button>
+            </div>
+          )}
+        </AudCard>
+      )}
+      {(editing||ageRows.length>0)&&(
+        <AudCard icon={CalendarDays} label="Age" tint={T.gold}>
+          {ageRows.map(b=>(
+            <AudRow key={b} label={b} pct={age[b]} count={countFor(age[b])} tint={T.gold}
+              editing={editing} onChange={val=>setAge(b,val)}/>
+          ))}
+        </AudCard>
+      )}
+    </div>
+  );
+}
+// The roster table's "Advance stats" row for one creator. Edit switches the
+// same card grid straight into edit mode in place — no separate form to
+// jump to — and Cancel/Save sit where the Edit button was. Save hands the
+// finished shape back to the roster the same way any other cell edit on
+// this table commits (see `patch` in TabCreators).
+function AudienceDetailsPanel({creator,onSave}){
+  const [editing,setEditing]=useState(false);
+  const [draft,setDraft]=useState(creator.audience||{});
+  const startEdit=()=>{setDraft(creator.audience||{});setEditing(true);};
+  const cancel=()=>{setDraft(creator.audience||{});setEditing(false);};
+  const save=()=>{onSave(hasAudienceData(draft)?draft:null);setEditing(false);};
+  return(
+    <div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <Users2 size={12} color={T.label}/>
+          <Lbl>Audience Details</Lbl>
+        </div>
+        {editing?(
+          <div style={{display:"flex",gap:6}}>
+            <Btn variant="subtle" onClick={cancel} style={{fontSize:9.5,padding:"4px 10px"}}>Cancel</Btn>
+            <Btn variant="primary" onClick={save} style={{fontSize:9.5,padding:"4px 10px"}}>Save</Btn>
+          </div>
+        ):(
+          <Btn variant="ghost" onClick={startEdit} style={{fontSize:9.5,padding:"4px 10px"}}><Pencil size={10}/> Edit</Btn>
+        )}
+      </div>
+      <AudienceCards audience={editing?draft:creator.audience} followers={creator.followers} editing={editing} onChange={setDraft}/>
+    </div>
+  );
+}
 // Resolve the two input modes down to the one number that gets stored.
 const resolveCreatorBudget = (f, budget) =>
   f.creatorBudgetMode === "amount"
@@ -2341,6 +2608,12 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
   });
   const [askingPrice,setAskingPrice]=useState(editing?.askingPrice!=null?String(editing.askingPrice):"");
   const [cost,setCost]=useState(editing?.cost!=null?String(editing.cost):"");
+  // Advance details — off by default so the ordinary Add Creator path stays
+  // short, but opened automatically when editing someone who already has
+  // audience data on file, so it's never hidden behind a switch nobody
+  // thought to press.
+  const [audience,setAudience]=useState(editing?.audience||{});
+  const [advOpen,setAdvOpen]=useState(hasAudienceData(editing?.audience));
   const [fetching,setFetching]=useState(false);
   const [fetchErr,setFetchErr]=useState(null);
   const [igFetched,setIgFetched]=useState(null);
@@ -2395,6 +2668,12 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
       ifsc:      p.ifsc      ||pd.ifsc||"",
       upiId:     p.upiId     ||pd.upiId||"",
     }));
+    // Only when nothing's been typed into this session's Audience section yet —
+    // same "never overwrite what's already here" rule as the flat fields above.
+    if(row.audience&&!hasAudienceData(audience)){
+      setAudience(row.audience);
+      setAdvOpen(hasAudienceData(row.audience));
+    }
   };
 
   /**
@@ -2470,6 +2749,9 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
         // Belt and braces: the input is read-only when the fee is committed,
         // and the value it would have carried is discarded here too.
         cost:costLocked?costOf(editing):(parseInt(cost)||0),
+        // Saved regardless of whether Advance details is currently open — the
+        // switch only controls the form's own visibility, not what's kept.
+        audience:hasAudienceData(audience)?audience:null,
         payType:f.payType||null, payId:payId||null,
         personalDetails:{...editing.personalDetails,...personalDetails},
         // Only when actually touched — sending `undefined` would read as
@@ -2493,7 +2775,8 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
       state:f.state||null,
       payType:f.payType||null,
       payId:payId||null,
-      personalDetails
+      personalDetails,
+      audience:hasAudienceData(audience)?audience:null,
     },parseInt(cost)||0));
     onClose();
   };
@@ -2602,6 +2885,12 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
             <div key={k}><Lbl style={{display:"block",marginBottom:4}}>{l}</Lbl><input value={f[k]} onChange={e=>u(k,e.target.value)} placeholder={ph} style={{...INP,resize:"none"}}/></div>
           ))}
         </div>
+        <Hr style={{margin:"14px 0"}}/>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:advOpen?12:0}}>
+          <Lbl>Audience <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— optional, not auto-filled</span></Lbl>
+          <Switch on={advOpen} onClick={()=>setAdvOpen(o=>!o)} label="Advance details"/>
+        </div>
+        {advOpen&&<AudienceFields value={audience} onChange={setAudience} followers={f.followers}/>}
         <Hr style={{margin:"14px 0"}}/>
         <Lbl style={{display:"block",marginBottom:10}}>Commercials</Lbl>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
@@ -2911,8 +3200,23 @@ function CreatorSearch({query,onQuery,hits,directory,onAdd,campNiches}){
 }
 
 // ── CREATORS TABLE ────────────────────────────────────────────────────────────
-function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
+function TabCreators({camp,role,onUpdateCreators,onLogTimeline,onSaveCampaign}){
   const [creators,setCreators]=useState(camp.creators||[]);
+  // View-only — nothing is sent anywhere by flipping this. It just puts a
+  // chevron on every row so a specific creator's Audience Details can be
+  // opened one at a time, rather than dumping three extra sections under
+  // every row on a roster most of which nobody needs to look at right now.
+  const [advanceStats,setAdvanceStats]=useState(false);
+  const [expandedAudience,setExpandedAudience]=useState(()=>new Set());
+  const toggleAudience=(id)=>setExpandedAudience(prev=>{
+    const next=new Set(prev);
+    next.has(id)?next.delete(id):next.add(id);
+    return next;
+  });
+  // Unlike advanceStats, this one IS a decision — see CAMPAIGN_PRIVATE and
+  // CREATOR_PUBLIC in the backend's server.js, which strip audience data from
+  // every /api/portal/campaigns response unless this campaign has opted in.
+  const shipAdvance=!!camp.shipAdvanceDetails;
   const [suggested,setSuggested]=useState([]);
   const [generating,setGenerating]=useState(false);
   const [genRounds,setGenRounds]=useState(camp.genRounds||0);
@@ -3037,6 +3341,10 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
   const addFromSearch=inf=>{sync([...creators,mkCreator(inf,priorFeeOf(inf))]);setDirQuery("");};
   const thS={fontSize:9,fontWeight:600,color:T.label,textTransform:"uppercase",letterSpacing:"0.07em",padding:"8px 10px",whiteSpace:"nowrap",borderBottom:`1px solid ${T.border}`,textAlign:"left",background:T.raised};
   const tdS={padding:"8px 10px",borderBottom:`1px solid ${T.border}`,fontSize:11,color:T.sub,verticalAlign:"middle",whiteSpace:"nowrap"};
+  // Same three filters as the header row below, kept in one place so the
+  // Advance stats row's colSpan can never drift out of step with however many
+  // columns a given role actually sees.
+  const visibleColCount=CREATOR_COLS.filter(c=>c.key!=="cost"||canCrFin(role)).filter(c=>c.key!=="clientCost"||canFin(role)).filter(c=>!["payType","payId"].includes(c.key)||canCrInv(role)).length+((canEdit||canCrInv(role))?1:0);
   return(<div>
     {/* Building the roster is NOT gated on the budget — shortlisting, agreeing
         fees and locking creators all go ahead without one, which is the point
@@ -3075,7 +3383,9 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
         {required!=null?`${creators.length} of ${required} required`:`${creators.length} added · no count set`} &middot; {lockedCount} locked
         {totalDelivOf(camp)!=null&&<> &middot; {totalDelivOf(camp)} deliverables</>}
       </span>{camp.sentToClient&&<span style={{fontSize:9,color:T.green,marginLeft:8}}>&middot; sent to client</span>}</div>
-      <div style={{display:"flex",gap:6,alignItems:"center"}}>
+      <div style={{display:"flex",gap:14,alignItems:"center"}}>
+        <Switch on={advanceStats} onClick={()=>setAdvanceStats(o=>!o)} label="Advance stats"
+          title="Show each creator's audience breakdown (gender, location, age) under their row"/>
         {canEdit&&<>
           <CreatorSearch query={dirQuery} onQuery={setDirQuery} hits={searchHits}
             directory={directory} onAdd={addFromSearch} campNiches={nichesOf(camp)}/>
@@ -3084,6 +3394,8 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
             title={directory.error?`Creator directory unavailable — ${directory.error}`:undefined}
             style={{fontSize:9.5,padding:"4px 10px",color:flagged?T.red:(generating||directory.loading)?T.sub:T.text,borderColor:flagged?`${T.red}22`:T.border}}>
             {directory.loading?"Loading…":generating?"Generating…":flagged?`Flagged (${genRounds}×)`:"Generate"}</Btn>
+          <Switch on={shipAdvance} onClick={()=>onSaveCampaign?.({shipAdvanceDetails:!shipAdvance})} label="Ship to client"
+            title={shipAdvance?"Audience data is included in this campaign's client portal — click to stop sharing it":"Audience data is kept internal — click to include it in this campaign's client portal"}/>
         </>}
       </div>
     </div>
@@ -3116,8 +3428,16 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
             // or Brand Reject creator never needs a Collab type.
             const collabDue=!!lockBlock&&!isLocked(cr)&&!CR_JOURNEY.find(j=>j.id===cr.status)?.neg;
             const payee=payeeFor(cr,vendorById);
-            return(<tr key={cr._id} style={{background:i%2===0?"transparent":T.hover}}>
-              <td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}><Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={22}/><div><div style={{fontSize:11,fontWeight:500,color:T.text}}>{cr.name}</div><CreatorHandle creator={cr} style={{fontSize:9,color:T.label,display:"block"}}/></div></div></td>
+            return(<Fragment key={cr._id}>
+            <tr style={{background:i%2===0?"transparent":T.hover}}>
+              <td style={{...tdS,color:T.text}}><div style={{display:"flex",alignItems:"center",gap:7}}>
+                {advanceStats&&(
+                  <button onClick={()=>toggleAudience(cr._id)} title={expandedAudience.has(cr._id)?"Hide audience details":"Show audience details"}
+                    style={{background:"none",border:"none",cursor:"pointer",padding:1,display:"flex",alignItems:"center",color:T.label,flexShrink:0}}>
+                    {expandedAudience.has(cr._id)?<ChevronDown size={13}/>:<ChevronRight size={13}/>}
+                  </button>
+                )}
+                <Av init={(cr.name||"?").split(" ").map(w=>w[0]).join("").slice(0,2)} size={22}/><div><div style={{fontSize:11,fontWeight:500,color:T.text}}>{cr.name}</div><CreatorHandle creator={cr} style={{fontSize:9,color:T.label,display:"block"}}/></div></div></td>
               <td style={tdS}>{cr.platform}</td>
               <td style={tdS}>{fmtNum(cr.followers)}</td>
               <td style={{...tdS,color:T.text}}>{cr.avgER!=null?`${cr.avgER}%`:"—"}</td>
@@ -3249,7 +3569,13 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline}){
                       style={{fontSize:9,color:ready?T.accent:T.label,background:"transparent",border:`1px solid ${ready?`${T.accent}30`:T.border}`,borderRadius:4,padding:"3px 8px",cursor:ready?"pointer":"not-allowed",opacity:ready?1:0.5,fontFamily:"'Sora'"}}>Invoice</button>);})())}
                 {can(role,"removeCreator")&&<button onClick={()=>setRemoveTarget(cr)} style={{fontSize:9,color:T.red,background:"transparent",border:`1px solid ${T.red}22`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"'Sora'"}}>Remove</button>}
               </div></td>}
-            </tr>);
+            </tr>
+            {advanceStats&&expandedAudience.has(cr._id)&&<tr style={{background:i%2===0?"transparent":T.hover}}>
+              <td colSpan={visibleColCount} style={{...tdS,whiteSpace:"normal",padding:"14px 16px 16px 40px",borderBottom:`1px solid ${T.border}`}}>
+                <AudienceDetailsPanel creator={cr} onSave={(audience)=>patch(cr._id,{audience})}/>
+              </td>
+            </tr>}
+            </Fragment>);
           })}
         </tbody>
       </table>
@@ -4549,7 +4875,7 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
           <motion.div key={tab} initial={{opacity:0,y:5}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-3}} transition={{duration:0.16,ease:"easeOut"}}>
             {tab==="brief"        &&<TabBrief        camp={camp} role={role} currentUser={currentUser} onAction={onAction} onSaveBrief={onSaveBrief} onSaveCampaign={onSaveCampaign} onGoTab={setTab} onAllocate={canAllocate?()=>setAllocating(true):null} onLogTimeline={onLogTimeline}/>}
             {tab==="team"         &&<TabTeam         camp={camp} role={role} onAction={onAction}/>}
-            {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
+            {tab==="creators"     &&<TabCreators     camp={camp} role={role} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline} onSaveCampaign={onSaveCampaign}/>}
             {tab==="deliverables" &&<TabDeliverables camp={camp} role={role} currentUser={currentUser} onUpdateCreators={onUpdateCreators} onLogTimeline={onLogTimeline}/>}
             {tab==="timeline"     &&<TabTimeline     camp={camp}/>}
             {tab==="financials"   &&(canFin(role)||canCrFin(role))&&<TabFinancials camp={camp} role={role} onAllocate={canAllocate?()=>setAllocating(true):null}/>}
@@ -4903,9 +5229,56 @@ function CreateModal({onClose,onSubmit,brands,onCreateBrand,role,brandFilter}){
   </div>);
 }
 
+// ── PITCH CLIENT MODAL ────────────────────────────────────────────────────────
+// Pitch Client used to be its own page (a full route + nav section — see the
+// note left in routes/sections.js where that entry used to live). It's the
+// step right before a campaign gets a roster, so it now opens right where
+// that roster gets built instead of a click away in the sidebar. The content
+// is the PitchClient page component unchanged — it still reads brandFilter
+// and brands off useOutletContext(), which resolves fine here since this
+// modal mounts inside the same AppShell tree as the page that opens it.
+// Unlike CreateModal's undismissable backdrop (built to protect a half-filled
+// wizard), this one closes on an outside click too — there's no multi-step
+// form to lose, just a composer field and a list, and the click-to-dismiss is
+// what people expect from a browsing surface like this one.
+//
+// Two tabs: "Existing brand" is the PitchClient flow above (scoped to the
+// top-bar brand filter); "New brand" is Pitch Draft — pitching a brand and
+// campaign that don't exist in the system yet, kept as its own prospect
+// document until the team promotes it. Same modal, same close behaviour,
+// just a different composer underneath.
+function PitchClientModal({onClose}){
+  const [tab,setTab]=useState("existing");
+  return(<div style={{position:"fixed",inset:0,zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{duration:0.15}} onClick={onClose}
+      style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.88)",backdropFilter:"blur(6px)"}}/>
+    <motion.div initial={{opacity:0,scale:0.96,y:8}} animate={{opacity:1,scale:1,y:0}} exit={{opacity:0,scale:0.97,y:4}} transition={{duration:0.18,ease:"easeOut"}}
+      style={{position:"relative",width:"min(1040px,95vw)",maxHeight:"88vh",background:T.surface,border:`1px solid ${T.borderMid}`,borderRadius:14,overflow:"hidden",display:"flex",flexDirection:"column"}}>
+      <div style={{padding:"16px 20px 13px",display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,borderBottom:`1px solid ${T.border}`}}>
+        <div style={{minWidth:0}}>
+          <div style={{fontFamily:"'Newsreader',serif",fontSize:18,color:T.text,fontStyle:"italic"}}>Pitch Client</div>
+          <div style={{fontSize:9.5,color:T.sub,marginTop:2}}>Put candidate influencers in front of a client and see who they approve — before anyone joins the campaign roster.</div>
+        </div>
+        <button onClick={onClose} title="Close" style={{background:"transparent",border:"none",color:T.sub,fontSize:16,cursor:"pointer",lineHeight:1,flexShrink:0}}>✕</button>
+      </div>
+      <div style={{display:"flex",gap:6,padding:"10px 20px 0",borderBottom:`1px solid ${T.border}`}}>
+        {[["existing","Existing brand"],["new","New brand"]].map(([id,label])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{
+            padding:"8px 4px 10px",marginRight:14,background:"transparent",border:"none",borderBottom:`2px solid ${tab===id?T.accent:"transparent"}`,
+            color:tab===id?T.text:T.sub,fontSize:11.5,fontWeight:tab===id?600:400,fontFamily:"'Sora'",cursor:"pointer",
+          }}>{label}</button>
+        ))}
+      </div>
+      <div style={{overflowY:"auto",flex:1}}>
+        {tab==="existing" ? <PitchClient onClose={onClose}/> : <PitchDraft onClose={onClose}/>}
+      </div>
+    </motion.div>
+  </div>);
+}
+
 // ── ROOT ─────────────────────────────────────────────────────────────────────
 export default function InternalCampaigns(){
-  const { user, brandFilter, brands: ctxBrands, refreshBrands } = useOutletContext() || {};
+  const { user, brandFilter, setBrandFilter, brands: ctxBrands, refreshBrands } = useOutletContext() || {};
   const currentUser = user || { role:"am", teamId:"t7", name:"Demo" };
   const role = ["accounts_head","accounts_exec"].includes(currentUser.role) ? "accounts" : currentUser.role;
   const [campaigns,setCampaigns]=useState([]);
@@ -4976,6 +5349,22 @@ export default function InternalCampaigns(){
   const [search,setSearch]=useState("");
   const [stageFilter,setStageF]=useState("all");
   const [showCreate,setCreate]=useState(false);
+  // Pitch Client used to be its own page; it now opens as a modal right
+  // here, next to "+ New campaign" — see PitchClientModal below.
+  const [showPitch,setPitch]=useState(false);
+  // Deep link from elsewhere in the app (currently Pitch Client, for a
+  // brand/campaign that does not exist yet) — /campaigns?new=1&brand=<id>
+  // opens the New Campaign wizard straight away, pre-scoped to that brand.
+  // Query params are stripped right after so a refresh does not reopen it.
+  const [searchParams,setSearchParams]=useSearchParams();
+  useEffect(()=>{
+    if(searchParams.get("new")!=="1")return;
+    const brandParam=searchParams.get("brand");
+    if(brandParam&&setBrandFilter)setBrandFilter(brandParam);
+    setCreate(true);
+    setSearchParams({},{replace:true});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
   const [toast,setToast]=useState(null);
   const curRole=getR(role);
   const showToast=useCallback(msg=>{setToast(msg);setTimeout(()=>setToast(null),2800);},[]);
@@ -5452,6 +5841,10 @@ export default function InternalCampaigns(){
                   <ViewIcon id="search" color="#A0A0A6"/>
                 </span>
               </div>
+              {/* Pitch Client — same gate as creating a campaign (it's the
+                  step right before one gets a roster), sitting just before
+                  the primary action rather than after it. */}
+              {canCreate(role)&&<Btn variant="subtle" onClick={()=>setPitch(true)} style={{flexShrink:0,padding:"10px 14px",fontSize:12}}><Send size={13}/> Pitch Client</Btn>}
               {/* Says what it makes. "+ New" on its own left the one button on
                   the page to be read off its position. */}
               {canCreate(role)&&<Btn variant="primary" onClick={()=>setCreate(true)} style={{flexShrink:0,padding:"10px 17px",fontSize:12}}>+ New campaign</Btn>}
@@ -5471,6 +5864,9 @@ export default function InternalCampaigns(){
     </AnimatePresence>
     <AnimatePresence>
       {showCreate&&<CreateModal onClose={()=>setCreate(false)} onSubmit={onCreate} brands={brands} onCreateBrand={onCreateBrand} role={role} brandFilter={brandFilter}/>}
+    </AnimatePresence>
+    <AnimatePresence>
+      {showPitch&&<PitchClientModal onClose={()=>setPitch(false)}/>}
     </AnimatePresence>
     {logoBrand&&(
       <BrandLogoModal brand={logoBrand} onClose={()=>setLogoBrandId(null)} onSaved={onLogoSaved}/>

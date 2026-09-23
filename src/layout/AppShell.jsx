@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
   LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck,
-  Settings as SettingsIcon, Building2, Search, ChevronDown, Check, Circle,
+  Settings as SettingsIcon, Building2, Search, ChevronDown, Check, Circle, Send,
 } from "lucide-react";
 import { SECTIONS, canAccess, getRole } from "../routes/sections";
 import { useAuth } from "../context/AuthContext";
@@ -11,7 +11,7 @@ import { ClientsAPI, UsersAPI, CampaignsAPI } from "../lib/api";
 import { seesAllCampaigns } from "../lib/campaign";
 
 const SECTION_ICONS = {
-  LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck, Building2,
+  LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck, Building2, Send,
   Settings: SettingsIcon,
 };
 

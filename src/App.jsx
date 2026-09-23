@@ -15,6 +15,7 @@ import Creators from "./pages/Creators";
 import Requests from "./pages/Requests";
 import Settings from "./pages/Settings";
 import Profile from "./pages/Profile";
+import PitchDraftPage from "./pages/PitchDraftPage";
 
 // Lazy because it is the only consumer of three.js (~600KB). Statically
 // imported, every authenticated page downloaded a renderer it never used.
@@ -46,6 +47,15 @@ export default function App() {
             <Route path="/creators"  element={<Creators />} />
             <Route path="/requests"  element={<Requests />} />
             <Route path="/settings"  element={<Settings />} />
+            {/* Pitch Client is now a modal opened from the Campaigns page
+                (see PitchClientModal in pages/Campaigns/index.jsx), not a
+                route of its own — send old bookmarks/tabs somewhere real. */}
+            <Route path="/pitch-client" element={<Navigate to="/campaigns" replace />} />
+            {/* Pitching a brand that doesn't exist yet — opened from the same
+                modal's "New brand" tab, but as its own full page: a prospect
+                being actively worked (the form, brief, composer) needs more
+                room than the modal can give it. See pages/PitchDraftPage. */}
+            <Route path="/pitch-drafts/:id" element={<PitchDraftPage />} />
             {/* Not a SECTION — deliberately absent from routes/sections.js, so
                 it never appears as a nav tab or in the command palette. It is
                 reached from the shell's user chip, and it is every role's own

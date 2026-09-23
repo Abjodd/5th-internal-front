@@ -85,6 +85,12 @@ export const SECTIONS = [
     color: T.gold,
     roles: ["founder"],
   },
+  // Pitch Client used to be its own nav section/route here. It's now opened
+  // as a modal from the Campaigns page instead (next to "+ New campaign"),
+  // since it's one step in that same workflow rather than a destination of
+  // its own — see PitchClientModal in pages/Campaigns/index.jsx. The old
+  // /pitch-client URL redirects to /campaigns (App.jsx) for anyone with it
+  // bookmarked.
   // AEO / AI Visibility — hidden from nav and routes. Page code lives in
   // src/pages/AEO; re-enable by uncommenting this entry and its <Route> in App.jsx.
   // {

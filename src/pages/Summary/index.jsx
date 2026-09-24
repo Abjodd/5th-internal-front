@@ -873,6 +873,7 @@ function Hero({ asOfLabel }) {
       : socialNews;
 
   return (
+    <>
     <section
       ref={ref}
       className="fs-hero"
@@ -880,7 +881,11 @@ function Hero({ asOfLabel }) {
       data-nav-tone="light"
       style={{
         position: "relative",
-        minHeight: "94vh",
+        // One screen, no more: the title is the only thing above the fold now.
+        // svh, not vh, so mobile browser chrome cannot push the fold off-screen.
+        minHeight: "100svh",
+        display: "flex",
+        flexDirection: "column",
         overflow: "hidden",
         background: F.surface,
         color: F.ink,
@@ -1064,10 +1069,16 @@ function Hero({ asOfLabel }) {
         style={{
           position: "relative",
           zIndex: 3,
+          // Fills whatever the top bar leaves and centres in it, so the title
+          // sits in the middle of the screen at any height.
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          width: "100%",
           maxWidth: 1180,
           margin: "0 auto",
-          padding:
-            "82px 44px 0",
+          padding: "0 44px 48px",
           textAlign: "center",
           y: titleY,
           opacity: fade,
@@ -1094,6 +1105,7 @@ function Hero({ asOfLabel }) {
           }}
           style={{
             display: "inline-flex",
+            alignSelf: "center",   // the column stretches its children; this keeps the rule centred
             alignItems: "center",
             gap: 10,
             fontFamily: T.ui,
@@ -1154,7 +1166,7 @@ function Hero({ asOfLabel }) {
             fontStyle: "italic",
             fontWeight: 500,
             fontSize:
-              "clamp(58px, 9vw, 126px)",
+              "clamp(64px, 11.5vw, 178px)",
             lineHeight: 0.88,
             letterSpacing: "-.045em",
             color: F.ink,
@@ -1214,6 +1226,47 @@ function Hero({ asOfLabel }) {
       </motion.div>
 
       {/* ======================================================
+
+      {/* ======================================================
+          SCROLL INDICATOR
+      ======================================================= */}
+
+      {!reduce && (
+        <motion.div
+          style={{
+            position:
+              "absolute",
+            left: "50%",
+            bottom: 20,
+            width: 1,
+            height: 28,
+            background:
+              F.hairlineStrong,
+            transformOrigin:
+              "top",
+          }}
+          animate={{
+            scaleY: [
+              0.25,
+              1,
+              0.25,
+            ],
+            opacity: [
+              0.25,
+              0.8,
+              0.25,
+            ],
+          }}
+          transition={{
+            duration: 2.2,
+            repeat: Infinity,
+            ease: "easeInOut",
+          }}
+        />
+      )}
+
+    </section>
+      {/* ======================================================
           SOCIAL PULSE
       ======================================================= */}
 
@@ -1221,7 +1274,7 @@ function Hero({ asOfLabel }) {
         style={{
           position: "relative",
           zIndex: 6,
-          marginTop: 82,
+          paddingTop: 96,
           paddingBottom: 70,
         }}
       >
@@ -1816,46 +1869,7 @@ function Hero({ asOfLabel }) {
           )}
 
       </section>
-
-      {/* ======================================================
-          SCROLL INDICATOR
-      ======================================================= */}
-
-      {!reduce && (
-        <motion.div
-          style={{
-            position:
-              "absolute",
-            left: "50%",
-            bottom: 20,
-            width: 1,
-            height: 28,
-            background:
-              F.hairlineStrong,
-            transformOrigin:
-              "top",
-          }}
-          animate={{
-            scaleY: [
-              0.25,
-              1,
-              0.25,
-            ],
-            opacity: [
-              0.25,
-              0.8,
-              0.25,
-            ],
-          }}
-          transition={{
-            duration: 2.2,
-            repeat: Infinity,
-            ease: "easeInOut",
-          }}
-        />
-      )}
-
-    </section>
+    </>
   );
 }
 /* ────────────────────────────────────────────────────────────────
@@ -3977,7 +3991,7 @@ function ClientCard({ client, delay = 0 }) {
         } campaigns`}
         style={{
           perspective: 1600,
-          height: 215,
+          height: 232,
           cursor: "pointer",
           outline: "none",
         }}
@@ -4006,174 +4020,99 @@ function ClientCard({ client, delay = 0 }) {
             {...faceAnim(false)}
             style={{
               ...face,
-              background: F.navySurface,
-              boxShadow:
-                "0 18px 45px rgba(20,21,26,0.10)",
+              background: F.surface,
+              border: `1px solid ${F.hairline}`,
+              boxShadow: "0 1px 2px rgba(20,21,26,0.04), 0 10px 28px -8px rgba(20,21,26,0.10)",
+              display: "flex",
+              flexDirection: "column",
             }}
           >
-
-            {/* BACKGROUND IMAGE */}
-            {showLogo && (
-              <img
-                src={logoUrl}
-                alt=""
-                onError={() => setLogoBroken(true)}
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
-                  objectPosition: "center",
-                  opacity: 0.3,
-                  // Plain `filter` is safe inside preserve-3d; `backdrop-filter`
-                  // is not — the blur it used to do is folded in here.
-                  filter: "grayscale(1) brightness(0.75) blur(2px)",
-                  transform: "scale(1.1)",
-                }}
-              />
-            )}
-
-            {/* BRAND GLOW — the tile's only colour, the wash above being
-                greyscaled. Null for a greyscale logo, which is the point: an
-                uncoloured tile means the brand has no colour to give, not that
-                the sampler failed. Gradients rather than a blurred circle — no
-                `filter` inside the 3D context, and cheaper. */}
-            {accent && (
-              <div
-                aria-hidden="true"
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  background: `
-                    radial-gradient(150px 130px at 84% 4%, ${accent}, transparent 72%),
-                    radial-gradient(190px 150px at 8% 104%, ${accent}, transparent 76%)
-                  `,
-                  opacity: 0.42,
-                }}
-              />
-            )}
-
-            {/* CINEMATIC GRADIENT — weighted to the bottom, where the white
-                name and meta sit. The top only holds the logo chip and status
-                pill, which paint their own backgrounds, so it needn't be opaque
-                there. Its job is to stop a white-plate logo washing out. */}
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                background: `
-                  linear-gradient(
-                    180deg,
-                    rgba(15,16,20,0.50) 0%,
-                    rgba(15,16,20,0.58) 30%,
-                    rgba(15,16,20,0.86) 70%,
-                    rgba(15,16,20,0.98) 100%
-                  )
-                `,
-              }}
-            />
-
-            {/* TOP CONTENT */}
+            {/* LOGO PLATE — the brand's own artwork, shown whole on a light
+                ground rather than cropped and blurred behind the text. This is
+                the only thing that identifies the brand at a glance. */}
             <div
               style={{
                 position: "relative",
-                zIndex: 2,
-                padding: "16px 17px",
+                flex: 1,
+                minHeight: 0,
                 display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "18px 20px 10px",
+                overflow: "hidden",
               }}
             >
+              {/* The brand's colour as a soft wash, so five cards are
+                  distinguishable before you read a word. Absent for a
+                  greyscale logo, which is the honest signal. */}
+              {accent && (
+                <div
+                  aria-hidden="true"
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    background: `radial-gradient(120% 90% at 50% 0%, ${accent}1F, transparent 70%)`,
+                  }}
+                />
+              )}
 
-              {/* LOGO */}
-              <motion.div
-                whileHover={
-                  !reduce
-                    ? { scale: 1.05 }
-                    : undefined
-                }
-                style={{
-                  width: 46,
-                  height: 46,
-                  borderRadius: 14,
-                  overflow: "hidden",
-                  background: "rgba(255,255,255,0.94)",
-                  border:
-                    "1px solid rgba(255,255,255,0.75)",
-                  boxShadow:
-                    "0 8px 25px rgba(0,0,0,0.18)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                }}
-              >
-                {showLogo ? (
-                  <img
-                    src={logoUrl}
-                    alt=""
-                    onError={() => setLogoBroken(true)}
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "cover",
-                    }}
-                  />
-                ) : (
-                  <span
-                    style={{
-                      fontFamily: T.ui,
-                      fontWeight: 800,
-                      fontSize: 14,
-                      color: F.ink,
-                    }}
-                  >
-                    {initials(client.name)}
-                  </span>
-                )}
-              </motion.div>
+              {showLogo ? (
+                <img
+                  src={logoUrl}
+                  alt={`${client.name} logo`}
+                  onError={() => setLogoBroken(true)}
+                  style={{
+                    position: "relative",
+                    maxWidth: "74%",
+                    maxHeight: 84,
+                    objectFit: "contain",   // contain, not cover: a wordmark must not be cropped
+                  }}
+                />
+              ) : (
+                <span
+                  style={{
+                    position: "relative",
+                    fontFamily: T.display,
+                    fontSize: 34,
+                    fontWeight: 600,
+                    color: F.hairlineStrong,
+                    letterSpacing: "-0.02em",
+                  }}
+                >
+                  {initials(client.name)}
+                </span>
+              )}
 
-              {/* STATUS */}
+              {/* STATUS — a word, top-right, on the light ground. */}
               <div
                 style={{
+                  position: "absolute",
+                  top: 12,
+                  right: 12,
                   display: "inline-flex",
                   alignItems: "center",
-                  gap: 6,
-                  padding: "6px 10px",
+                  gap: 5,
+                  padding: "4px 8px 4px 6px",
                   borderRadius: 999,
-                  // Opaque, not glass — backdrop-filter breaks the flip.
-                  background: live
-                    ? "rgba(255,255,255,0.92)"
-                    : "rgba(20,21,26,0.72)",
-                  border: live
-                    ? "1px solid rgba(255,255,255,0.65)"
-                    : "1px solid rgba(255,255,255,0.16)",
+                  background: live ? F.forestTint : F.navyWash,
+                  border: `1px solid ${live ? `${F.forest}22` : F.hairline}`,
                 }}
               >
                 <span
                   style={{
-                    width: 6,
-                    height: 6,
+                    width: 5,
+                    height: 5,
                     borderRadius: "50%",
-                    background: live
-                      ? F.forest
-                      : "rgba(255,255,255,0.45)",
-                    boxShadow: live
-                      ? `0 0 0 3px ${F.forestTint}`
-                      : "none",
+                    background: live ? F.forest : F.muted,
                   }}
                 />
-
                 <span
                   style={{
                     fontFamily: T.ui,
-                    fontSize: 9,
+                    fontSize: 8.5,
                     fontWeight: 800,
-                    letterSpacing: "0.09em",
-                    color: live
-                      ? F.forest
-                      : "rgba(255,255,255,0.72)",
+                    letterSpacing: "0.1em",
+                    color: live ? F.forest : F.muted,
                   }}
                 >
                   {live ? "LIVE" : "IDLE"}
@@ -4181,112 +4120,75 @@ function ClientCard({ client, delay = 0 }) {
               </div>
             </div>
 
-            {/* BOTTOM CONTENT */}
+            {/* FOOTER — name and numbers, on paper so both read at full
+                contrast instead of through a black gradient. */}
             <div
               style={{
-                position: "absolute",
-                zIndex: 3,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                padding: "0 18px 16px",
+                flexShrink: 0,
+                padding: "12px 16px 13px",
+                borderTop: `1px solid ${F.hairline}`,
+                background: F.surface,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
               }}
             >
-
-              {/* CLIENT NAME */}
-              <div
-                style={{
-                  fontFamily: T.display,
-                  fontStyle: "italic",
-                  fontSize: "clamp(20px, 2vw, 25px)",
-                  lineHeight: 1,
-                  color: "#FFFFFF",
-                  fontWeight: 500,
-                  letterSpacing: "-0.02em",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  textShadow:
-                    "0 2px 14px rgba(0,0,0,0.45)",
-                }}
-              >
-                {client.name}
-              </div>
-
-              {/* META ROW */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  marginTop: 10,
-                }}
-              >
-
+              <div style={{ minWidth: 0 }}>
                 <div
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
+                    fontFamily: T.display,
+                    fontSize: 17,
+                    fontWeight: 600,
+                    color: F.ink,
+                    letterSpacing: "-0.015em",
+                    lineHeight: 1.15,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
                   }}
                 >
-                  <span
-                    style={{
-                      fontFamily: T.ui,
-                      fontSize: 10.5,
-                      color: "rgba(255,255,255,0.65)",
-                    }}
-                  >
-                    {campaignCount} campaign
-                    {campaignCount === 1 ? "" : "s"}
-                  </span>
-
-                  <span
-                    style={{
-                      width: 3,
-                      height: 3,
-                      borderRadius: "50%",
-                      background:
-                        "rgba(255,255,255,0.35)",
-                    }}
-                  />
-
-                  <span
-                    style={{
-                      fontFamily: T.ui,
-                      fontSize: 10.5,
-                      color: live
-                        ? "rgba(255,255,255,0.85)"
-                        : "rgba(255,255,255,0.55)",
-                      fontWeight: live ? 700 : 500,
-                    }}
-                  >
-                    {activeCount} active
-                  </span>
+                  {client.name}
                 </div>
-
-                {/* FLIP ICON */}
-                <motion.div
-                  animate={{ rotate: flipped ? 180 : 0 }}
-                  transition={{ duration: 0.3 }}
+                <div
                   style={{
-                    width: 27,
-                    height: 27,
-                    borderRadius: "50%",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    background:
-                      "rgba(255,255,255,0.12)",
-                    border:
-                      "1px solid rgba(255,255,255,0.18)",
-                    color: "rgba(255,255,255,0.78)",
-                    fontSize: 14,
+                    fontFamily: T.ui,
+                    fontSize: 10.5,
+                    color: F.muted,
+                    marginTop: 3,
+                    whiteSpace: "nowrap",
                   }}
                 >
-                  ↗
-                </motion.div>
+                  {campaignCount} campaign{campaignCount === 1 ? "" : "s"}
+                  {activeCount > 0 && (
+                    <>
+                      {" · "}
+                      <span style={{ color: F.forest, fontWeight: 700 }}>{activeCount} active</span>
+                    </>
+                  )}
+                </div>
               </div>
+
+              {/* FLIP AFFORDANCE */}
+              <motion.div
+                animate={{ rotate: flipped ? 180 : 0 }}
+                transition={{ duration: 0.3 }}
+                style={{
+                  width: 26,
+                  height: 26,
+                  borderRadius: "50%",
+                  flexShrink: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: F.navyWash,
+                  border: `1px solid ${F.hairline}`,
+                  color: F.inkSoft,
+                  fontSize: 13,
+                }}
+              >
+                ↗
+              </motion.div>
             </div>
           </motion.div>
 
@@ -4631,7 +4533,7 @@ function ClientPortfolio({ clients = {} }) {
           // gets denser rather than sparser as the book grows.
           <div style={{
             display: "grid", gap: 16,
-            gridTemplateColumns: "repeat(auto-fill, minmax(238px, 1fr))",
+            gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
           }}>
             {names.map((n, i) => <ClientCard key={n.id || i} client={n} delay={Math.min(i * 0.05, 0.4)} />)}
           </div>

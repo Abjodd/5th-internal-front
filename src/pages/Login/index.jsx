@@ -19,6 +19,7 @@ import { useState, useRef, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as THREE from "three";
 import { useAuth } from "../../context/AuthContext";
+import { SECTIONS, canAccess } from "../../routes/sections";
 
 const FAVICON_SRC = "/favicon.svg";
 
@@ -311,7 +312,11 @@ export default function LoginPage() {
     const result = await login(email, password);
     if (result.ok) {
       setStatus("success");
-      setTimeout(() => navigate("/summary", { replace: true }), 620);
+      // Summary is founder-only (routes/sections.js) — land everyone else on
+      // the first section their role actually has, same rule AppShell's nav
+      // and App.jsx's own default-route redirect both use.
+      const landing = SECTIONS.find(s => canAccess(s, result.user?.role))?.path || "/summary";
+      setTimeout(() => navigate(landing, { replace: true }), 620);
     } else {
       setLoading(false);
       setStatus("error");
@@ -430,7 +435,7 @@ export default function LoginPage() {
                 />
               </div>
               <div style={{ fontSize: 12, color: C.sub, animation: "riseIn 0.7s 0.4s cubic-bezier(0.16,1,0.3,1) both" }}>
-                Use your 5th Avenue workspace credentials.
+                Use your Fifth-Avenue workspace credentials.
               </div>
             </div>
 
@@ -450,7 +455,7 @@ export default function LoginPage() {
                 <input
                   type="email" value={email}
                   onChange={(e) => { setEmail(e.target.value); setErr(""); }}
-                  placeholder="you@5thavenue.in" required
+                  placeholder="you@Fifth-Avenue.in" required
                   id="login-email" name="email" autoComplete="username"
                   autoFocus={!prefilledEmail}
                   className="la-input"

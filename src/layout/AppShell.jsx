@@ -505,10 +505,48 @@ function ReadOnlyBanner() {
 const initials = (s) =>
   (s || "?").split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
 
+// A dropdown row for one real brand: its logo + name once the logo loads,
+// its name alone (no initials placeholder) when the brand has no logo or
+// its logo URL fails — a module-level component (not one nested inside
+// BrandSelect) so each row keeps its own stable `broken` state across
+// re-renders instead of remounting on every parent render.
+function BrandRow({ active, brand, onClick }) {
+  const [broken, setBroken] = useState(false);
+  const logo = ClientsAPI.avatarUrl(brand);
+  const showLogo = !!logo && !broken;
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex", alignItems: "center", gap: 10, width: "100%",
+        padding: "9px 12px", background: active ? F.navyTint : "transparent",
+        border: "none", cursor: "pointer", textAlign: "left",
+        fontFamily: "'Sora', sans-serif", fontSize: 12.5,
+        color: F.ink, transition: "background 0.1s",
+      }}
+      onMouseOver={e => { if (!active) e.currentTarget.style.background = F.paper; }}
+      onMouseOut={e => { if (!active) e.currentTarget.style.background = "transparent"; }}
+    >
+      {showLogo && (
+        <span style={{
+          width: 22, height: 22, borderRadius: 6, flexShrink: 0, overflow: "hidden",
+          background: "#FFFFFF",
+        }}>
+          <img src={logo} alt="" onError={() => setBroken(true)}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        </span>
+      )}
+      <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{brand.name}</span>
+      {active && <Check size={15} color={F.navy} strokeWidth={2.2} />}
+    </button>
+  );
+}
+
 function BrandSelect({ brands, value, onChange }) {
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [q, setQ] = useState("");
+  const [selectedLogoBroken, setSelectedLogoBroken] = useState(false);
   const ref = useRef(null);
   const location = useLocation();
   const { glass } = useNavSurface();
@@ -521,10 +559,14 @@ function BrandSelect({ brands, value, onChange }) {
   // Close on route change so it never lingers open across pages.
   useEffect(() => { setOpen(false); }, [location.pathname]);
 
-  if (brands.length === 0) return null;
-
   const selected = brands.find(b => b.id === value);
   const selectedLogo = ClientsAPI.avatarUrl(selected);
+  // Reset before the length check below so this hook always runs — an
+  // early return ahead of it would make the hook conditional.
+  useEffect(() => { setSelectedLogoBroken(false); }, [selectedLogo]);
+
+  if (brands.length === 0) return null;
+
   const shown = q
     ? brands.filter(b => b.name.toLowerCase().includes(q.toLowerCase()))
     : brands;
@@ -555,6 +597,15 @@ function BrandSelect({ brands, value, onChange }) {
     </button>
   );
 
+  // A real brand's dropdown row: its logo + name when it has one fetched
+  // successfully, its name alone (no initials chip) when it doesn't — the
+  // "All brands" pseudo-row above still uses `row()` and its "AB" chip,
+  // since that entry isn't an actual brand with a logo of its own.
+  const brandRow = (b) => (
+    <BrandRow key={b.id} active={b.id === value} brand={b}
+      onClick={() => { onChange(b.id); setOpen(false); }} />
+  );
+
   return (
     <div ref={ref} style={{ position: "relative", flexShrink: 0 }}>
       <button
@@ -575,22 +626,30 @@ function BrandSelect({ brands, value, onChange }) {
           transition: "background 0.15s, color 0.35s ease",
         }}
       >
-        {/* Shows the selected brand's LOGO rather than only its initials, so
-            the control you scoped the app with identifies the brand at a
-            glance. Kept in the theme's own colours — brand-derived hues are
-            deliberately not used anywhere in the shell. */}
-        <span style={{
-          width: 24, height: 24, borderRadius: "50%", flexShrink: 0, overflow: "hidden",
-          background: selectedLogo ? "#FFFFFF" : (value ? glass.chipOnFill : glass.chipOffFill),
-          color: value ? glass.chipOnText : glass.chipOffText,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 9, fontWeight: 700,
-          transition: "background 0.35s ease, color 0.35s ease",
-        }}>
-          {selectedLogo
-            ? <img src={selectedLogo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
-            : (selected ? initials(selected.name) : "AB")}
-        </span>
+        {/* Shows the selected brand's LOGO next to its name when it has
+            one — a brand with no logo (or whose logo URL fails to load)
+            shows its name alone instead of a broken image or an initials
+            placeholder standing in for a photo that doesn't exist. The
+            "All brands" state (nothing selected) is the one exception: it
+            isn't a brand, so it keeps its own "AB" chip. */}
+        {selectedLogo && !selectedLogoBroken ? (
+          <span style={{
+            width: 24, height: 24, borderRadius: "50%", flexShrink: 0, overflow: "hidden",
+            background: "#FFFFFF",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <img src={selectedLogo} alt="" onError={() => setSelectedLogoBroken(true)}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
+          </span>
+        ) : (!value && (
+          <span style={{
+            width: 24, height: 24, borderRadius: "50%", flexShrink: 0,
+            background: glass.chipOffFill, color: glass.chipOffText,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 9, fontWeight: 700,
+            transition: "background 0.35s ease, color 0.35s ease",
+          }}>AB</span>
+        ))}
         <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 140 }}>
           {selected ? selected.name : "All brands"}
         </span>
@@ -638,9 +697,7 @@ function BrandSelect({ brands, value, onChange }) {
             {shown.length > 0 && (
               <div style={{ height: 1, background: F.hairline, margin: "6px 0" }} />
             )}
-            {shown.map(b =>
-              row(b.id === value, b.name, initials(b.name), () => { onChange(b.id); setOpen(false); }, b.id)
-            )}
+            {shown.map(brandRow)}
             {shown.length === 0 && (
               <div style={{ padding: "10px 12px", fontSize: 12, color: F.label }}>No brand matches.</div>
             )}

@@ -30,7 +30,7 @@ export const SECTIONS = [
     icon: "◈",
     lucide: "LayoutDashboard",
     color: T.purple,
-    roles: ["founder", "pcm", "cm", "am", "ea", "accounts_head", "accounts_exec"],
+    roles: ["founder"],
   },
   {
     id: "im",

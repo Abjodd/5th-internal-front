@@ -52,6 +52,10 @@ export const ClientsAPI = {
     request("/api/clients", { method: "POST", body: JSON.stringify(client) }),
   update: (id, patch) =>
     request(`/api/clients/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  // Cascades server-side — campaigns, portal logins, billing rows and
+  // everything else scoped to this brand go with it. See the DELETE route
+  // in the backend for the full list. Irreversible.
+  remove: (id) => request(`/api/clients/${id}`, { method: "DELETE" }),
 
   // The brand's logo — same contract as the user/credential avatars.
   avatarUrl: avatarUrlFor("/api/clients"),

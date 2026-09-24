@@ -5,8 +5,9 @@
  */
 import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "./context/AuthContext";
+import { AuthProvider, useAuth } from "./context/AuthContext";
 import ProtectedRoute from "./routes/ProtectedRoute";
+import { SECTIONS, canAccess } from "./routes/sections";
 import AppShell from "./layout/AppShell";
 import Campaigns from "./pages/Campaigns";
 import Billing from "./pages/Billing";
@@ -20,6 +21,18 @@ import PitchDraftPage from "./pages/PitchDraftPage";
 // Lazy because it is the only consumer of three.js (~600KB). Statically
 // imported, every authenticated page downloaded a renderer it never used.
 const LoginPage = lazy(() => import("./pages/Login"));
+
+// "/" and any unknown path used to hard-redirect to "/summary" regardless of
+// role. That broke the moment Summary became founder-only (sections.js) —
+// every other role would land there and immediately see AccessDenied. This
+// picks the first section SECTIONS actually grants the signed-in role,
+// preserving "/summary" as the founder's landing page (still first in that
+// list) without hardcoding it for everyone else.
+function DefaultRoute() {
+  const { user } = useAuth();
+  const target = SECTIONS.find(s => canAccess(s, user?.role))?.path || "/login";
+  return <Navigate to={target} replace />;
+}
 
 export default function App() {
   return (
@@ -66,8 +79,8 @@ export default function App() {
                 to Summary via the catch-all below. */}
             <Route path="/client-requests" element={<Navigate to="/requests" replace />} />
             <Route path="/auth"      element={<Navigate to="/settings" replace />} />
-            <Route path="/"          element={<Navigate to="/summary" replace />} />
-            <Route path="*"          element={<Navigate to="/summary" replace />} />
+            <Route path="/"          element={<DefaultRoute />} />
+            <Route path="*"          element={<DefaultRoute />} />
           </Route>
         </Routes>
       </BrowserRouter>

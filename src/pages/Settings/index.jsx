@@ -20,6 +20,7 @@ import { PLATFORM_ROLES } from "../../routes/sections";
 import { T } from "../../theme/tokens";
 import BrandPicker from "../../components/BrandPicker";
 import AvatarPicker from "../../components/AvatarPicker";
+import BrandLogoModal from "../../components/BrandLogoModal";
 
 // Where the brand-portal app lives, for the "open client login" shortcut below.
 // Env-driven so a local portal (localhost:5174) can be targeted during dev
@@ -328,6 +329,252 @@ function RemoveModal({ record, onClose, onConfirm }) {
   );
 }
 
+// ── CREATE BRAND ─────────────────────────────────────────────────────────────
+// Same slug scheme as Campaigns'/Requests' onCreateBrand and this file's own
+// "Add brand credential" inline BrandPicker — one place already existed to
+// spin up a brand, this is a second, more direct one for when there's no
+// login to attach yet.
+function CreateBrandModal({ onClose, onCreated }) {
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async () => {
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    setErr("");
+    try {
+      const id = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const created = await ClientsAPI.create({ id, name: name.trim() });
+      onCreated(created);
+      onClose();
+    } catch (e) {
+      setErr(e.body?.error || `Couldn't create the brand: ${e.message}`);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 600, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(4,5,10,0.55)", backdropFilter: "blur(4px)" }} />
+      <div style={{ position: "relative", width: "min(380px,94vw)", background: T.surface, border: `1px solid ${T.borderMid}`, borderRadius: 10, padding: "20px 22px", boxShadow: T.shadowLg }}>
+        <div style={{ fontFamily: "'Newsreader',serif", fontSize: 16, fontStyle: "italic", color: T.text, marginBottom: 14 }}>
+          New brand
+        </div>
+        <Lbl>Brand name</Lbl>
+        <input
+          autoFocus
+          value={name}
+          onChange={e => { setName(e.target.value); setErr(""); }}
+          onKeyDown={e => { if (e.key === "Enter") submit(); }}
+          placeholder="Acme Co."
+          style={{ ...INP, marginBottom: 6 }}
+        />
+        <div style={{ fontSize: 9.5, color: T.label, marginBottom: 14 }}>
+          Logo, website and portal logins are added afterward, from this same table.
+        </div>
+        {err && <div style={{ fontSize: 11, color: T.red, marginBottom: 10 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn onClick={onClose}>Cancel</Btn>
+          <div style={{ flex: 1 }} />
+          <Btn variant="primary" disabled={!name.trim() || saving} onClick={submit}>
+            {saving ? "Creating…" : "Create brand"}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── DELETE BRAND (cascades everything scoped to it) ──────────────────────────
+function RemoveBrandModal({ brand, loginCount, onClose, onConfirm }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 600, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(4,5,10,0.55)", backdropFilter: "blur(4px)" }} />
+      <div style={{ position: "relative", width: "min(420px,94vw)", background: T.surface, border: `1px solid ${T.borderMid}`, borderRadius: 10, padding: "20px 22px", boxShadow: T.shadowLg }}>
+        <div style={{ fontFamily: "'Newsreader',serif", fontSize: 16, fontStyle: "italic", color: T.text, marginBottom: 8 }}>
+          Delete {brand.name}?
+        </div>
+        <div style={{ fontSize: 11.5, color: T.sub, lineHeight: 1.6, marginBottom: 18 }}>
+          This <strong style={{ color: T.red }}>permanently deletes</strong> the brand and everything
+          scoped to it — its campaigns
+          {loginCount > 0 ? `, ${loginCount} portal login${loginCount === 1 ? "" : "s"}` : ""},
+          billing records, market-watch items and audit findings. It cannot be undone.
+        </div>
+        {err && <div style={{ fontSize: 11, color: T.red, marginBottom: 12 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn onClick={onClose}>Cancel</Btn>
+          <div style={{ flex: 1 }} />
+          <Btn
+            variant="danger"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              setErr("");
+              try { await onConfirm(); }
+              catch (e) {
+                setErr(e.body?.error || `Couldn't delete: ${e.message}`);
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? "Deleting…" : "Delete brand"}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── BRAND SETTINGS (name, logo, and a roster of that brand's portal logins) ──
+// One row per brand — the same Client documents the top-bar filter and every
+// campaign already key off. Name is editable in place (Edit → type →
+// Save/Cancel); the logo reuses BrandLogoModal exactly as Campaigns' own
+// "change logo" flow does (website lookup + upload, one write path either
+// way), so a brand's logo is never set two different ways in two different
+// screens. Logins aren't fetched again here — `creds` is the same Brand
+// Portal list already loaded for the tab beside this one, just grouped by
+// brandId instead of shown flat.
+function BrandNameCell({ brand, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(brand.name || "");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  if (!editing) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontWeight: 500 }}>{brand.name || "—"}</span>
+        <button onClick={() => { setValue(brand.name || ""); setEditing(true); }}
+          style={{ fontSize: 9.5, color: T.accent, background: "transparent", border: "none", cursor: "pointer", fontFamily: "'Sora'" }}>
+          Edit
+        </button>
+      </div>
+    );
+  }
+
+  const save = async () => {
+    if (!value.trim()) { setErr("Name can't be empty."); return; }
+    setSaving(true);
+    setErr("");
+    try {
+      await ClientsAPI.update(brand.id, { name: value.trim() });
+      onSaved();
+      setEditing(false);
+    } catch (e) {
+      setErr(`Save failed: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <input value={value} onChange={e => { setValue(e.target.value); setErr(""); }}
+          onKeyDown={e => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
+          autoFocus style={{ ...INP, width: 160 }} />
+        <button onClick={save} disabled={saving}
+          style={{ fontSize: 9.5, color: T.green, background: "transparent", border: "none", cursor: saving ? "not-allowed" : "pointer", fontFamily: "'Sora'" }}>
+          {saving ? "…" : "Save"}
+        </button>
+        <button onClick={() => setEditing(false)} disabled={saving}
+          style={{ fontSize: 9.5, color: T.sub, background: "transparent", border: "none", cursor: "pointer", fontFamily: "'Sora'" }}>
+          Cancel
+        </button>
+      </div>
+      {err && <div style={{ fontSize: 9.5, color: T.red }}>{err}</div>}
+    </div>
+  );
+}
+
+// A count reads at a glance; "what all are the logins" (name + username, the
+// same two fields the Brand Portal tab shows per row) is one click away
+// without leaving this table.
+function BrandLoginsCell({ logins }) {
+  const [open, setOpen] = useState(false);
+  if (!logins.length) {
+    return <span style={{ fontSize: 10.5, color: T.label, fontStyle: "italic" }}>No logins yet</span>;
+  }
+  return (
+    <div>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ fontSize: 10.5, color: T.teal, background: "transparent", border: `1px solid ${T.teal}30`, borderRadius: 4, padding: "3px 9px", cursor: "pointer", fontFamily: "'Sora'" }}>
+        {logins.length} login{logins.length === 1 ? "" : "s"} {open ? "▲" : "▼"}
+      </button>
+      {open && (
+        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+          {logins.map(l => (
+            <div key={l.id} style={{ fontSize: 10, color: T.sub }}>
+              <span style={{ color: T.text, fontWeight: 500 }}>{l.name}</span>{" "}
+              <span style={{ fontFamily: "monospace", fontSize: 9.5 }}>({l.username})</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BrandSettingsTable({ brands, creds, onEditLogo, onBrandSaved, onDelete }) {
+  const sorted = useMemo(() => [...brands].sort((a, b) => (a.name || "").localeCompare(b.name || "")), [brands]);
+  return (
+    <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: T.radius, boxShadow: T.shadow, overflow: "hidden" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            <th style={{ ...thS, width: 34, textAlign: "right" }}>#</th>
+            <th style={{ ...thS, width: 40 }} />
+            <th style={thS}>Brand</th>
+            <th style={thS}>Website</th>
+            <th style={thS}>Logins</th>
+            <th style={{ ...thS, textAlign: "right" }}>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((b, i) => {
+            const logins = creds.filter(c => c.brandId === b.id);
+            const websiteHref = b.website
+              ? (b.website.startsWith("http://") || b.website.startsWith("https://") ? b.website : `https://${b.website}`)
+              : null;
+            return (
+              <tr key={b.id}>
+                <td style={{ ...tdS, fontSize: 10.5, color: T.sub, textAlign: "right" }}>{i + 1}</td>
+                <td style={{ ...tdS, paddingRight: 0 }}>
+                  <RowAvatar record={b} url={ClientsAPI.avatarUrl(b)} />
+                </td>
+                <td style={tdS}>
+                  <BrandNameCell brand={b} onSaved={onBrandSaved} />
+                </td>
+                <td style={{ ...tdS, fontSize: 10.5 }}>
+                  {websiteHref
+                    ? <a href={websiteHref} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, textDecoration: "none" }}>{b.website}</a>
+                    : <span style={{ color: T.label }}>—</span>}
+                </td>
+                <td style={tdS}>
+                  <BrandLoginsCell logins={logins} />
+                </td>
+                <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
+                  <button onClick={() => onEditLogo(b)}
+                    style={{ fontSize: 9.5, color: T.accent, background: "transparent", border: `1px solid ${T.accent}30`, borderRadius: 4, padding: "3px 10px", cursor: "pointer", fontFamily: "'Sora'", marginRight: 6 }}>
+                    Logo &amp; website
+                  </button>
+                  <button onClick={() => onDelete(b)}
+                    style={{ fontSize: 9.5, color: T.red, background: "transparent", border: `1px solid ${T.red}30`, borderRadius: 4, padding: "3px 10px", cursor: "pointer", fontFamily: "'Sora'" }}>
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ── PAGE ─────────────────────────────────────────────────────────────────────
 export default function Settings() {
   const { user, brands = [], brandFilter, refreshBrands } = useOutletContext() || {};
@@ -340,6 +587,9 @@ export default function Settings() {
   const [error, setError] = useState(null);
   const [modal, setModal] = useState(null);            // { mode:"add"|"edit", record? }
   const [removing, setRemoving] = useState(null);      // record pending hard delete
+  const [logoBrandId, setLogoBrandId] = useState(null); // brand id whose logo/website modal is open
+  const [creatingBrand, setCreatingBrand] = useState(false);
+  const [deletingBrand, setDeletingBrand] = useState(null); // brand record pending cascade delete
 
   const api    = tab === "internal" ? UsersAPI : BrandCredentialsAPI;
   // Brand Portal tab respects the global brand filter (top bar), same as
@@ -434,7 +684,13 @@ export default function Settings() {
   const TABS = [
     { id: "internal", label: `Internal Users (${users.length})` },
     { id: "external", label: `Brand Portal (${visibleCreds.length})` },
+    { id: "brands", label: `Brand Settings (${brands.length})` },
   ];
+  // Brands themselves come from a brand-creation flow elsewhere (the "Add
+  // brand credential" modal's inline BrandPicker) — this tab is for editing
+  // ones that already exist, so it has no "+ Add" action of its own.
+  const logoBrand = logoBrandId ? brands.find(b => b.id === logoBrandId) : null;
+  const refreshBrandRow = () => refreshBrands?.();
 
   return (
     <div style={{ flex: 1, overflowY: "auto", background: T.bg, padding: "26px 30px" }}>
@@ -448,9 +704,13 @@ export default function Settings() {
             Every login in the system — internal team and brand portal. The DB stores hash keys; reveal shows the actual password (founder only).
           </div>
         </div>
-        <Btn variant="primary" onClick={() => setModal({ mode: "add" })}>
-          + {tab === "internal" ? "Add team member" : "Add brand credential"}
-        </Btn>
+        {tab === "brands" ? (
+          <Btn variant="primary" onClick={() => setCreatingBrand(true)}>+ Add brand</Btn>
+        ) : (
+          <Btn variant="primary" onClick={() => setModal({ mode: "add" })}>
+            + {tab === "internal" ? "Add team member" : "Add brand credential"}
+          </Btn>
+        )}
       </div>
 
       {/* Tabs */}
@@ -472,16 +732,26 @@ export default function Settings() {
           Could not load credentials from the backend: {error}. Run <span style={{ fontFamily: "monospace" }}>npm run seed:users</span> in 5th-internal-back if the collections are empty.
         </div>
       )}
-      {!loading && !error && rows.length === 0 && (
+      {tab !== "brands" && !loading && !error && rows.length === 0 && (
         <div style={{ padding: 40, fontSize: 12, color: T.label, textAlign: "center", fontStyle: "italic" }}>
           {tab === "external" && brandFilter && creds.length > 0
             ? "No brand credentials for the selected brand — clear the brand filter or add one above."
             : `No ${tab === "internal" ? "users" : "brand credentials"} yet — add the first one above.`}
         </div>
       )}
+      {tab === "brands" && !loading && !error && brands.length === 0 && (
+        <div style={{ padding: 40, fontSize: 12, color: T.label, textAlign: "center", fontStyle: "italic" }}>
+          No brands yet — add one from the Brand Portal tab's "Add brand credential" form.
+        </div>
+      )}
+
+      {/* Brand Settings table */}
+      {tab === "brands" && !loading && !error && brands.length > 0 && (
+        <BrandSettingsTable brands={brands} creds={creds} onEditLogo={b => setLogoBrandId(b.id)} onBrandSaved={refreshBrandRow} onDelete={b => setDeletingBrand(b)} />
+      )}
 
       {/* Table */}
-      {!loading && !error && rows.length > 0 && (
+      {tab !== "brands" && !loading && !error && rows.length > 0 && (
         <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: T.radius, boxShadow: T.shadow, overflow: "hidden" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
@@ -560,6 +830,32 @@ export default function Settings() {
       )}
       {removing && (
         <RemoveModal record={removing} onClose={() => setRemoving(null)} onConfirm={handleRemove} />
+      )}
+      {logoBrand && (
+        <BrandLogoModal brand={logoBrand} onClose={() => setLogoBrandId(null)}
+          onSaved={() => { refreshBrandRow(); }} />
+      )}
+      {creatingBrand && (
+        <CreateBrandModal
+          onClose={() => setCreatingBrand(false)}
+          onCreated={() => refreshBrands?.()}
+        />
+      )}
+      {deletingBrand && (
+        <RemoveBrandModal
+          brand={deletingBrand}
+          loginCount={creds.filter(c => c.brandId === deletingBrand.id).length}
+          onClose={() => setDeletingBrand(null)}
+          onConfirm={async () => {
+            await ClientsAPI.remove(deletingBrand.id);
+            // Cascades server-side, but the Brand Portal tab's own `creds`
+            // list is loaded once client-side and won't otherwise notice
+            // this brand's logins are gone until the next full reload.
+            setCreds(prev => prev.filter(c => c.brandId !== deletingBrand.id));
+            setDeletingBrand(null);
+            refreshBrands?.();
+          }}
+        />
       )}
     </div>
   );

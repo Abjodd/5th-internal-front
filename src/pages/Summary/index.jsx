@@ -31,6 +31,7 @@ import {
 import { buildSummary } from "../../lib/summaryMetrics";
 import { useBrandAccent } from "../../lib/brandAccent";
 import { readPdfAsDataUri, PDF_ACCEPT } from "../../lib/pdf";
+import { can } from "../../lib/rbac";
 
 
 /* ────────────────────────────────────────────────────────────────
@@ -8226,7 +8227,7 @@ function MarketWatchEditor() {
                       />
                       <RemoveIconButton onClick={() => remove(it.id)} disabled={busy} />
                     </div>
-                    <div style={{ fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.55 }}>{it.text}</div>
+                    <div style={{ fontFamily: T.ui, fontSize: 12, color: F.ink, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{it.text}</div>
                   </div>
                 ))}
               </ScrollList>
@@ -8885,7 +8886,7 @@ export default function FounderSummary() {
   const [data, setData] = useState(EMPTY);
   // The shell's brand filter is now on every route, so this page has to answer
   // to it rather than quietly ignore a control the reader can see.
-  const { brandFilter } = useOutletContext() || {};
+  const { brandFilter, role } = useOutletContext() || {};
 
   useEffect(() => {
     let live = true;
@@ -9005,6 +9006,17 @@ export default function FounderSummary() {
     // TrendingEditor above, it's deliberately universal.
     { eyebrow: "Insights",            node: <Insights /> },
   ], [data]);
+
+  // Defense in depth — the shell's own nav already hides this link from
+  // everyone but the founder; this is what stops a direct URL visit from
+  // anyone else, the same guard Settings uses for manageSettings.
+  if (!can(role, "seeSummary")) {
+    return (
+      <div style={{ background: F.surface, fontFamily: T.ui, color: F.inkSoft, padding: 40, fontSize: 12 }}>
+        This page is restricted to the founder.
+      </div>
+    );
+  }
 
   return (
     <div style={{ background: F.surface, fontFamily: T.ui, color: F.ink, position: "relative" }}>

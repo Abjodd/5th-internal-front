@@ -119,6 +119,7 @@ export const PERMS = {
   // ── Founder-only pages ──────────────────────────────────────────────────────
   seeCreators:        ["founder"],  // Creators directory (all creators + invoices)
   manageSettings:     ["founder"],  // Settings page: view/add/edit/soft-delete credentials
+  seeSummary:         ["founder"],  // Summary page: Market Watch / Needs You editor
   // Requests inbox — one permission per tab rather than one for the section,
   // so the inboxes can be opened to different roles later without reworking the
   // page (it renders only the tabs the role can see).

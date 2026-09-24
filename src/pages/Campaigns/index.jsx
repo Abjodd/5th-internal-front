@@ -670,6 +670,11 @@ const canAF     = r => can(r, "seeAgencyFee");
 // Founder only — see editAgencyFee in rbac.js. Setting a fee on a new campaign
 // and re-pricing one the client already holds are not the same act.
 const canEditAF = r => can(r, "editAgencyFee");
+// Whether the "Ship to client" switch (audience demographics into the
+// client portal) can be TOGGLED — see shipToClient in rbac.js. Everyone
+// with canEdit still sees the switch and its current state; only the
+// founder can flip it.
+const canShip   = r => can(r, "shipToClient");
 const canCreate = r => can(r, "createCampaign");
 // Visibility now lives in lib/campaign.js (canSeeCampaign) — the app shell's
 // brand filter has to give the same answer as this board, and two copies of
@@ -3394,8 +3399,11 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline,onSaveCampaign}){
             title={directory.error?`Creator directory unavailable — ${directory.error}`:undefined}
             style={{fontSize:9.5,padding:"4px 10px",color:flagged?T.red:(generating||directory.loading)?T.sub:T.text,borderColor:flagged?`${T.red}22`:T.border}}>
             {directory.loading?"Loading…":generating?"Generating…":flagged?`Flagged (${genRounds}×)`:"Generate"}</Btn>
-          <Switch on={shipAdvance} onClick={()=>onSaveCampaign?.({shipAdvanceDetails:!shipAdvance})} label="Ship to client"
-            title={shipAdvance?"Audience data is included in this campaign's client portal — click to stop sharing it":"Audience data is kept internal — click to include it in this campaign's client portal"}/>
+          <Switch on={shipAdvance} disabled={!canShip(role)}
+            onClick={()=>onSaveCampaign?.({shipAdvanceDetails:!shipAdvance})} label="Ship to client"
+            title={!canShip(role)
+              ? "Founder only — ask them to change what's shared with this campaign's client portal."
+              : shipAdvance?"Audience data is included in this campaign's client portal — click to stop sharing it":"Audience data is kept internal — click to include it in this campaign's client portal"}/>
         </>}
       </div>
     </div>

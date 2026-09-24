@@ -81,6 +81,14 @@ export const PERMS = {
   // override with an audit entry, not an open field.
   overrideLockedCost: ["founder"],
   editCreator:        ["founder"],   // edit from the Creators directory
+  // The "Ship to client" switch on a campaign's Creators tab — whether
+  // audience demographics (gender, location, age) join that campaign's
+  // client portal for every creator on the roster. Founder only: it is a
+  // one-flag decision about what a brand gets to see, the same shape as
+  // editAgencyFee above, and CM/AM/EA/PCM already reach this tab to run the
+  // roster day to day, so the switch has to be gated on its own rather than
+  // riding along with edit access to the campaign.
+  shipToClient:       ["founder"],
   assignUsers:        ["founder", "pcm", "cm", "am"],
   // A brand's logo and website are its identity across the whole app — the
   // masthead on its campaigns, the colour those cards are tinted with, the

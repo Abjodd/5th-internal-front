@@ -123,8 +123,19 @@ const CR_JOURNEY = [
   {id:"negotiating",label:"Negotiating",neg:false},{id:"locked",label:"Locked",neg:false},
   {id:"backed_off",label:"Backed Off",neg:true},{id:"backup",label:"Backup",neg:false},
   {id:"brand_reject",label:"Brand Reject",neg:true},
+  // The founder-only close-out for a creator the brand drops AFTER locking —
+  // distinct from Backed Off (reads as the creator stepping back) and Brand
+  // Reject (reads as a pre-lock no), because this one happens once the fee is
+  // already committed and the creator may already be mid-execution. Reaching
+  // it is gated to the founder override (see the `disabled` check below,
+  // PERMS.overrideLockedStatus) rather than left open on the journey like the
+  // other stages, since it's a call about a deal that was already signed, not
+  // ordinary shortlisting. The client portal keeps this creator on their
+  // Execution tab, labelled Brand Dropped, instead of dropping them back to
+  // Creators — see executingCreators in client-front CampaignDetail.jsx.
+  {id:"brand_dropped",label:"Brand Dropped",neg:true},
 ];
-const CR_COLOR = { suggested:T.amber,shortlisted:T.label,reached_out:T.accent,negotiating:T.amber,locked:T.green,backed_off:T.red,backup:T.purple,brand_reject:T.red };
+const CR_COLOR = { suggested:T.amber,shortlisted:T.label,reached_out:T.accent,negotiating:T.amber,locked:T.green,backed_off:T.red,backup:T.purple,brand_reject:T.red,brand_dropped:T.red };
 const REMOVE_REASONS = [
   {id:"bad_gen",label:"Bad Generation",desc:"Auto-generated — not a good fit"},
   {id:"brand_reject",label:"Brand Reject",desc:"Informally communicated by the brand"},
@@ -3336,14 +3347,19 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline,onSaveCampaign}){
   // shortlist journey is ordinary and stays silent; moving one OFF Locked is
   // the founder override (statusFrozen) reopening a stage that was supposed
   // to be final, so — same as a locked fee re-price — it's named and logged.
+  // Brand Dropped gets its own wording regardless of whether the creator was
+  // still locked at the moment of the change, because it's always a founder
+  // call (overrideLockedStatus) worth a named entry, not just a reopened one.
   const setStatus=(cr,next)=>{
     const before=cr.status;
     if(next===before)return;
+    const wasLocked=isLocked(cr);
     patch(cr._id,{status:next});
-    if(isLocked(cr)){
-      const label=id=>CR_JOURNEY.find(s=>s.id===id)?.label||id;
+    const label=id=>CR_JOURNEY.find(s=>s.id===id)?.label||id;
+    if(next==="brand_dropped")
+      onLogTimeline?.(`${cr.name} — marked Brand Dropped (was ${label(before)})${wasLocked?", fee stays committed in Billing":""}`);
+    else if(wasLocked)
       onLogTimeline?.(`${cr.name} — locked status reopened ${label(before)} → ${label(next)} (founder override)`);
-    }
   };
   // The client-side twin of setCost. Silent while the campaign is still ours to
   // price; once the PO is raised the client holds this figure, so re-pricing it
@@ -3518,8 +3534,11 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline,onSaveCampaign}){
                         fontSize:10.5,fontWeight:600,fontFamily:"'Sora'",color:stCol,
                         background:`${stCol}12`,border:`1px solid ${isLocked(cr)?`${T.amber}66`:`${stCol}40`}`,borderRadius:20,
                         padding:"3px 22px 3px 10px"}}>
-                      {CR_JOURNEY.map(s=><option key={s.id} value={s.id} disabled={s.id==="locked"&&!!lockBlock}>
-                        {s.id==="locked"&&lockBlock?`${s.label} — ${lockBlock}`:s.label}
+                      {CR_JOURNEY.map(s=><option key={s.id} value={s.id}
+                        disabled={(s.id==="locked"&&!!lockBlock)||(s.id==="brand_dropped"&&!can(role,"overrideLockedStatus"))}>
+                        {s.id==="locked"&&lockBlock?`${s.label} — ${lockBlock}`
+                          :s.id==="brand_dropped"&&!can(role,"overrideLockedStatus")?`${s.label} — founder only`
+                          :s.label}
                       </option>)}
                     </select>
                     <span style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",pointerEvents:"none",fontSize:7,color:stCol}}>▼</span>

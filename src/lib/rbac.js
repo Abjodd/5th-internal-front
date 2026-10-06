@@ -80,6 +80,14 @@ export const PERMS = {
   // Founder only, and every use is written to the campaign timeline: this is an
   // override with an audit entry, not an open field.
   overrideLockedCost: ["founder"],
+  // The status twin of overrideLockedCost. Locking freezes the creator's
+  // shortlist journey the same way it freezes their fee — once a creator is
+  // Locked, moving them to another stage reopens something Billing has
+  // already treated as final, exactly the "quietly restated commitment"
+  // overrideLockedCost exists to prevent for cost. Founder only, same
+  // reasoning, same audit trail: every override lands on the campaign
+  // timeline (setStatus in Campaigns/index.jsx).
+  overrideLockedStatus: ["founder"],
   editCreator:        ["founder"],   // edit from the Creators directory
   // The "Ship to client" switch on a campaign's Creators tab — whether
   // audience demographics (gender, location, age) join that campaign's

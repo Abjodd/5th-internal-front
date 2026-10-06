@@ -656,6 +656,11 @@ const canCrInv  = r => can(r, "invoiceCreator");
 // alternative was Remove-and-re-add, which cancels the expense and throws the
 // history away. Everyone else sees the frozen figure.
 const costFrozen = (role, cr) => isLocked(cr) && !can(role, "overrideLockedCost");
+// The status twin of costFrozen. Locked is a one-way door for every role
+// except the founder (PERMS.overrideLockedStatus) — the same override shape
+// as cost, so the founder is never stuck with Remove-and-re-add as the only
+// way to walk a mis-locked or renegotiated creator back a stage.
+const statusFrozen = (role, cr) => isLocked(cr) && !can(role, "overrideLockedStatus");
 // Creator-side money — the creator budget pot + per-creator fees. Wider than
 // canFin on purpose: CM/AM/EA run the shortlist and the negotiation, so they
 // need the pot they're spending against, while the client-facing total budget,
@@ -3327,6 +3332,19 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline,onSaveCampaign}){
     if(isLocked(cr))
       onLogTimeline?.(`${cr.name} — locked fee re-priced ${fmtINR(before)} → ${fmtINR(n)}${cr.invoiceNo?` (invoice ${cr.invoiceNo} already generated at the old figure)`:""}`);
   };
+  // The status twin of setCost. Moving an unlocked creator through the
+  // shortlist journey is ordinary and stays silent; moving one OFF Locked is
+  // the founder override (statusFrozen) reopening a stage that was supposed
+  // to be final, so — same as a locked fee re-price — it's named and logged.
+  const setStatus=(cr,next)=>{
+    const before=cr.status;
+    if(next===before)return;
+    patch(cr._id,{status:next});
+    if(isLocked(cr)){
+      const label=id=>CR_JOURNEY.find(s=>s.id===id)?.label||id;
+      onLogTimeline?.(`${cr.name} — locked status reopened ${label(before)} → ${label(next)} (founder override)`);
+    }
+  };
   // The client-side twin of setCost. Silent while the campaign is still ours to
   // price; once the PO is raised the client holds this figure, so re-pricing it
   // lands on the timeline the way a locked fee does.
@@ -3483,19 +3501,22 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline,onSaveCampaign}){
                   no background and appearance:none it was indistinguishable
                   from the plain text in every other cell, so nobody could tell
                   the journey stage was changeable from here.
-                  Locked is a one-way door — see LockCreatorModal. Once it is
-                  taken the dropdown becomes a plain pill, because there is no
-                  longer a choice to offer. Locked is also DISABLED until the
-                  roster answers everything the lock commits us to (lockBlock),
-                  rather than being offered and then silently ignored. */}
-              <td style={tdS}>{canEdit&&!isLocked(cr)
+                  Locked is a one-way door — see LockCreatorModal — for every
+                  role except the founder (statusFrozen / PERMS.overrideLocked-
+                  Status), who keeps the live dropdown instead of the frozen
+                  pill below and whose changes route through setStatus so a
+                  reopened stage is logged, not silent. Locked is also
+                  DISABLED until the roster answers everything the lock
+                  commits us to (lockBlock), rather than being offered and
+                  then silently ignored. */}
+              <td style={tdS}>{canEdit&&!statusFrozen(role,cr)
                 ? <span style={{position:"relative",display:"inline-block"}}>
                     <select value={cr.status}
-                      onChange={e=>e.target.value==="locked"?(!lockBlock&&setLockTarget(cr)):patch(cr._id,{status:e.target.value})}
-                      title={lockBlock?`Change shortlist status — ${lockBlock.toLowerCase()}`:"Change shortlist status"}
+                      onChange={e=>e.target.value==="locked"?(!lockBlock&&setLockTarget(cr)):setStatus(cr,e.target.value)}
+                      title={isLocked(cr)?"Founder override — this creator is locked and their fee is committed in Billing. Changing the stage reopens it and is logged to the timeline.":lockBlock?`Change shortlist status — ${lockBlock.toLowerCase()}`:"Change shortlist status"}
                       style={{appearance:"none",WebkitAppearance:"none",cursor:"pointer",outline:"none",
                         fontSize:10.5,fontWeight:600,fontFamily:"'Sora'",color:stCol,
-                        background:`${stCol}12`,border:`1px solid ${stCol}40`,borderRadius:20,
+                        background:`${stCol}12`,border:`1px solid ${isLocked(cr)?`${T.amber}66`:`${stCol}40`}`,borderRadius:20,
                         padding:"3px 22px 3px 10px"}}>
                       {CR_JOURNEY.map(s=><option key={s.id} value={s.id} disabled={s.id==="locked"&&!!lockBlock}>
                         {s.id==="locked"&&lockBlock?`${s.label} — ${lockBlock}`:s.label}

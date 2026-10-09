@@ -147,7 +147,7 @@ const PAYMENT_TYPES = [{id:"",label:"— Select —"},{id:"vendor",label:"To Ven
 // has no default: the blank "— Select —" is the honest state for a creator
 // nobody has decided about yet, and defaulting either way would silently answer
 // a question the brand actually has to be asked.
-const COLLAB_TYPES = [{id:"",label:"— Select —"},{id:"collab",label:"Collab"},{id:"non_collab",label:"Non-Collab"}];
+const COLLAB_TYPES = [{id:"",label:"— Select —"},{id:"collab",label:"Collab"},{id:"non_collab",label:"Non-Collab"},{id:"ugc",label:"UGC"}];
 // Full names — stored as-is on creator.state and matched by name in the
 // client portal's STATES_META (5th-client-front/src/lib/geo.js).
 const INDIAN_STATES = [

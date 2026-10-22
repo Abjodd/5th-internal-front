@@ -50,7 +50,7 @@ export const SECTIONS = [
     icon: "₹",
     lucide: "IndianRupee",
     color: T.green,
-    roles: ["founder", "accounts_head", "accounts_exec", "pcm"],
+    roles: ["founder"],
   },
   {
     id: "creators",

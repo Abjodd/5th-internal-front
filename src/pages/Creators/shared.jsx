@@ -100,7 +100,19 @@ export const CARD_CSS = `
     border-color: ${T.borderMid};
     box-shadow: 0 4px 16px rgba(28,24,16,0.10);
   }
+  @keyframes cr-spin { to { transform: rotate(360deg); } }
 `;
+
+// A plain border-spinner, same technique as Login's own — one size, one
+// weight, colored by whoever mounts it (currentColor) so it drops into a
+// button's existing text color instead of carrying one of its own.
+export const Spinner = ({ size = 12, color = "currentColor", style = {} }) => (
+  <span style={{
+    display: "inline-block", width: size, height: size, borderRadius: "50%",
+    border: `1.5px solid ${color}35`, borderTopColor: color,
+    animation: "cr-spin 0.65s linear infinite", flexShrink: 0, ...style,
+  }} />
+);
 
 export const CardGrid = ({ children }) => (
   <div style={{

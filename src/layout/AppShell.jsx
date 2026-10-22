@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck,
   Settings as SettingsIcon, Building2, Search, ChevronDown, Check, Circle, Send,
+  UserCheck,
 } from "lucide-react";
 import { SECTIONS, canAccess, getRole } from "../routes/sections";
 import { useAuth } from "../context/AuthContext";
@@ -12,6 +13,7 @@ import { seesAllCampaigns } from "../lib/campaign";
 
 const SECTION_ICONS = {
   LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck, Building2, Send,
+  UserCheck,
   Settings: SettingsIcon,
 };
 

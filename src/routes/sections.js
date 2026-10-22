@@ -63,6 +63,20 @@ export const SECTIONS = [
     roles: ["founder"],
   },
   {
+    // Creators we manage directly (managedBy === "fifthavenue" in
+    // lib/management.js) — a filtered slice of the Creators directory above,
+    // broken out into its own destination since it's the subset a founder
+    // checks day to day. See pages/Managed.
+    id: "managed",
+    path: "/managed",
+    label: "Managed Creators",
+    shortLabel: "Managed",
+    icon: "✓",
+    lucide: "UserCheck",
+    color: T.teal,
+    roles: ["founder"],
+  },
+  {
     // Every inbound landing-page submission — brand signups and creator
     // applications — as two tabs of one inbox. Creator applications used to
     // hang off the Creators directory; see pages/Requests/index.jsx.

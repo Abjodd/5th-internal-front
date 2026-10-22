@@ -22,6 +22,8 @@ import { CreatorsAPI, InvoicePdfAPI, VendorsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import CreatorHandle from "../../components/CreatorHandle";
 import CreatorAvatar from "../../components/CreatorAvatar";
+import BrandLogo from "../../components/BrandLogo";
+import { RefreshCw } from "lucide-react";
 import { fmtCompact, fmtINR } from "../../lib/format";
 import { payeeOf } from "../../lib/payee";
 import { readPdfAsDataUri, PDF_ACCEPT } from "../../lib/pdf";
@@ -191,6 +193,193 @@ function AgreementsPanel({ creator, open, canEdit, onToast }) {
   );
 }
 
+// ── PROJECTS PANEL ───────────────────────────────────────────────────────────
+// A paid deal for a creator we manage directly, separate from whatever
+// campaigns they're also booked on (models/Project.js on the backend) — "a
+// reel for ₹3L" is the whole of it: a name, a budget, and a link whose stats
+// get pulled from Instagram once and kept fresh by the same nightly job that
+// refreshes Insights → Trending/Market Watch (see backend/trendingReels.js).
+function ProjectsPanel({ creator, open, canEdit, onToast }) {
+  const [rows, setRows] = useState(null); // null = not loaded yet
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ brand: "", website: "", clientCost: "", internalCost: "", url: "" });
+  const [removing, setRemoving] = useState(null);
+  // Bumped by the Fetch button — forces BrandLogo to remount and retry; see
+  // the same pattern in Managed/CampaignsTab.jsx.
+  const [logoNonce, setLogoNonce] = useState(0);
+
+  useEffect(() => {
+    if (!open || rows) return;
+    let live = true;
+    CreatorsAPI.projects.list(creator.id)
+      .then(r => live && setRows(r))
+      .catch(e => live && setErr(e.message));
+    return () => { live = false; };
+  }, [open, rows, creator.id]);
+
+  // Same shape as Campaigns' AddDealModal — brand is the deal's identity, no
+  // separate project-name field, and client cost / internal cost are two
+  // distinct numbers (see models/Project.js doc comment) so this card's own
+  // "+ Add project" entry point can never save a deal CampaignsTab can't edit.
+  const add = async () => {
+    if (!form.brand.trim() || busy) return;
+    setBusy(true); setErr(null);
+    try {
+      const saved = await CreatorsAPI.projects.create(creator.id, {
+        brand: form.brand.trim(), name: form.brand.trim(),
+        brandWebsite: form.website.trim() || null,
+        budget: Number(form.clientCost) || 0,
+        internalCost: Number(form.internalCost) || 0,
+        url: form.url.trim() || null,
+      });
+      setRows(prev => [saved, ...(prev || [])]);
+      setForm({ brand: "", website: "", clientCost: "", internalCost: "", url: "" });
+      setAdding(false);
+      onToast("Deal added");
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const remove = async (row) => {
+    setBusy(true); setErr(null);
+    try {
+      await CreatorsAPI.projects.remove(creator.id, row.id);
+      setRows(prev => (prev || []).filter(r => r.id !== row.id));
+      onToast("Project removed");
+    } catch (e) { setErr(e.message); }
+    setBusy(false); setRemoving(null);
+  };
+
+  // flexBasis:"100%" is the whole trick: the parent (Card, shared.jsx) lays
+  // the detail panels out as a flex-wrap row, and a 100%-wide item in a
+  // wrapping flex row always starts a line of its own — so this sits as a
+  // full-width strip BELOW Onboarding & Billing / Campaigns / Agreements /
+  // Invoices rather than competing with them for column width.
+  const thCell = { padding: "5px 10px", textAlign: "center", fontSize: 8.5, fontWeight: 600, color: T.label, textTransform: "uppercase", letterSpacing: "0.05em", whiteSpace: "nowrap" };
+  const tdCell = { padding: "7px 10px", textAlign: "center", fontSize: 10.5, color: T.text, whiteSpace: "nowrap" };
+
+  return (
+    <div style={{ ...panel, flexBasis: "100%", width: "100%" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+        <div style={{ ...panelTitle, marginBottom: 0 }}>Projects{rows ? ` (${rows.length})` : ""}</div>
+        {canEdit && (
+          <GhostBtn color={T.teal} disabled={busy} onClick={() => setAdding(a => !a)}>
+            {adding ? "Cancel" : "+ Add project"}
+          </GhostBtn>
+        )}
+      </div>
+
+      {err && <div style={{ fontSize: 10.5, color: T.red, marginBottom: 6 }}>{err}</div>}
+      {rows === null && !err && <div style={HINT}>Loading…</div>}
+
+      {adding && (
+        <div style={{
+          display: "flex", flexDirection: "column", gap: 6, padding: "8px 0 10px",
+          borderBottom: `1px solid ${T.border}`, marginBottom: rows?.length ? 0 : 2,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0 }}>
+              {form.brand.trim() && <BrandLogo key={logoNonce} brand={form.brand} website={form.website} size={22} radius={6} />}
+              <input value={form.brand} onChange={e => setForm(f => ({ ...f, brand: e.target.value }))}
+                placeholder="Brand (e.g. Acme Sneakers)" style={{ ...INP, fontSize: 10.5, flex: 1, minWidth: 0 }} />
+            </div>
+            <input value={form.clientCost} onChange={e => setForm(f => ({ ...f, clientCost: e.target.value.replace(/[^\d]/g, "") }))}
+              placeholder="Client cost (₹)" style={{ ...INP, fontSize: 10.5, flex: 0.7, minWidth: 0 }} />
+            <input value={form.internalCost} onChange={e => setForm(f => ({ ...f, internalCost: e.target.value.replace(/[^\d]/g, "") }))}
+              placeholder="Internal cost (₹)" style={{ ...INP, fontSize: 10.5, flex: 0.7, minWidth: 0 }} />
+            <input value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))}
+              placeholder="Reel / video link (optional)" style={{ ...INP, fontSize: 10.5, flex: 1.3, minWidth: 0 }} />
+            <GhostBtn color={T.accent} disabled={busy || !form.brand.trim()} onClick={add} style={{ whiteSpace: "nowrap" }}>
+              {busy ? (form.url.trim() ? "Fetching reel…" : "Saving…") : "Save"}
+            </GhostBtn>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input value={form.website} onChange={e => setForm(f => ({ ...f, website: e.target.value }))}
+              placeholder="Brand website (optional — for a reliable logo)" style={{ ...INP, fontSize: 10, flex: 1, minWidth: 0 }} />
+            <GhostBtn color={T.accent} onClick={() => setLogoNonce(n => n + 1)} style={{ display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+              <RefreshCw size={10} style={{ verticalAlign: -1 }} /> Fetch logo
+            </GhostBtn>
+          </div>
+        </div>
+      )}
+
+      {rows?.length === 0 && !adding && (
+        <div style={HINT}>No projects yet — a deal run for this creator outside any campaign goes here.</div>
+      )}
+
+      {rows?.length > 0 && (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                <th style={{ ...thCell, textAlign: "left" }}>Brand</th>
+                <th style={thCell}>Client cost</th>
+                <th style={thCell}>Internal cost</th>
+                <th style={thCell}>Margin</th>
+                <th style={{ ...thCell, textAlign: "left" }}>Reel</th>
+                <th style={thCell}>ER</th>
+                <th style={thCell}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((p, i) => {
+                const margin = (p.budget || 0) - (p.internalCost || 0);
+                return (
+                <tr key={p.id} style={{ borderBottom: i < rows.length - 1 ? `1px solid ${T.border}` : "none" }}>
+                  <td style={{ ...tdCell, textAlign: "left" }}>
+                    {p.brand ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <BrandLogo brand={p.brand} website={p.brandWebsite} size={16} radius={4} />
+                        <Pill>{p.brand}</Pill>
+                      </div>
+                    ) : <span style={{ color: T.label }}>—</span>}
+                  </td>
+                  <td style={{ ...tdCell, fontWeight: 600 }}>{fmtINR(p.budget)}</td>
+                  <td style={tdCell}>{fmtINR(p.internalCost)}</td>
+                  <td style={{ ...tdCell, fontWeight: 600, color: margin > 0 ? T.green : margin < 0 ? T.red : T.label }}>{fmtINR(margin)}</td>
+                  <td style={{ ...tdCell, textAlign: "left" }}>
+                    {p.url ? (
+                      <a href={p.url} target="_blank" rel="noreferrer" style={{ color: T.accent, textDecoration: "none" }}
+                        title={p.media?.ok === false ? "Link couldn't be read" : "Open on Instagram"}>
+                        {p.media?.ok ? fmtCompact(p.media.views) + " views" : p.media?.ok === false ? "⚠ couldn't fetch" : "Open"}
+                      </a>
+                    ) : <span style={{ color: T.label }}>—</span>}
+                  </td>
+                  <td style={tdCell}>{p.media?.ok && p.media.er != null ? `${p.media.er}%` : "—"}</td>
+                  <td style={tdCell}>
+                    {canEdit && <GhostBtn color={T.red} disabled={busy} onClick={() => setRemoving(p)}>Remove</GhostBtn>}
+                  </td>
+                </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {removing && (
+        <ConfirmDialog
+          title="Remove this project?"
+          body={<>
+            <div style={{ ...panel, minWidth: 0, background: T.raised, padding: "10px 12px", marginBottom: 10 }}>
+              <Fact label="Creator"       width={90} value={creator.name} />
+              <Fact label="Brand"         width={90} value={removing.brand} />
+              <Fact label="Client cost"   width={90} value={fmtINR(removing.budget)} />
+              <Fact label="Internal cost" width={90} value={fmtINR(removing.internalCost)} />
+            </div>
+            This cannot be undone.
+          </>}
+          busy={busy}
+          onConfirm={() => remove(removing)}
+          onCancel={() => setRemoving(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 // Management and Vendor sit in the same label column and swap between a select
 // and a ghost trigger, so both states share one width and one set of metrics —
 // otherwise the rows shift and re-weight as the card changes.
@@ -253,7 +442,7 @@ function ManagementPick({ creator, onSet }) {
 }
 
 // ── EXPANDED DETAIL ──────────────────────────────────────────────────────────
-function CreatorDetail({ inf, vendor, vendors, open, canEdit, onEdit, onAssign, onSetManagement, onToast }) {
+export function CreatorDetail({ inf, vendor, vendors, open, canEdit, onEdit, onAssign, onSetManagement, onToast }) {
   const pd = inf.personalDetails || {};
   // Where the money actually goes. A creator assigned to a vendor is invoiced
   // by that vendor and paid into the vendor's account, so showing the creator's
@@ -329,12 +518,22 @@ function CreatorDetail({ inf, vendor, vendors, open, canEdit, onEdit, onAssign, 
 
       {/* Generated invoices */}
       <InvoicesPanel invoices={inf.invoices} campaigns={inf.campaigns} />
+
+      {/* A deal run for this creator outside any campaign — its own
+          full-width strip below the four cards above, not squeezed into
+          any one of them. */}
+      {inf.managedBy === "fifthavenue" && (
+        <ProjectsPanel creator={inf} open={open} canEdit={canEdit} onToast={onToast} />
+      )}
     </>
   );
 }
 
 // ── CREATOR CARD ─────────────────────────────────────────────────────────────
-function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, onAssign, onSetManagement, onToast }) {
+// Exported for pages/Managed, which shows the same card for the subset of the
+// directory managed directly (managedBy === "fifthavenue") rather than
+// rebuilding it — one card design, used by both.
+export function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, onAssign, onSetManagement, onToast, avatarSize = 40, avatarRadius = 10 }) {
   const kind = managementOf(inf);
   return (
     <Card
@@ -342,7 +541,7 @@ function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, on
       onToggle={onToggle}
       name={inf.name}
       title={inf.name}
-      avatar={<CreatorAvatar creator={inf} size={40} radius={10} />}
+      avatar={<CreatorAvatar creator={inf} size={avatarSize} radius={avatarRadius} />}
       subtitle={<><CreatorHandle creator={inf} style={{ fontSize: 9.5 }} />{inf.niche ? ` · ${inf.niche}` : ""}</>}
       stats={[
         { label: "Followers", value: fmtCompact(inf.followers) },

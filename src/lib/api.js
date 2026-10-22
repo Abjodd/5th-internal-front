@@ -261,6 +261,10 @@ export const BrandCredentialsAPI = authCrud("/api/brand-credentials");
 // ── Creators (founder directory) ─────────────────────────────────────────────
 export const CreatorsAPI = {
   list: (brandId) => request(`/api/creators${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ""}`),
+  // A creator added straight to the directory — no campaign roster behind
+  // them yet. See the Managed page and POST /api/creators in routes/creators.js.
+  create: (creator) =>
+    request(`/api/creators`, { method: "POST", body: JSON.stringify(creator) }),
   // A photo stored against our own creator record, same contract as every other
   // avatar in the app: null unless the record says one exists, so a creator we
   // only know from a platform fetch never issues a request that is certain to
@@ -280,6 +284,21 @@ export const CreatorsAPI = {
     remove: (id, docId) =>
       request(`/api/creators/${encodeURIComponent(id)}/documents/${docId}`, { method: "DELETE" }),
     fileUrl: (id, docId) => `${BASE}/api/creators/${encodeURIComponent(id)}/documents/${docId}/file`,
+  },
+  // Standalone paid deals for a creator we manage directly — separate from
+  // the campaign pipeline. See models/Project.js and the Managed page's
+  // ProjectsPanel.
+  projects: {
+    list: (id) => request(`/api/creators/${encodeURIComponent(id)}/projects`),
+    create: (id, project) =>
+      request(`/api/creators/${encodeURIComponent(id)}/projects`, { method: "POST", body: JSON.stringify(project) }),
+    update: (id, projectId, patch) =>
+      request(`/api/creators/${encodeURIComponent(id)}/projects/${projectId}`, { method: "PATCH", body: JSON.stringify(patch) }),
+    remove: (id, projectId) =>
+      request(`/api/creators/${encodeURIComponent(id)}/projects/${projectId}`, { method: "DELETE" }),
+    // Every project across every creator — Billing's revenue-by-source chart
+    // is the only caller that needs the whole list at once.
+    listAll: () => request(`/api/projects`),
   },
 };
 

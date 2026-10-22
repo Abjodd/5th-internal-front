@@ -6,7 +6,8 @@ import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 // RegistryAPI is gone: the registry is derived from campaigns + expenses now
 // (see buildRegistry) rather than read from a collection nothing ever wrote to.
-import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, CampaignsAPI, VendorsAPI } from "../../lib/api";
+import { InvoicesAPI, ExpensesAPI, PurchaseOrdersAPI, ClientPOsAPI, QuotesAPI, CampaignsAPI, VendorsAPI, CreatorsAPI } from "../../lib/api";
+import RevenueSourceChart from "./RevenueSourceChart";
 import { can } from "../../lib/rbac";
 import { fmtCompact, fmtINR, prettyDate, todayISO } from "../../lib/format";
 import { receivedOf, isOverdue, scheduleOf } from "../../lib/invoiceMoney";
@@ -14,6 +15,7 @@ import { creatorBudgetOf, creatorKeyOf, normStage, stageLabel } from "../../lib/
 import { payeeFor } from "../../lib/payee";
 import MoneyInput from "../../components/MoneyInput";
 import DateInput from "../../components/DateInput";
+import BrandLogo from "../../components/BrandLogo";
 
 // ── TOKENS ────────────────────────────────────────────────────────────────────
 import { T } from "../../theme/tokens";
@@ -689,7 +691,7 @@ function PODetail({ po, role, canRaise, led, docs, candidates = [], direction, o
 }
 
 // ── TAB: DASHBOARD ────────────────────────────────────────────────────────────
-function TabDashboard({ role, invoices, expenses, setTab, anomalies, pos, campsRef }) {
+function TabDashboard({ role, invoices, expenses, setTab, anomalies, pos, campsRef, managedProjects }) {
   // Collected counts settled schedule legs, not just fully-paid invoices — a
   // campaign's 50% advance is money in the bank even while the invoice is open.
   // Outstanding is the mirror image: billed, minus whatever has landed.
@@ -718,6 +720,41 @@ function TabDashboard({ role, invoices, expenses, setTab, anomalies, pos, campsR
   // a receivable, so leaving it out was the more expensive omission.
   const MONEY_WAIT = { po_raised:"advance not received", invoice_raised:"payment not received" };
   const moneyPending = campsRef.filter(c => MONEY_WAIT[normStage(c.stage)]);
+
+  // ── Revenue by source ───────────────────────────────────────────────────
+  // Client campaign revenue (same `invoices` this whole tab is built from,
+  // the `billed` figure above) split by who the campaign's booked creator
+  // is — the same three-way read CreatorCard already gives a single creator
+  // (lib/management.js) — plus Managed Creator Projects as its own pot,
+  // since a project is a deal that never goes through client billing at all
+  // (see models/Project.js). This is a campaign-level call, not a per-
+  // creator-weighted one: a campaign with even one creator we manage counts
+  // its whole invoice toward "Managed by Us" before "Vendor" is considered,
+  // the same precedence AgreementsPanel already gives managedBy over
+  // vendorId on a single creator's own card.
+  const campSourceOf = (camp) => {
+    const creators = camp?.creators || [];
+    if (creators.some(cr => cr.managedBy === "fifthavenue")) return "fifthavenue";
+    if (creators.some(cr => cr.vendorId)) return "vendor";
+    return "general";
+  };
+  const campById = new Map(campsRef.map(c => [c.id, c]));
+  const campaignRevenueBySource = { fifthavenue: 0, vendor: 0, general: 0 };
+  invoices.filter(i => i.type !== "credit_note").forEach(i => {
+    const src = campSourceOf(campById.get(i.campaign));
+    campaignRevenueBySource[src] += i.amount || 0;
+  });
+  const managedProjectRevenue = (managedProjects || []).reduce((s, p) => s + (p.budget || 0), 0);
+  // Small cross-reference for the dashboard's own summary card — the full
+  // creator/brand/month breakdown lives one click away, on the Managed tab.
+  const managedInternalCost = (managedProjects || []).reduce((s, p) => s + (p.internalCost || 0), 0);
+  const managedMargin = managedProjectRevenue - managedInternalCost;
+  const revenueSlices = [
+    { key: "fifthavenue", label: "Campaigns · Managed by Us", value: campaignRevenueBySource.fifthavenue, color: T.teal },
+    { key: "vendor",      label: "Campaigns · Vendor",        value: campaignRevenueBySource.vendor,      color: T.gold },
+    { key: "projects",    label: "Managed Creator Projects",  value: managedProjectRevenue,                color: T.pink },
+    { key: "general",     label: "Campaigns · General",       value: campaignRevenueBySource.general,      color: "#3B6EDB" },
+  ];
 
   return (
     <div style={{ padding:"20px 24px", overflowY:"auto", height:"100%" }}>
@@ -761,6 +798,37 @@ function TabDashboard({ role, invoices, expenses, setTab, anomalies, pos, campsR
           <div style={{ fontSize:9.5, color:T.label, marginTop:2 }}>{posPending === 0 ? "nothing pending" : "needs founder sign-off"}</div>
         </div>
       </div>
+
+      {/* Small cross-reference, not a rebuild of the Managed tab — three
+          numbers and a link, the same relationship the P&L and Registry tabs
+          already have with this dashboard. */}
+      {can(role, "seeRevenue") && managedProjects.length > 0 && (
+        <div style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:7, padding:"14px", marginBottom:20 }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+            <Lbl>Managed Creator Costs</Lbl>
+            <button onClick={() => setTab("managed")} style={{ background:"transparent", border:"none", color:T.accent, fontSize:10.5, fontWeight:500, cursor:"pointer", fontFamily:SF, padding:0 }}>View breakdown →</button>
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:14 }}>
+            {[
+              ["Deals", managedProjects.length, T.text],
+              ["Client cost", fmtINR(managedProjectRevenue), T.teal],
+              ["Internal cost", fmtINR(managedInternalCost), T.purple],
+              ["Margin", fmtINR(managedMargin), managedMargin >= 0 ? T.green : T.red],
+            ].map(([l, v, c]) => (
+              <div key={l}>
+                <div style={{ fontSize:8.5, color:T.label, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:3 }}>{l}</div>
+                <div style={{ fontSize:15, fontWeight:600, color:c }}>{v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {can(role, "seeRevenue") && (
+        <div style={{ marginBottom:20 }}>
+          <RevenueSourceChart slices={revenueSlices} sub="All-time, not MTD" />
+        </div>
+      )}
 
       <div style={{ display:"grid", gridTemplateColumns:"1fr", gap:14, marginBottom:20 }}>
         <div style={{ background:T.raised, border:`1px solid ${T.border}`, borderRadius:7, padding:"14px" }}>
@@ -1695,6 +1763,173 @@ function TabCampaignPL({ role, expenses, setExpenses, invoices, campsRef }) {
   );
 }
 
+// ── TAB: MANAGED (Managed Creator costs) ───────────────────────────────────────
+// Every standalone brand deal a managed creator runs (models/Project.js) —
+// the same feed the Managed Creators → Campaigns tab edits — read here as
+// money: what brands paid us (client cost), what we actually paid the
+// creator (internal cost), and the margin between the two. This tab is the
+// one place Billing breaks that figure down by creator, by brand and by
+// month, rather than carrying it as a single lump in the dashboard's
+// revenue-by-source donut.
+function TabManaged({ role, managedProjects }) {
+  const deals = managedProjects || [];
+
+  const totalClientCost   = deals.reduce((s, p) => s + (p.budget || 0), 0);
+  const totalInternalCost = deals.reduce((s, p) => s + (p.internalCost || 0), 0);
+  const totalMargin       = totalClientCost - totalInternalCost;
+  const creatorCount      = new Set(deals.map(p => p.creatorId).filter(Boolean)).size;
+  const brandCount        = new Set(deals.map(p => p.brand).filter(Boolean)).size;
+
+  const byCreator = useMemo(() => {
+    const m = new Map();
+    deals.forEach(p => {
+      const key = p.creatorId || p.creatorName || "—";
+      const row = m.get(key) || { name: p.creatorName || "Unknown creator", clientCost: 0, internalCost: 0, deals: 0 };
+      row.clientCost   += p.budget || 0;
+      row.internalCost += p.internalCost || 0;
+      row.deals        += 1;
+      m.set(key, row);
+    });
+    return [...m.values()].sort((a, b) => b.internalCost - a.internalCost);
+  }, [deals]);
+
+  const byBrand = useMemo(() => {
+    const m = new Map();
+    deals.forEach(p => {
+      const key = p.brand || "Unspecified";
+      const row = m.get(key) || { name: key, clientCost: 0, internalCost: 0, deals: 0, website: null };
+      row.clientCost   += p.budget || 0;
+      row.internalCost += p.internalCost || 0;
+      row.deals        += 1;
+      if (!row.website && p.brandWebsite) row.website = p.brandWebsite;
+      m.set(key, row);
+    });
+    return [...m.values()].sort((a, b) => b.internalCost - a.internalCost);
+  }, [deals]);
+
+  // Internal cost by brand, top four + Other — the donut answers "where is
+  // our creator-payout money going", a deliberately different question than
+  // the dashboard's client-cost-by-brand slice.
+  const brandSlices = useMemo(() => {
+    const sorted = [...byBrand].sort((a, b) => b.internalCost - a.internalCost);
+    const top = sorted.slice(0, 4);
+    const restTotal = sorted.slice(4).reduce((s, r) => s + r.internalCost, 0);
+    const palette = [T.purple, T.gold, T.pink, T.teal];
+    const slices = top.map((r, i) => ({ key: r.name, label: r.name, value: r.internalCost, color: palette[i] }));
+    if (restTotal > 0) slices.push({ key: "other", label: "Other brands", value: restTotal, color: T.label });
+    return slices;
+  }, [byBrand]);
+
+  const byMonth = useMemo(() => {
+    const now = new Date();
+    const months = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({ key: `${d.getFullYear()}-${d.getMonth()}`, label: d.toLocaleDateString("en-IN", { month: "short" }), clientCost: 0, internalCost: 0 });
+    }
+    const byKey = new Map(months.map(m => [m.key, m]));
+    deals.forEach(p => {
+      const dt = p.createdAt ? new Date(p.createdAt) : null;
+      if (!dt || isNaN(dt)) return;
+      const bucket = byKey.get(`${dt.getFullYear()}-${dt.getMonth()}`);
+      if (bucket) { bucket.clientCost += p.budget || 0; bucket.internalCost += p.internalCost || 0; }
+    });
+    return months;
+  }, [deals]);
+  const maxMonthCost = Math.max(1, ...byMonth.map(m => m.clientCost));
+
+  if (!can(role, "seeRevenue")) {
+    return <div style={{ padding: 40, textAlign: "center", color: T.label, fontSize: 12 }}>You don't have access to this tab.</div>;
+  }
+
+  return (
+    <div style={{ padding: "20px 24px", overflowY: "auto", height: "100%" }}>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontFamily: "'Newsreader',serif", fontSize: 20, fontWeight: 600, color: T.text, fontStyle: "italic" }}>Managed Creator Costs</div>
+        <div style={{ fontSize: 10, color: T.sub, marginTop: 2 }}>Every brand deal a managed creator is running or has run — what brands paid us, and what we paid them.</div>
+      </div>
+
+      {deals.length === 0 ? (
+        <div style={{ textAlign: "center", paddingTop: 60, color: T.label, fontSize: 11 }}>No managed-creator deals logged yet.</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 20 }}>
+            <StatCard role={role} label="Managed Deals" value={deals.length} sub={`${creatorCount} creator${creatorCount === 1 ? "" : "s"} · ${brandCount} brand${brandCount === 1 ? "" : "s"}`} permission="seeRevenue" />
+            <StatCard role={role} label="Client Cost" value={fmtFull(totalClientCost)} sub="paid by brands" col={T.teal} permission="seeRevenue" />
+            <StatCard role={role} label="Internal Cost" value={fmtFull(totalInternalCost)} sub="paid to creators" col={T.purple} permission="seeRevenue" />
+            <StatCard role={role} label="Margin" value={fmtFull(totalMargin)} sub={totalClientCost > 0 ? `${fmtPct((totalMargin / totalClientCost) * 100)} of client cost` : null} col={totalMargin >= 0 ? T.green : T.red} permission="seeRevenue" />
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
+            {brandSlices.length > 0 && (
+              <div style={{ background: T.raised, border: `1px solid ${T.border}`, borderRadius: 7, padding: "14px" }}>
+                <RevenueSourceChart title="Internal Cost by Brand" slices={brandSlices} sub="All-time — what we pay creators" />
+              </div>
+            )}
+            <div style={{ background: T.raised, border: `1px solid ${T.border}`, borderRadius: 7, padding: "14px" }}>
+              <Lbl style={{ display: "block", marginBottom: 12 }}>Monthly Cost — Last 6 Months</Lbl>
+              {byMonth.map(m => (
+                <div key={m.key} style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                    <span style={{ fontSize: 10.5, color: T.sub }}>{m.label}</span>
+                    <span style={{ fontSize: 10.5, color: T.text }}>{fmtINR(m.internalCost)} <span style={{ color: T.label }}>/ {fmtINR(m.clientCost)}</span></span>
+                  </div>
+                  <div style={{ height: 6, background: T.mute, borderRadius: 3, position: "relative", overflow: "hidden" }}>
+                    <div style={{ position: "absolute", inset: 0, width: `${(m.clientCost / maxMonthCost) * 100}%`, background: `${T.teal}30`, borderRadius: 3 }} />
+                    <div style={{ position: "absolute", inset: 0, width: `${(m.internalCost / maxMonthCost) * 100}%`, background: T.purple, borderRadius: 3 }} />
+                  </div>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 14, marginTop: 4 }}>
+                <span style={{ fontSize: 9, color: T.sub, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: T.purple, display: "inline-block" }} /> Internal cost</span>
+                <span style={{ fontSize: 9, color: T.sub, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: 2, background: `${T.teal}60`, display: "inline-block" }} /> Client cost</span>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div style={{ background: T.raised, border: `1px solid ${T.border}`, borderRadius: 7, padding: "14px" }}>
+              <Lbl style={{ display: "block", marginBottom: 10 }}>By Creator</Lbl>
+              {byCreator.map(r => (
+                <div key={r.name} style={{ padding: "8px 0", borderBottom: `1px solid ${T.border}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 500, color: T.text }}>{r.name}</span>
+                    <span style={{ fontSize: 9.5, color: T.label }}>{r.deals} deal{r.deals === 1 ? "" : "s"}</span>
+                  </div>
+                  <div style={{ display: "flex", gap: 14 }}>
+                    <span style={{ fontSize: 10, color: T.sub }}>Client: <span style={{ color: T.text }}>{fmtINR(r.clientCost)}</span></span>
+                    <span style={{ fontSize: 10, color: T.sub }}>Internal: <span style={{ color: T.text }}>{fmtINR(r.internalCost)}</span></span>
+                    <span style={{ fontSize: 10, color: T.sub }}>Margin: <span style={{ color: (r.clientCost - r.internalCost) >= 0 ? T.green : T.red }}>{fmtINR(r.clientCost - r.internalCost)}</span></span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ background: T.raised, border: `1px solid ${T.border}`, borderRadius: 7, padding: "14px" }}>
+              <Lbl style={{ display: "block", marginBottom: 10 }}>By Brand</Lbl>
+              {byBrand.map(r => (
+                <div key={r.name} style={{ padding: "8px 0", borderBottom: `1px solid ${T.border}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 500, color: T.text, display: "flex", alignItems: "center", gap: 7 }}>
+                      <BrandLogo brand={r.name} website={r.website} size={18} radius={5} />
+                      {r.name}
+                    </span>
+                    <span style={{ fontSize: 9.5, color: T.label }}>{r.deals} deal{r.deals === 1 ? "" : "s"}</span>
+                  </div>
+                  <div style={{ display: "flex", gap: 14 }}>
+                    <span style={{ fontSize: 10, color: T.sub }}>Client: <span style={{ color: T.text }}>{fmtINR(r.clientCost)}</span></span>
+                    <span style={{ fontSize: 10, color: T.sub }}>Internal: <span style={{ color: T.text }}>{fmtINR(r.internalCost)}</span></span>
+                    <span style={{ fontSize: 10, color: T.sub }}>Margin: <span style={{ color: (r.clientCost - r.internalCost) >= 0 ? T.green : T.red }}>{fmtINR(r.clientCost - r.internalCost)}</span></span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── ROOT ──────────────────────────────────────────────────────────────────────
 export default function InternalBilling() {
   const { user, brandFilter, brands } = useOutletContext() || {};
@@ -1717,6 +1952,9 @@ export default function InternalBilling() {
   // Read only by the registry, to resolve who a creator is actually paid through.
   const [vendors, setVendors] = useState([]);
   const [campsRef,  setCampsRef]  = useState([]); // real campaigns from DB
+  // Managed Creator Projects — standalone deals outside the campaign
+  // pipeline, read only by the Dashboard tab's revenue-by-source chart.
+  const [managedProjects, setManagedProjects] = useState([]);
   const [toast,     setToast]     = useState(null);
   const [loading,   setLoading]   = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -1828,9 +2066,10 @@ export default function InternalBilling() {
     // thing that reads them, and a creator whose vendor we can't resolve simply
     // falls back to billing under their own details — which is what every row
     // did before vendors existed.
-    Promise.all([InvoicesAPI.list(), ExpensesAPI.list(), QuotesAPI.list(), PurchaseOrdersAPI.list(), ClientPOsAPI.list(), CampaignsAPI.list(), VendorsAPI.list().catch(() => [])])
-      .then(([inv, exp, qts, posList, cpos, camps, vends]) => {
+    Promise.all([InvoicesAPI.list(), ExpensesAPI.list(), QuotesAPI.list(), PurchaseOrdersAPI.list(), ClientPOsAPI.list(), CampaignsAPI.list(), VendorsAPI.list().catch(() => []), CreatorsAPI.projects.listAll().catch(() => [])])
+      .then(([inv, exp, qts, posList, cpos, camps, vends, projects]) => {
         if (cancelled) return;
+        setManagedProjects(projects);
         // Seed both the state and the mirror refs the setters diff against —
         // a ref left at [] would make the next edit look like a create and
         // re-POST every row.
@@ -1900,6 +2139,7 @@ export default function InternalBilling() {
     { id:"income",          lbl:"Income",        badge:overdueCount + noPOInvoices || null, col:overdueCount > 0 ? T.red : T.amber, show: hasFullBilling },
     { id:"purchase_orders", lbl:"POs",           badge:pendingPOs || null, col:T.amber,            show: hasFullBilling },
     { id:"quotations",      lbl:"Quotations",    badge:autoQuotesPending || null, col:T.teal,       show: hasFullBilling },
+    { id:"managed",         lbl:"Managed",        badge:null,                                          show: hasFullBilling },
     { id:"registry",        lbl:"Registry",      badge:null,                                          show: can(role, "seeRegistry") },
     ...(can(role, "seeCampaignPL") ? [{ id:"campaign_pl", lbl:"Campaign P&L", badge:null, show: true }] : []),
   ].filter(t => t.show);
@@ -1991,10 +2231,11 @@ export default function InternalBilling() {
       </div>
 
       <div style={{ flex:1, minHeight:0, overflow:"hidden" }}>
-        {tab === "dashboard"      && <TabDashboard      role={role} invoices={displayInvoices} expenses={displayExpenses} setTab={setTab} anomalies={anomalies} pos={displayPos} campsRef={displayCampsRef} />}
+        {tab === "dashboard"      && <TabDashboard      role={role} invoices={displayInvoices} expenses={displayExpenses} setTab={setTab} anomalies={anomalies} pos={displayPos} campsRef={displayCampsRef} managedProjects={managedProjects} />}
         {tab === "income"         && <TabIncome         role={role} invoices={displayInvoices} setInvoices={setInvoices} setClientPOs={setClientPOs} campsRef={displayCampsRef} />}
         {tab === "purchase_orders"&& <TabPurchaseOrders role={role} currentUser={currentUser} pos={displayPos} setPos={setPos} setExpenses={setExpenses} clientPOs={displayClientPOs} setClientPOs={setClientPOs} invoices={displayInvoices} expenses={displayExpenses} campsRef={displayCampsRef} />}
         {tab === "quotations"     && <TabQuotations     role={role} quotes={displayQuotes} setQuotes={setQuotes} campsRef={displayCampsRef} />}
+        {tab === "managed"        && <TabManaged        role={role} managedProjects={managedProjects} />}
         {tab === "registry"       && <TabRegistry       role={role} campsRef={displayCampsRef} expenses={displayExpenses} vendorById={vendorById} />}
         {tab === "campaign_pl"    && <TabCampaignPL     role={role} expenses={displayExpenses} setExpenses={setExpenses} invoices={displayInvoices} campsRef={displayCampsRef} />}
       </div>

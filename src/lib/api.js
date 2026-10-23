@@ -359,11 +359,6 @@ export const PitchAPI = {
     }),
   remove: (campaignId, pitchId) =>
     request(`/api/campaigns/${campaignId}/pitch/${pitchId}`, { method: "DELETE" }),
-  // Regenerates the whole BRAND's code (one link covers every campaign for
-  // that brand) — this campaign-scoped call is just a convenience wrapper
-  // for when a campaign id is already in hand; see routes/pitch.js.
-  regenerateCode: (campaignId) =>
-    request(`/api/campaigns/${campaignId}/pitch/code/regenerate`, { method: "POST" }),
   ship: (campaignId, pitchId) =>
     request(`/api/campaigns/${campaignId}/pitch/${pitchId}/ship`, { method: "POST" }),
   // Scoped to the whole CLIENT (brand) — every profile pitched to them
@@ -412,12 +407,18 @@ export const PitchDraftAPI = {
   removeProfile: (id, profileId) =>
     request(`/api/pitch-drafts/${id}/profiles/${profileId}`, { method: "DELETE" }),
 
-  regenerateCode: (id) => request(`/api/pitch-drafts/${id}/code/regenerate`, { method: "POST" }),
+  // Re-fetches previews that are missing (ONE HikerAPI credit per link)
+  // and copies posters/photos into our own storage so the client link
+  // never shows a dead image. `{ hd: true }` also re-fetches HD profile
+  // photos for candidates stuck on Instagram's 150px thumbnail (ONE credit
+  // each). Returns { fetched, posters, photos, failed, hd, hdFailed }.
+  refreshContent: (id, opts = {}) =>
+    request(`/api/pitch-drafts/${id}/content/refresh`, { method: "POST", body: JSON.stringify(opts) }),
 
   // "Create actual campaign" — the button in the same slot Ship to Creators
   // occupies on a real pitch. Creates the real Client + Campaign, carries
-  // over only the client-approved candidates (already marked approved on
-  // the new campaign's pitch list), and archives this draft.
+  // over EVERY candidate with its current decision (the client keeps
+  // deciding on pending ones from the same link), and archives this draft.
   promote: (id, createdBy) =>
     request(`/api/pitch-drafts/${id}/promote`, { method: "POST", body: JSON.stringify({ createdBy }) }),
 

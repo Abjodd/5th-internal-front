@@ -27,7 +27,7 @@
  * and closes the modal. `DraftEditor` is exported here so that page can
  * render the exact same editor this file used to show inline.
  */
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 import { T } from "../../theme/tokens";
 import { PitchDraftAPI } from "../../lib/api";
@@ -181,16 +181,11 @@ function DraftList({ drafts, onOpen, onCreated, createdBy }) {
 // this component's launcher tab in the Pitch Client modal can give it) can
 // render exactly the same editor.
 export function DraftEditor({ draft, setDraft, onBack, backLabel = "All prospects", onPromoted, showToast, createdBy }) {
+  // Promotion locks only what became a real record (brand/campaign name) and
+  // the candidate list (now managed on the campaign's Pitch Client). The
+  // brief, details and suggested content stay editable: the client's link is
+  // still live and this is what it shows them.
   const readOnly = draft.status === "promoted";
-
-  const patchField = useCallback(async (key, value) => {
-    setDraft((prev) => ({ ...prev, [key]: value }));
-    try {
-      await PitchDraftAPI.update(draft.id, { [key]: value });
-    } catch (err) {
-      showToast(err.body?.error || err.message);
-    }
-  }, [draft.id, setDraft, showToast]);
 
   return (
     <div>
@@ -201,22 +196,22 @@ export function DraftEditor({ draft, setDraft, onBack, backLabel = "All prospect
           padding: "10px 14px", borderRadius: T.radius, background: `${T.green}0F`,
           border: `1px solid ${T.green}33`, fontSize: 11, color: T.text, marginBottom: 16,
         }}>
-          Promoted — this brand and campaign are now real. This page stays as the archived record of the brief and suggested content; nothing here can be edited anymore.
+          Promoted — this brand and campaign are now real. The client's link still works: decisions they make now land on the campaign's Pitch Client list, where approved creators get shipped. You can still edit the brief, details and suggested content below — saving updates the client's link straight away.
         </div>
       )}
 
-      <BrandCampaignFields draft={draft} onChange={patchField} readOnly={readOnly} />
+      <BrandCampaignFields draft={draft} setDraft={setDraft} promoted={readOnly} showToast={showToast} />
 
       <Section title="Brief" hint="Freeform — add as many heading/text sections as this pitch needs.">
-        <BriefEditor draftId={draft.id} sections={draft.briefSections || []} setDraft={setDraft} readOnly={readOnly} showToast={showToast} />
+        <BriefEditor draftId={draft.id} sections={draft.briefSections || []} setDraft={setDraft} readOnly={false} showToast={showToast} />
       </Section>
 
       <Section title="Suggested content" hint="Reel links the team is suggesting as reference or direction.">
-        <SuggestedContent draftId={draft.id} links={draft.suggestedContent || []} setDraft={setDraft} readOnly={readOnly} createdBy={createdBy} showToast={showToast} />
+        <SuggestedContent draftId={draft.id} links={draft.suggestedContent || []} profiles={draft.profiles || []} setDraft={setDraft} readOnly={false} createdBy={createdBy} showToast={showToast} />
       </Section>
 
       <Section title="Candidate creators" hint="Same composer as Pitch Client — the client decides on these from their own link.">
-        <ClientLink draft={draft} setDraft={setDraft} showToast={showToast} />
+        <ClientLink draft={draft} showToast={showToast} />
         <ProfileComposer draftId={draft.id} setDraft={setDraft} readOnly={readOnly} createdBy={createdBy} showToast={showToast} />
         <ProfileGrid profiles={draft.profiles || []} draftId={draft.id} setDraft={setDraft} readOnly={readOnly} showToast={showToast} />
       </Section>
@@ -228,57 +223,80 @@ export function DraftEditor({ draft, setDraft, onBack, backLabel = "All prospect
   );
 }
 
-function BrandCampaignFields({ draft, onChange, readOnly }) {
+// The campaign brief fields, saved with an explicit Save button (they used to
+// save silently on blur, which left people unsure whether anything had saved).
+// Objective / Audience / Key messages are what the client's link shows as the
+// brief. After promotion only brand and campaign name are locked.
+const DETAIL_KEYS = ["brandName", "campaignName", "service", "region", "objective", "audience", "messages"];
+const pickDetails = (d) => Object.fromEntries(DETAIL_KEYS.map((k) => [k, d[k] || ""]));
+
+function BrandCampaignFields({ draft, setDraft, promoted, showToast }) {
+  const saved = useMemo(() => pickDetails(draft), [draft]);
+  const [form, setForm] = useState(saved);
+  const [saving, setSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  useEffect(() => { setForm(saved); }, [saved]);
+
+  const changed = DETAIL_KEYS.filter((k) => form[k] !== saved[k] && !(promoted && (k === "brandName" || k === "campaignName")));
+  const dirty = changed.length > 0;
+  const set = (k) => (e) => { setForm((f) => ({ ...f, [k]: e.target.value })); setJustSaved(false); };
+
+  const save = async () => {
+    if (!dirty) return;
+    if (!promoted && !form.brandName.trim()) { showToast("Brand name can't be empty."); return; }
+    setSaving(true);
+    try {
+      const patch = Object.fromEntries(changed.map((k) => [k, form[k].trim() ? form[k] : null]));
+      const updated = await PitchDraftAPI.update(draft.id, patch);
+      setDraft((prev) => ({ ...prev, ...pickDetails(updated) }));
+      setJustSaved(true);
+      showToast(promoted ? "Saved — the client's link shows the new brief." : "Saved.");
+    } catch (err) {
+      showToast(err.body?.error || err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const area = { ...inputStyle, minHeight: 92, resize: "vertical", lineHeight: 1.5, fontFamily: "inherit" };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 22, paddingBottom: 18, borderBottom: `1px solid ${T.border}` }}>
       <div style={{ display: "flex", gap: 12 }}>
         <Field label="Brand name" style={{ flex: 1 }}>
-          <DebouncedInput value={draft.brandName || ""} onCommit={(v) => onChange("brandName", v)} style={inputStyle} disabled={readOnly} />
+          <input value={form.brandName} onChange={set("brandName")} style={inputStyle} disabled={promoted} title={promoted ? "A real brand now — rename it on the brand itself" : undefined} />
         </Field>
         <Field label="Campaign name" optional style={{ flex: 1 }}>
-          <DebouncedInput value={draft.campaignName || ""} onCommit={(v) => onChange("campaignName", v)} style={inputStyle} disabled={readOnly} />
+          <input value={form.campaignName} onChange={set("campaignName")} style={inputStyle} disabled={promoted} title={promoted ? "A real campaign now — rename it on the campaign itself" : undefined} />
         </Field>
       </div>
       <div style={{ display: "flex", gap: 12 }}>
         <Field label="Service" optional style={{ flex: 1 }}>
-          <DebouncedInput value={draft.service || ""} onCommit={(v) => onChange("service", v)} style={inputStyle} disabled={readOnly} />
+          <input value={form.service} onChange={set("service")} style={inputStyle} />
         </Field>
         <Field label="Region" optional style={{ flex: 1 }}>
-          <DebouncedInput value={draft.region || ""} onCommit={(v) => onChange("region", v)} placeholder="e.g. South India" style={inputStyle} disabled={readOnly} />
+          <input value={form.region} onChange={set("region")} placeholder="e.g. South India" style={inputStyle} />
         </Field>
       </div>
       <Field label="Objective" optional>
-        <DebouncedInput value={draft.objective || ""} onCommit={(v) => onChange("objective", v)} multiline style={inputStyle} disabled={readOnly} />
+        <textarea value={form.objective} onChange={set("objective")} rows={4} style={area} placeholder={"One goal per line, e.g.\n1. Build brand awareness…"} />
       </Field>
       <div style={{ display: "flex", gap: 12 }}>
         <Field label="Audience" optional style={{ flex: 1 }}>
-          <DebouncedInput value={draft.audience || ""} onCommit={(v) => onChange("audience", v)} multiline style={inputStyle} disabled={readOnly} />
+          <textarea value={form.audience} onChange={set("audience")} rows={4} style={area} />
         </Field>
         <Field label="Key messages" optional style={{ flex: 1 }}>
-          <DebouncedInput value={draft.messages || ""} onCommit={(v) => onChange("messages", v)} multiline style={inputStyle} disabled={readOnly} />
+          <textarea value={form.messages} onChange={set("messages")} rows={4} style={area} />
         </Field>
       </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10 }}>
+        <span style={{ fontSize: 10.5, color: dirty ? T.amber : T.label }}>
+          {dirty ? `Unsaved changes (${changed.length})` : justSaved ? "All changes saved" : "Shown to the client as the brief"}
+        </span>
+        <button onClick={save} disabled={!dirty || saving} style={{ ...primaryBtn, opacity: !dirty || saving ? 0.5 : 1 }}>
+          {saving ? "Saving…" : dirty ? "Save details" : "Saved"}
+        </button>
+      </div>
     </div>
-  );
-}
-
-// A text input that only writes back on blur (or Enter) rather than on
-// every keystroke — this form auto-saves per field, and firing a PATCH on
-// every character would be both noisy and a race against itself.
-function DebouncedInput({ value, onCommit, multiline, disabled, ...props }) {
-  const [local, setLocal] = useState(value);
-  useEffect(() => { setLocal(value); }, [value]);
-  const Tag = multiline ? "textarea" : "input";
-  return (
-    <Tag
-      value={local}
-      onChange={(e) => setLocal(e.target.value)}
-      onBlur={() => { if (local !== value) onCommit(local); }}
-      onKeyDown={(e) => { if (!multiline && e.key === "Enter") e.currentTarget.blur(); }}
-      disabled={disabled}
-      rows={multiline ? 2 : undefined}
-      {...props}
-    />
   );
 }
 
@@ -381,15 +399,49 @@ function BriefEditor({ draftId, sections, setDraft, readOnly, showToast }) {
 
 // ── SUGGESTED CONTENT ──────────────────────────────────────────────────────
 // An Instagram link gets fetched via Hiker at add time (see POST
-// /api/pitch-drafts/:id/content) and comes back with `media` — a one-time
-// snapshot (thumbnail, caption, counts), same as Trending/Market Watch's own
-// reel cards. That snapshot only exists while this is a prospect: the
-// backend strips it at promote time, so a promoted draft's suggested
-// content falls back to plain links here too.
-function SuggestedContent({ draftId, links, setDraft, readOnly, createdBy, showToast }) {
+// /api/pitch-drafts/:id/content) and comes back with `media` — a snapshot
+// (thumbnail, caption, counts) plus `poster`, our own stored copy of the
+// frame, so the preview outlives Instagram's expiring thumbnail URL. It's
+// kept after promotion too (it used to be stripped then).
+const IG_POST = /instagram\.com\/(?:p|reel|reels)\//i;
+const isRemote = (s) => /^https?:\/\//i.test(String(s || ""));
+
+function SuggestedContent({ draftId, links, profiles, setDraft, readOnly, createdBy, showToast }) {
   const [url, setUrl] = useState("");
   const [note, setNote] = useState("");
   const [adding, setAdding] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // What a refresh would fix: links with no preview at all (each costs one
+  // HikerAPI credit to re-fetch), plus previews/photos still pointing at
+  // Instagram's CDN instead of our stored copy (free — just a download).
+  const missing = links.filter((c) => !c.media && IG_POST.test(c.url || "")).length;
+  const unstored = links.filter((c) => c.media?.thumbnail && !c.media.poster).length
+    + profiles.filter((p) => isRemote(p.avatar)).length;
+  // Photos under 300px are Instagram's 150px thumbnail — blurry on the
+  // client's full-width portrait. Unknown width counts too (older rows); the
+  // server checks the real bytes first and only spends on ones that need it.
+  const lowRes = profiles.filter((p) => p.handle && p.avatar && !(p.avatarWidth >= 300)).length;
+
+  const refresh = async (hd = false) => {
+    setRefreshing(true);
+    try {
+      const r = await PitchDraftAPI.refreshContent(draftId, { hd });
+      const fresh = await PitchDraftAPI.get(draftId);
+      setDraft(fresh);
+      const parts = [];
+      if (r.fetched) parts.push(`${r.fetched} preview${r.fetched === 1 ? "" : "s"} fetched`);
+      if (r.posters + r.photos) parts.push(`${r.posters + r.photos} image${r.posters + r.photos === 1 ? "" : "s"} saved permanently`);
+      if (r.hd) parts.push(`${r.hd} photo${r.hd === 1 ? "" : "s"} upgraded to HD`);
+      if (r.hdFailed) parts.push(`${r.hdFailed} photo${r.hdFailed === 1 ? "" : "s"} had no HD version available`);
+      if (r.failed) parts.push(`${r.failed} link${r.failed === 1 ? "" : "s"} couldn't be read (private or deleted post?)`);
+      showToast(parts.length ? parts.join(" · ") : "Nothing needed updating.");
+    } catch (err) {
+      showToast(err.body?.error || err.message);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const add = async (e) => {
     e.preventDefault();
@@ -425,6 +477,29 @@ function SuggestedContent({ draftId, links, setDraft, readOnly, createdBy, showT
             {adding ? "Fetching…" : "Add"}
           </button>
         </form>
+      )}
+      {(missing > 0 || unstored > 0) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12, padding: "9px 12px", borderRadius: T.radius, background: `${T.amber}10`, border: `1px solid ${T.amber}33`, fontSize: 11, color: T.text }}>
+          <span style={{ flex: 1, minWidth: 200 }}>
+            {missing > 0 && <><strong>{missing}</strong> link{missing === 1 ? " has" : "s have"} no preview{unstored > 0 ? "; " : "."}</>}
+            {unstored > 0 && <><strong>{unstored}</strong> image{unstored === 1 ? " is" : "s are"} still on Instagram's expiring links.</>}
+            {missing > 0 && <span style={{ color: T.sub }}> Fetching uses {missing} HikerAPI credit{missing === 1 ? "" : "s"}.</span>}
+          </span>
+          <button onClick={() => refresh(false)} disabled={refreshing} style={{ ...secondaryBtn, opacity: refreshing ? 0.6 : 1 }}>
+            <RefreshCw size={12} /> {refreshing ? "Fetching…" : "Fetch previews"}
+          </button>
+        </div>
+      )}
+      {lowRes > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12, padding: "9px 12px", borderRadius: T.radius, background: `${T.accent}0A`, border: `1px solid ${T.accent}26`, fontSize: 11, color: T.text }}>
+          <span style={{ flex: 1, minWidth: 200 }}>
+            <strong>{lowRes}</strong> creator photo{lowRes === 1 ? " is" : "s are"} low-resolution (Instagram's small thumbnail) and look blurry on the client's link.
+            <span style={{ color: T.sub }}> Getting HD versions uses up to {lowRes} HikerAPI credit{lowRes === 1 ? "" : "s"}.</span>
+          </span>
+          <button onClick={() => refresh(true)} disabled={refreshing} style={{ ...secondaryBtn, opacity: refreshing ? 0.6 : 1 }}>
+            <RefreshCw size={12} /> {refreshing ? "Fetching…" : "Get HD photos"}
+          </button>
+        </div>
       )}
       {links.length === 0 ? (
         <Notice tone="empty">No suggested content yet.</Notice>
@@ -475,14 +550,15 @@ function SuggestedContentCard({ c, onRemove }) {
         </button>
       )}
       <a href={m?.permalink || c.url} target="_blank" rel="noreferrer noopener" style={{ display: "block", textDecoration: "none" }}>
-        {m?.thumbnail ? (
+        {(m?.poster || m?.thumbnail) ? (
           <div style={{ position: "relative", width: "100%", aspectRatio: "4 / 5", background: T.mute, overflow: "hidden" }}>
-            <img src={m.thumbnail} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            {/* Our stored copy first — the signed thumbnail URL dies in days. */}
+            <img src={m.poster ? PitchDraftAPI.avatarUrl(m.poster) : m.thumbnail} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             {canPlay && hovered && (
               <video
                 ref={videoRef}
                 src={m.video}
-                poster={m.thumbnail}
+                poster={m.poster ? PitchDraftAPI.avatarUrl(m.poster) : m.thumbnail}
                 muted
                 loop
                 playsInline
@@ -530,16 +606,10 @@ function SuggestedContentCard({ c, onRemove }) {
 }
 
 // ── CLIENT LINK ─────────────────────────────────────────────────────────
-function ClientLink({ draft, setDraft, showToast }) {
-  const regenerate = async () => {
-    try {
-      const { pitchCode } = await PitchDraftAPI.regenerateCode(draft.id);
-      setDraft((prev) => ({ ...prev, pitchCode }));
-      showToast("New link generated — the old one no longer works.");
-    } catch (err) {
-      showToast(err.body?.error || err.message);
-    }
-  };
+// One link for the life of this pitch — minted with the first candidate and
+// never rotated (the backend has no regenerate route); deleting the draft is
+// what ends it. It also keeps working after promotion.
+function ClientLink({ draft, showToast }) {
   const link = draft.pitchCode ? `${CLIENT_PORTAL_URL}/pitch-draft/${draft.id}?code=${draft.pitchCode}` : null;
   const copy = () => {
     if (!link) return;
@@ -550,7 +620,7 @@ function ClientLink({ draft, setDraft, showToast }) {
       {link ? (
         <>
           <button onClick={copy} style={secondaryBtn}><Link2 size={13} /> Copy client link</button>
-          <button onClick={regenerate} title="Generate a new code — the old link stops working" style={iconBtn}><RefreshCw size={13} /></button>
+          <span style={{ fontSize: 10, color: T.label }}>This link stays the same for as long as this pitch exists.</span>
         </>
       ) : (
         <span style={{ fontSize: 11, color: T.label }}>Add a candidate below to generate the client link.</span>
@@ -627,6 +697,7 @@ function ProfileGrid({ profiles, draftId, setDraft, readOnly, showToast }) {
 // prospect one.
 function ProfileCard({ p, busy, onRemove }) {
   const meta = STATUS_META[p.status] || STATUS_META.pending;
+  const [avatarBroken, setAvatarBroken] = useState(false);
   // A view-count of exactly 0 is the stale HikerAPI artefact from before the
   // media-type fix (photo/carousel posts reported play_count: 0 rather than
   // omitting the field) — treat it the same as "no data" rather than
@@ -652,10 +723,11 @@ function ProfileCard({ p, busy, onRemove }) {
         </button>
       )}
 
-      {p.avatar ? (
+      {p.avatar && !avatarBroken ? (
         <img
           src={PitchDraftAPI.avatarUrl(p.avatar)}
           alt=""
+          onError={() => setAvatarBroken(true)}
           style={{ width: 76, height: 76, borderRadius: "50%", objectFit: "cover", border: `2px solid ${T.border}`, boxShadow: T.shadow }}
         />
       ) : (
@@ -708,7 +780,7 @@ function ProfileCard({ p, busy, onRemove }) {
         display: "inline-block", padding: "2px 10px", borderRadius: 10, fontSize: 9.5, fontWeight: 500,
         color: meta.color, background: `${meta.color}14`, border: `1px solid ${meta.color}28`,
       }}>
-        {meta.label}
+        {meta.label}{p.locked && p.status === "approved" ? " · shipped" : ""}
       </span>
     </div>
   );
@@ -721,6 +793,7 @@ function ProfileCard({ p, busy, onRemove }) {
 function PromoteBar({ draft, onPromoted, createdBy, showToast }) {
   const [promoting, setPromoting] = useState(false);
   const approvedCount = (draft.profiles || []).filter((p) => p.status === "approved").length;
+  const pendingCount = (draft.profiles || []).filter((p) => (p.status || "pending") === "pending").length;
 
   const promote = async () => {
     setPromoting(true);
@@ -741,9 +814,10 @@ function PromoteBar({ draft, onPromoted, createdBy, showToast }) {
       padding: "14px 16px", marginTop: 22,
     }}>
       <div style={{ fontSize: 11.5, color: T.text }}>
-        <strong>{draft.brandName}</strong> becomes a real brand, its campaign goes live
-        {approvedCount > 0 ? <>, and <strong>{approvedCount}</strong> client-approved candidate{approvedCount === 1 ? "" : "s"} carry over ready to ship</> : ""}.
-        The brief and suggested content stay here, on this archived draft.
+        <strong>{draft.brandName}</strong> becomes a real brand and its campaign goes live. Every candidate carries over
+        {approvedCount > 0 && <> — <strong>{approvedCount}</strong> approved and ready to ship</>}
+        {pendingCount > 0 && <>{approvedCount > 0 ? "," : " —"} <strong>{pendingCount}</strong> still waiting on the client, who can keep deciding from the same link</>}.
+        The brief and suggested content stay here.
       </div>
       <button onClick={promote} disabled={promoting} style={{ ...primaryBtn, background: T.accent, opacity: promoting ? 0.6 : 1, flexShrink: 0 }}>
         <Sparkles size={13} />

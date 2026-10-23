@@ -29,7 +29,7 @@ import { useOutletContext, useNavigate } from "react-router-dom";
 import { T } from "../../theme/tokens";
 import { CampaignsAPI, PitchAPI } from "../../lib/api";
 import { fmtCompact, initials } from "../../lib/format";
-import { Link2, RefreshCw, Trash2, BadgeCheck, Send } from "lucide-react";
+import { Link2, Trash2, BadgeCheck, Send } from "lucide-react";
 
 const CLIENT_PORTAL_URL = (import.meta.env.VITE_CLIENT_PORTAL_URL || "https://www.fifth-avenue.in").replace(/\/$/, "");
 
@@ -162,18 +162,6 @@ export default function PitchClient({ onClose = () => {} } = {}) {
     }
   };
 
-  const regenerateCode = async () => {
-    try {
-      // Regenerates the whole brand's code (see routes/pitch.js) — the old
-      // link stops working for every campaign of this brand, not just this one.
-      const { pitchCode: code } = await PitchAPI.regenerateCode(campaignId);
-      setPitchCode(code);
-      showToast("New link generated — the old one no longer works, for every campaign of this brand.");
-    } catch (err) {
-      showToast(err.body?.error || err.message);
-    }
-  };
-
   // Brand-wide — this is the ONE link for this client, not one per campaign.
   const clientLink = pitchCode && brandFilter ? `${CLIENT_PORTAL_URL}/pitch/${brandFilter}?code=${pitchCode}` : null;
   const copyLink = () => {
@@ -258,7 +246,7 @@ export default function PitchClient({ onClose = () => {} } = {}) {
                   {clientLink ? (
                     <>
                       <button onClick={copyLink} style={secondaryBtn}><Link2 size={13} /> Copy client link</button>
-                      <button onClick={regenerateCode} title="Generate a new code — the old link stops working, for every campaign of this brand" style={iconBtn}><RefreshCw size={13} /></button>
+                      <span style={{ fontSize: 10, color: T.label }}>One link for this brand — it never changes.</span>
                     </>
                   ) : (
                     <span style={{ fontSize: 11, color: T.label }}>Add a profile to generate the client link.</span>

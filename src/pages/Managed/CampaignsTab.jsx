@@ -170,44 +170,372 @@ function MoneyBand({ count, clientCost, internalCost }) {
   const mounted = useMounted();
   const margin = clientCost - internalCost;
   const loss = margin < 0;
-  const internalShare = clientCost > 0 ? Math.min(100, (internalCost / clientCost) * 100) : 0;
+  const internalShare = clientCost > 0
+    ? Math.min(100, (internalCost / clientCost) * 100)
+    : 0;
   const marginShare = clientCost > 0 && !loss ? 100 - internalShare : 0;
-  const figs = [
-    ["Client cost", clientCost, MONEY.client, "paid by brands"],
-    ["Internal cost", internalCost, MONEY.internal, "paid to creators"],
-    ["Margin", margin, loss ? MONEY.loss : MONEY.margin, clientCost > 0 ? `${Math.round((margin / clientCost) * 100)}% of client cost` : "—"],
+  const marginPct = clientCost > 0
+    ? Math.round((margin / clientCost) * 100)
+    : 0;
+
+  const metrics = [
+    {
+      label: "Client cost",
+      value: clientCost,
+      note: "paid by brands",
+      icon: "₹",
+      valueColor: "#155E59",
+      iconColor: "#739A9A",
+      iconBackground: "#EEF4F4",
+    },
+    {
+      label: "Internal cost",
+      value: internalCost,
+      note: "paid to creators",
+      icon: "↗",
+      valueColor: "#155E59",
+      iconColor: "#A38A56",
+      iconBackground: "#F5F1E8",
+    },
+    {
+      label: "Margin",
+      value: margin,
+      note: clientCost > 0 ? `${marginPct}% of client cost` : "—",
+      icon: "↗",
+      valueColor: loss ? "#B84C4C" : "#155E59",
+      iconColor: loss ? "#B84C4C" : "#5FAF98",
+      iconBackground: loss ? "#FAEEEE" : "#EDF6F2",
+    },
   ];
+
   return (
-    <Reveal style={{ position: "relative", overflow: "hidden", borderRadius: 18, background: DARK_SURFACE, color: "#FFF", padding: "22px 26px", marginBottom: 14 }}>
-      <div aria-hidden style={{ position: "absolute", right: -60, top: -140, width: 360, height: 360, borderRadius: "50%", background: `radial-gradient(circle, ${MONEY.client}50, transparent 65%)`, pointerEvents: "none" }} />
-      <div style={{ position: "relative", display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: "18px 34px" }}>
-        <div>
-          <div style={{ fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(255,255,255,0.5)" }}>Deals shown</div>
-          <div style={{ fontSize: 42, fontWeight: 700, lineHeight: 1, letterSpacing: "-0.03em", marginTop: 6 }}><CountUp value={count} /></div>
+    <Reveal className="managed-money-band">
+      <style>{`
+        .managed-money-band {
+          position: relative;
+          isolation: isolate;
+          overflow: hidden;
+          width: 100%;
+          box-sizing: border-box;
+          margin-bottom: 14px;
+          padding: 16px 18px 13px;
+          border: 1px solid #D8E0E9;
+          border-radius: 20px;
+          background: linear-gradient(145deg, rgba(255,255,255,.97), rgba(244,247,250,.94));
+          box-shadow:
+            0 10px 26px rgba(35, 49, 69, .07),
+            0 2px 5px rgba(35, 49, 69, .035),
+            inset 0 1px 0 rgba(255,255,255,.95);
+          color: #172B43;
+        }
+        .managed-money-band::before {
+          content: "";
+          position: absolute;
+          z-index: -1;
+          inset: 0;
+          pointer-events: none;
+          background: radial-gradient(ellipse at 92% 0%, rgba(218,228,238,.3), transparent 43%);
+        }
+        .managed-money-metrics {
+          display: grid;
+          grid-template-columns: minmax(112px, .82fr) repeat(3, minmax(135px, 1.15fr)) minmax(72px, .48fr);
+          align-items: stretch;
+          gap: 8px;
+        }
+        .managed-money-deals,
+        .managed-money-metric,
+        .managed-money-donut-wrap {
+          min-width: 0;
+          min-height: 78px;
+          box-sizing: border-box;
+          border: 1px solid rgba(255,255,255,.92);
+          border-radius: 15px;
+          background: linear-gradient(145deg, rgba(255,255,255,.88), rgba(247,249,251,.72));
+          box-shadow: 0 3px 12px rgba(35,49,69,.045), inset 0 1px 0 #fff;
+        }
+        .managed-money-deals {
+          padding: 14px 15px 10px;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+        }
+        .managed-money-metric {
+          padding: 11px 12px 9px;
+          display: flex;
+          align-items: flex-start;
+          gap: 9px;
+        }
+        .managed-money-icon {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex: 0 0 30px;
+          width: 30px;
+          height: 30px;
+          border-radius: 50%;
+          font-size: 16px;
+          font-weight: 700;
+          line-height: 1;
+        }
+        .managed-money-label {
+          display: block;
+          margin: 3px 0 7px;
+          color: #778397;
+          font-size: 9px;
+          font-weight: 700;
+          line-height: 1.2;
+          letter-spacing: .105em;
+          text-transform: uppercase;
+          white-space: nowrap;
+        }
+        .managed-money-value {
+          color: #155E59;
+          font-size: clamp(19px, 1.5vw, 25px);
+          font-weight: 750;
+          line-height: 1.08;
+          letter-spacing: -.045em;
+          white-space: nowrap;
+        }
+        .managed-money-note {
+          margin-top: 4px;
+          color: #7A8796;
+          font-size: 9px;
+          line-height: 1.25;
+          white-space: nowrap;
+        }
+        .managed-money-deals .managed-money-label {
+          margin: 0 0 8px;
+        }
+        .managed-money-count {
+          color: #536F7C;
+          font-size: 36px;
+          font-weight: 750;
+          line-height: .98;
+          letter-spacing: -.055em;
+        }
+        .managed-money-donut-wrap {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 8px;
+        }
+        .managed-money-donut {
+          width: 58px;
+          height: 58px;
+          flex: 0 0 58px;
+          display: block;
+        }
+        .managed-money-bar-area {
+          padding: 0 13px;
+          margin-top: 10px;
+        }
+        .managed-money-bar {
+          display: flex;
+          width: 100%;
+          height: 10px;
+          overflow: hidden;
+          border-radius: 999px;
+          background: #E8EDF1;
+          box-shadow: inset 0 1px 2px rgba(27,45,60,.06);
+        }
+        .managed-money-bar-internal {
+          background: #D7C48C;
+          transition: width .75s cubic-bezier(.2,.7,.2,1);
+        }
+        .managed-money-bar-margin {
+          background: #65B99E;
+          transition: width .75s cubic-bezier(.2,.7,.2,1);
+        }
+        .managed-money-caption {
+          margin-top: 8px;
+          color: #69788B;
+          font-size: 10px;
+          line-height: 1.5;
+          letter-spacing: -.01em;
+        }
+        .managed-money-caption strong {
+          color: #A78B45;
+          font-weight: 750;
+        }
+        .managed-money-caption .managed-money-margin-text {
+          color: #369777;
+        }
+        @media (max-width: 850px) {
+          .managed-money-metrics {
+            grid-template-columns: minmax(90px, .7fr) repeat(2, minmax(125px, 1fr));
+          }
+          .managed-money-donut-wrap {
+            grid-column: 1 / -1;
+            min-height: 65px;
+          }
+          .managed-money-donut {
+            width: 52px;
+            height: 52px;
+          }
+        }
+        @media (max-width: 560px) {
+          .managed-money-band {
+            padding: 12px;
+            border-radius: 16px;
+          }
+          .managed-money-metrics {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 7px;
+          }
+          .managed-money-deals,
+          .managed-money-metric {
+            min-height: 78px;
+            padding: 10px;
+          }
+          .managed-money-deals {
+            grid-column: 1 / -1;
+            min-height: 65px;
+          }
+          .managed-money-metric {
+            gap: 7px;
+          }
+          .managed-money-icon {
+            flex-basis: 26px;
+            width: 26px;
+            height: 26px;
+            font-size: 14px;
+          }
+          .managed-money-label {
+            font-size: 8px;
+            letter-spacing: .07em;
+          }
+          .managed-money-value {
+            font-size: 19px;
+          }
+          .managed-money-note {
+            font-size: 8px;
+          }
+          .managed-money-donut-wrap {
+            grid-column: 1 / -1;
+            min-height: 62px;
+          }
+          .managed-money-bar-area {
+            margin-top: 10px;
+            padding: 0 2px;
+          }
+          .managed-money-caption {
+            font-size: 9px;
+          }
+        }
+      `}</style>
+
+      <div className="managed-money-metrics">
+        <div className="managed-money-deals">
+          <span className="managed-money-label">Deals shown</span>
+          <span className="managed-money-count">
+            <CountUp value={count} />
+          </span>
         </div>
-        {figs.map(([label, v, c, sub]) => (
-          <div key={label} style={{ minWidth: 130 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(255,255,255,0.55)" }}>
-              <span style={{ width: 8, height: 8, borderRadius: 2, background: c }} />{label}
+
+        {metrics.map((metric) => (
+          <div className="managed-money-metric" key={metric.label}>
+            <span
+              className="managed-money-icon"
+              aria-hidden="true"
+              style={{
+                color: metric.iconColor,
+                background: metric.iconBackground,
+              }}
+            >
+              {metric.icon}
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <span className="managed-money-label">{metric.label}</span>
+              <div
+                className="managed-money-value"
+                style={{ color: metric.valueColor }}
+              >
+                <CountUp value={metric.value} format={inr} />
+              </div>
+              <div className="managed-money-note">{metric.note}</div>
             </div>
-            <div style={{ fontSize: 25, fontWeight: 700, letterSpacing: "-0.02em", marginTop: 6, color: label === "Margin" ? (loss ? "#F4A0A0" : "#8BE6B2") : "#FFF" }}>
-              <CountUp value={v} format={inr} />
-            </div>
-            <div style={{ fontSize: 9.5, color: "rgba(255,255,255,0.45)", marginTop: 2 }}>{sub}</div>
           </div>
         ))}
-      </div>
-      <div style={{ position: "relative", marginTop: 18 }}>
-        <div style={{ display: "flex", gap: 2, height: 10, borderRadius: 5, overflow: "hidden", background: "rgba(255,255,255,0.08)" }}>
-          <div className="fx-bar" style={{ width: mounted ? `${loss ? 100 : internalShare}%` : 0, background: loss ? MONEY.loss : MONEY.internal, borderRadius: 5 }} />
-          {marginShare > 0 && <div className="fx-bar" style={{ width: mounted ? `${marginShare}%` : 0, background: MONEY.margin, borderRadius: 5, transitionDelay: ".12s" }} />}
+
+        <div className="managed-money-donut-wrap">
+          <svg
+            className="managed-money-donut"
+            viewBox="0 0 64 64"
+            role="img"
+            aria-label={`${Math.max(0, marginPct)} percent margin`}
+          >
+            <circle
+              cx="32"
+              cy="32"
+              r="25"
+              fill="none"
+              stroke="#E0E7EB"
+              strokeWidth="7"
+            />
+            <circle
+              cx="32"
+              cy="32"
+              r="25"
+              fill="none"
+              stroke={loss ? "#C46C6C" : "#65B99E"}
+              strokeWidth="7"
+              strokeLinecap="round"
+              strokeDasharray={`${Math.max(0, Math.min(100, marginPct)) * 1.5708} 157.08`}
+              transform="rotate(-90 32 32)"
+              style={{ transition: "stroke-dasharray .75s ease" }}
+            />
+            <text
+              x="32"
+              y="35"
+              textAnchor="middle"
+              fontSize="12"
+              fontWeight="750"
+              fill="#24394D"
+            >
+              {clientCost > 0 ? `${marginPct}%` : "—"}
+            </text>
+          </svg>
         </div>
-        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.6)", marginTop: 7 }}>
-          {clientCost === 0
-            ? "No client cost logged on these deals yet."
-            : loss
-              ? "Running at a loss — creators are being paid more than brands paid us."
-              : <>Of every ₹100 a brand pays: <b style={{ color: "#F3D98B" }}>₹{Math.round(internalShare)}</b> goes to the creator, <b style={{ color: "#8BE6B2" }}>₹{Math.round(marginShare)}</b> is margin.</>}
+      </div>
+
+      <div className="managed-money-bar-area">
+        <div
+          className="managed-money-bar"
+          role="img"
+          aria-label={`Internal cost ${Math.round(internalShare)} percent, margin ${Math.round(marginShare)} percent`}
+        >
+          <div
+            className="managed-money-bar-internal"
+            style={{
+              width: mounted ? `${loss ? 100 : internalShare}%` : "0%",
+              background: loss ? "#C46C6C" : undefined,
+            }}
+          />
+          {marginShare > 0 && (
+            <div
+              className="managed-money-bar-margin"
+              style={{
+                width: mounted ? `${marginShare}%` : "0%",
+              }}
+            />
+          )}
+        </div>
+
+        <div className="managed-money-caption">
+          {clientCost === 0 ? (
+            "No client cost logged on these deals yet."
+          ) : loss ? (
+            "Running at a loss — creators are being paid more than brands paid us."
+          ) : (
+            <>
+              Of every ₹100 a brand pays:{" "}
+              <strong>₹{Math.round(internalShare)}</strong> goes to the creator,{" "}
+              <strong className="managed-money-margin-text">
+                ₹{Math.round(marginShare)}
+              </strong>{" "}
+              is margin.
+            </>
+          )}
         </div>
       </div>
     </Reveal>

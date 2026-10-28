@@ -159,34 +159,191 @@ export default function AssetsTab({ creators, deals, dealsLoading }) {
     <div>
       <style>{FX_CSS + ASSET_CSS}</style>
 
-      {/* Header band */}
-      <Reveal style={{ position: "relative", overflow: "hidden", borderRadius: 20, background: DARK_SURFACE, color: "#FFF", padding: "24px 28px", marginBottom: 16, display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between", gap: 22 }}>
-        <div aria-hidden style={{ position: "absolute", left: -100, top: -160, width: 400, height: 400, borderRadius: "50%", background: `radial-gradient(circle, ${T.pink}4D, transparent 65%)`, pointerEvents: "none" }} />
-        <div style={{ position: "relative" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 9.5, letterSpacing: "0.16em", textTransform: "uppercase", color: "rgba(255,255,255,0.55)" }}>
-            <Film size={13} /> Reel library
+      {/* Header band — compact white glass design */}
+      <Reveal className="as-library-header">
+        <style>{`
+          .as-library-header {
+            position: relative;
+            isolation: isolate;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 82px;
+            padding: 11px 13px;
+            margin-bottom: 16px;
+            overflow: hidden;
+            border: 1px solid #D9E2EE;
+            border-radius: 17px;
+            color: #172B49;
+            background: linear-gradient(115deg, rgba(255,255,255,.98) 0%, rgba(246,249,253,.97) 64%, rgba(237,244,251,.96) 100%);
+            box-shadow: 0 7px 22px rgba(27, 48, 77, .07), 0 1px 3px rgba(27,48,77,.04), inset 0 1px 0 rgba(255,255,255,.98);
+          }
+          .as-library-header::before {
+            content: "";
+            position: absolute;
+            z-index: -1;
+            pointer-events: none;
+            width: 340px;
+            height: 180px;
+            top: -104px;
+            left: 25%;
+            transform: rotate(-28deg);
+            background: linear-gradient(90deg, transparent, rgba(213,229,249,.28), transparent);
+          }
+          .as-library-intro {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 220px;
+            padding-left: 4px;
+          }
+          .as-library-icon {
+            width: 39px;
+            height: 39px;
+            flex: 0 0 39px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid rgba(255,255,255,.95);
+            border-radius: 12px;
+            color: #23548D;
+            background: linear-gradient(145deg, #EAF2FF, #DDE9FA);
+            box-shadow: 0 3px 9px rgba(40,78,125,.08), inset 0 1px 0 #fff;
+          }
+          .as-library-copy { min-width: 0; }
+          .as-library-eyebrow {
+            color: #627B9D;
+            font-size: 8px;
+            line-height: 1.3;
+            font-weight: 800;
+            letter-spacing: .15em;
+            text-transform: uppercase;
+            white-space: nowrap;
+          }
+          .as-library-title {
+            margin-top: 2px;
+            color: #142947;
+            font-family: 'Newsreader', Georgia, serif;
+            font-size: 23px;
+            font-weight: 650;
+            font-style: italic;
+            line-height: 1.08;
+            white-space: nowrap;
+          }
+          .as-library-divider {
+            width: 1px;
+            align-self: stretch;
+            min-height: 30px;
+            margin: 0 2px;
+            background: #D8E2EE;
+          }
+          .as-library-hint {
+            color: #687D99;
+            font-size: 10px;
+            line-height: 1.5;
+            white-space: nowrap;
+          }
+          .as-library-stats {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(74px, 1fr)) minmax(78px, 1fr);
+            gap: 7px;
+            align-items: stretch;
+            margin-left: auto;
+            min-width: 0;
+          }
+          .as-library-stat {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-width: 0;
+            padding: 7px 10px 6px;
+            border: 1px solid #E1E9F3;
+            border-radius: 11px;
+            background: rgba(255,255,255,.58);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.9);
+          }
+          .as-library-stat-label {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            color: #70819A;
+            font-size: 7px;
+            line-height: 1.3;
+            font-weight: 800;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+            white-space: nowrap;
+          }
+          .as-library-stat-label svg { flex: 0 0 auto; }
+          .as-library-stat-value {
+            margin-top: 4px;
+            color: #172B49;
+            font-size: 16px;
+            font-weight: 800;
+            line-height: 1;
+            letter-spacing: -.035em;
+            white-space: nowrap;
+          }
+          .as-library-stat--er {
+            border-color: #CBE8E7;
+            background: linear-gradient(145deg, #F0FBFA, #E5F5F5);
+          }
+          .as-library-stat--er .as-library-stat-label { color: #338F88; }
+          .as-library-stat--er .as-library-stat-value { color: #155E63; }
+          @media (max-width: 980px) {
+            .as-library-header { align-items: stretch; flex-direction: column; gap: 10px; padding: 12px; }
+            .as-library-intro { min-width: 0; }
+            .as-library-stats { width: 100%; margin-left: 0; }
+            .as-library-hint { white-space: normal; }
+          }
+          @media (max-width: 520px) {
+            .as-library-header { border-radius: 14px; }
+            .as-library-intro { gap: 9px; }
+            .as-library-icon { width: 34px; height: 34px; flex-basis: 34px; }
+            .as-library-title { font-size: 21px; }
+            .as-library-divider { display: none; }
+            .as-library-hint { display: none; }
+            .as-library-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+            .as-library-stat { padding: 8px; }
+            .as-library-stat-value { font-size: 16px; }
+            .as-library-stat--er { grid-column: span 2; }
+          }
+        `}</style>
+
+        <div aria-hidden style={{ position: "absolute", zIndex: -1, right: "30%", top: -85, width: 240, height: 170, borderRadius: "50%", background: "radial-gradient(circle, rgba(219,232,249,.28), transparent 70%)", pointerEvents: "none" }} />
+
+        <div className="as-library-intro">
+          <div className="as-library-icon" aria-hidden="true">
+            <Film size={17} strokeWidth={1.8} />
           </div>
-          <div style={{ fontFamily: "'Newsreader',serif", fontStyle: "italic", fontSize: 30, fontWeight: 600, marginTop: 6, lineHeight: 1.1 }}>
-            <CountUp value={fetched.length} /> reel{fetched.length === 1 ? "" : "s"}{filtered ? " in view" : ""}
+          <div className="as-library-copy">
+            <div className="as-library-eyebrow">Reel library</div>
+            <div className="as-library-title">
+              <CountUp value={fetched.length} /> reel{fetched.length === 1 ? "" : "s"}{filtered ? " in view" : ""}
+            </div>
           </div>
-          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.6)", marginTop: 4 }}>
+          <div className="as-library-divider" />
+          <div className="as-library-hint">
             Hover any reel to play it.{failed.length > 0 && ` ${failed.length} link${failed.length === 1 ? "" : "s"} couldn't be fetched — shown at the end.`}
           </div>
         </div>
-        <div style={{ position: "relative", display: "flex", flexWrap: "wrap", gap: 10 }}>
+
+        <div className="as-library-stats">
           {[[Eye, "Views", totals.views], [Heart, "Likes", totals.likes], [MessageCircle, "Comments", totals.comments], [Share2, "Shares", totals.shares]].map(([Icon, label, v]) => (
-            <div key={label} style={{ minWidth: 92, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, padding: "10px 13px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 9, color: "rgba(255,255,255,0.55)", textTransform: "uppercase", letterSpacing: "0.08em" }}><Icon size={11} /> {label}</div>
-              <div style={{ fontSize: 20, fontWeight: 700, marginTop: 3 }}><CountUp value={v} format={compact} /></div>
+            <div className="as-library-stat" key={label}>
+              <div className="as-library-stat-label"><Icon size={10} strokeWidth={1.8} /> {label}</div>
+              <div className="as-library-stat-value"><CountUp value={v} format={compact} /></div>
             </div>
           ))}
-          <div style={{ minWidth: 92, background: "rgba(255,255,255,0.92)", color: "#14151A", borderRadius: 12, padding: "10px 13px" }}>
-            <div style={{ fontSize: 9, color: T.sub, textTransform: "uppercase", letterSpacing: "0.08em" }}>Avg ER</div>
-            <div style={{ fontSize: 20, fontWeight: 700, marginTop: 3 }}>{totals.er != null ? <CountUp value={totals.er} format={n => `${n.toFixed(1)}%`} /> : "—"}</div>
+          <div className="as-library-stat as-library-stat--er">
+            <div className="as-library-stat-label"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 9.5V6.8M5 9.5V4.5M8 9.5V2.5M10.5 9.5H1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg> Avg ER</div>
+            <div className="as-library-stat-value">{totals.er != null ? <CountUp value={totals.er} format={n => `${n.toFixed(1)}%`} /> : "—"}</div>
           </div>
         </div>
       </Reveal>
-
       {/* Toolbar */}
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, marginBottom: 16 }}>
         <div style={{ display: "inline-flex", padding: 3, borderRadius: 8, background: T.mute, flexWrap: "wrap" }}>

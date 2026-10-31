@@ -347,6 +347,9 @@ export const InvoicePdfAPI = {
   url: (invoiceNo) => `${BASE}/api/invoices/${encodeURIComponent(invoiceNo)}/pdf`,
 };
 
+// The live stream (server-sent events) — see lib/campaignSync.js connectLive.
+export const LIVE_URL = `${BASE}/api/live`;
+
 export const CampaignsAPI = {
   list: () => request("/api/campaigns"),
   // Just the brandIds a team member's campaigns belong to. The app shell asks
@@ -360,8 +363,34 @@ export const CampaignsAPI = {
   populatedBrands: () => request("/api/campaigns/brand-scope?all=1"),
   create: (campaign) =>
     request("/api/campaigns", { method: "POST", body: JSON.stringify(campaign) }),
+  // Plain campaign fields only. A `creators` or `timeline` list sent here is
+  // refused (409) — those are saved row by row / entry by entry below, so two
+  // people never overwrite each other. See lib/campaignSync.js.
   update: (id, patch) =>
     request(`/api/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  /** One campaign, freshly read — what an open screen re-reads when told it changed. */
+  get: (id) => request(`/api/campaigns/${encodeURIComponent(id)}`),
+  /** { campaignId: rev } for every campaign — the cheap "did anything change?" check. */
+  revs: () => request("/api/campaigns-revs"),
+  /* Field-level writes (backend campaignSync.js). `from` is what the field
+     held when this person started; a different value saved by someone else
+     since comes back as 409 { conflicts:[{path,current,yours,by,at}], row }.
+     `force` is the "use mine" answer to that. */
+  patchCreator: (id, crId, { set, from, force, actor }) =>
+    request(`/api/campaigns/${encodeURIComponent(id)}/creators/${encodeURIComponent(crId)}`,
+      { method: "PATCH", body: JSON.stringify({ set, from, force: !!force, actor }) }),
+  addCreators: (id, rows, actor) =>
+    request(`/api/campaigns/${encodeURIComponent(id)}/creators`, { method: "POST", body: JSON.stringify({ rows, actor }) }),
+  removeCreator: (id, crId, actor) =>
+    request(`/api/campaigns/${encodeURIComponent(id)}/creators/${encodeURIComponent(crId)}?actor=${encodeURIComponent(actor || "")}`, { method: "DELETE" }),
+  patchFields: (id, { set, from, force, actor }) =>
+    request(`/api/campaigns/${encodeURIComponent(id)}/fields`, { method: "PATCH", body: JSON.stringify({ set, from, force: !!force, actor }) }),
+  addTimeline: (id, entry, actor) =>
+    request(`/api/campaigns/${encodeURIComponent(id)}/timeline`, { method: "POST", body: JSON.stringify({ entry, actor }) }),
+  /* Who's on a campaign: state "view" | "edit" | "leave". Best-effort — the
+     server forgets anyone it hasn't heard from in 45s. */
+  presence: (body) =>
+    request("/api/live/presence", { method: "POST", body: JSON.stringify(body), keepalive: true }).catch(() => null),
   /* Archive: the campaign leaves every view but stays in Mongo, and the act
      lands on its own timeline as the audit entry. `actor` is who did it. */
   archive: (id, actor) => request(`/api/campaigns/${id}?actor=${encodeURIComponent(actor || "Unknown")}`, { method: "DELETE" }),

@@ -4,7 +4,7 @@
  * The IM board. Brand-grouped campaign tiles, a forked finance/execution
  * pipeline per campaign, and the deliverables + team + P&L tabs behind each.
  */
- import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect, forwardRef, Fragment } from "react";
+ import { useState, useMemo, useCallback, useEffect, useRef, useLayoutEffect, forwardRef, Fragment, createContext, useContext } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
@@ -35,6 +35,7 @@ import PitchClient from "../PitchClient";
 import PitchDraft from "../PitchDraft";
 import { Send, Users2, MapPin, CalendarDays, Pencil, ChevronDown, ChevronRight, Download } from "lucide-react";
 import { downloadCampaignsWorkbook } from "../../lib/campaignExport";
+import { createSyncEngine, connectLive, TAB_KEY } from "../../lib/campaignSync";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
 import { T as BASE_T } from "../../theme/tokens";
@@ -3221,9 +3222,22 @@ function CreatorSearch({query,onQuery,hits,directory,onAdd,campNiches}){
   );
 }
 
+// A tab's working copy of the roster. Follows the campaign as it changes —
+// including other people's saves arriving live — and hands back a ref that is
+// always the latest copy, for handlers that run after an await or twice in a
+// tick. The tab's own edits flow up through onUpdateCreators and come back as
+// the same array, so they never bounce.
+function useRoster(source){
+  const [creators,setState]=useState(source||[]);
+  const ref=useRef(creators);
+  const set=useCallback(v=>{ const n=typeof v==="function"?v(ref.current):v; ref.current=n; setState(n); },[]);
+  useEffect(()=>{ const s=source||[]; if(s!==ref.current){ ref.current=s; setState(s); } },[source]);
+  return [creators,set,ref];
+}
+
 // ── CREATORS TABLE ────────────────────────────────────────────────────────────
 function TabCreators({camp,role,onUpdateCreators,onLogTimeline,onSaveCampaign}){
-  const [creators,setCreators]=useState(camp.creators||[]);
+  const [creators,setCreators,crRef]=useRoster(camp.creators);
   // View-only — nothing is sent anywhere by flipping this. It just puts a
   // chevron on every row so a specific creator's Audience Details can be
   // opened one at a time, rather than dumping three extra sections under
@@ -3267,7 +3281,9 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline,onSaveCampaign}){
   const over=totalFee>cb;
   const canEdit=["ea","cm","am","pcm","founder"].includes(role);
   const sync=next=>{setCreators(next);onUpdateCreators(next);};
-  const patch=(id,obj)=>sync(creators.map(c=>c._id===id?{...c,...obj}:c));
+  // From the ref, not the render's `creators`: two edits in one tick (a cost
+  // and its timeline line, or a quick double change) must build on each other.
+  const patch=(id,obj)=>sync(crRef.current.map(c=>c._id===id?{...c,...obj}:c));
   // Anyone already on the roster is out of both the suggestions and the search
   // results — offering to add someone twice is never the right answer.
   //
@@ -3563,7 +3579,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline,onSaveCampaign}){
                   the only route back is Remove, which cancels the expense
                   outright — the honest trail for a deal that fell through. */}
               {canCrFin(role)&&<td style={tdS}>{canEdit&&!costFrozen(role,cr)
-                ? <CostCell value={costOf(cr)} onCommit={n=>setCost(cr,n)}
+                ? <CostCell value={costOf(cr)} onCommit={n=>setCost(cr,n)} crId={cr._id} field="cost" meta={cr.editedBy?.cost}
                     style={{width:76,background:"transparent",border:"none",borderBottom:`1px solid ${isLocked(cr)?`${T.amber}66`:T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}
                     title={isLocked(cr)?`Founder override — this fee is committed in Billing${cr.invoiceNo?` and invoiced as ${cr.invoiceNo}`:""}. Changing it re-prices the expense and is logged to the timeline.`:undefined}/>
                 : <span title={canEdit&&isLocked(cr)?"Cost is locked — this creator's fee is committed in Billing and locking is final. Remove them from the roster if the deal falls through.":undefined}
@@ -3579,7 +3595,7 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline,onSaveCampaign}){
                   once that PO exists, since it then restates a figure they
                   hold. */}
               {canFin(role)&&<td style={tdS}>{canEdit
-                ? <CostCell value={clientCostOf(cr)} onCommit={n=>setClientCost(cr,n)} blankAs={null}
+                ? <CostCell value={clientCostOf(cr)} onCommit={n=>setClientCost(cr,n)} blankAs={null} crId={cr._id} field="clientCost" meta={cr.editedBy?.clientCost}
                     style={{width:82,background:"transparent",border:"none",borderBottom:`1px solid ${T.border}`,color:T.text,fontSize:11,fontFamily:"'Sora'",outline:"none",padding:"2px 0"}}
                     title={beforePO(camp)?"What the client is billed for this creator — shown in their portal's budget breakdown. Leave empty until it is agreed.":"The client PO is raised — changing this restates a figure the client already has, and is logged to the timeline."}/>
                 : <span style={{color:clientCostOf(cr)==null?T.label:T.text}}>{clientCostOf(cr)==null?"—":fmtINR(clientCostOf(cr))}</span>}</td>}
@@ -3661,19 +3677,37 @@ function TabCreators({camp,role,onUpdateCreators,onLogTimeline,onSaveCampaign}){
   </div>);
 }
 
-    // ── DRAFT-ON-BLUR MONEY CELL ─────────────────────────────────────────────────
+    // ── DRAFT CELLS ──────────────────────────────────────────────────────────────
     // A free-text field must not commit per keystroke. Typing "1,50,000" fired
-    // six campaign PATCHes — plus six expense PATCHes for a locked creator — all
+    // six campaign saves — plus six expense PATCHes for a locked creator — all
     // racing, and every intermediate value ("1", "15", "150") was briefly the
     // creator's real committed cost in Billing.
     //
-    // Hold a local draft, commit on blur, re-sync when the underlying value
-    // changes so switching creators never shows a stale draft.
+    // So a cell holds a local draft. While the draft is untouched it follows the
+    // saved value — including a change someone else just made, which now
+    // arrives live. Once you start typing it is YOURS: an incoming change no
+    // longer wipes what you typed; the cell says the value moved underneath you
+    // instead, and nothing is written until you save.
 function useDraft(value,onCommit,parse){
   const [draft,setDraft]=useState(String(value ?? ""));
-  useEffect(()=>{setDraft(String(value ?? ""));},[value]);
-  const commit=()=>{const n=parse(draft); if(n!==value) onCommit(n);};
-  return [draft,setDraft,commit];
+  const [base,setBase]=useState(value);           // the saved value this edit started from
+  const dirty=draft!==String(base ?? "");
+  useEffect(()=>{ if(!dirty){ setDraft(String(value ?? "")); setBase(value); } },[value]); // eslint-disable-line react-hooks/exhaustive-deps
+  const commit=()=>{
+    if(!dirty)return;
+    const n=parse(draft);
+    if(n!==value) onCommit(n);
+    setBase(n); setDraft(String(n ?? ""));
+  };
+  const cancel=()=>{ setDraft(String(value ?? "")); setBase(value); };
+  return [draft,setDraft,commit,{dirty,cancel,changedUnder:dirty&&value!==base}];
+}
+
+// Every cell holding typed-but-unsaved work, so leaving the page can warn.
+const unsavedDrafts=new Set();
+function useUnsaved(dirty){
+  const key=useRef({}).current;
+  useEffect(()=>{ dirty?unsavedDrafts.add(key):unsavedDrafts.delete(key); return ()=>unsavedDrafts.delete(key); },[dirty,key]);
 }
 
 // `title` is threaded through like DelivCell's: the founder's override of a
@@ -3682,19 +3716,51 @@ function useDraft(value,onCommit,parse){
 // `blankAs` is what an emptied field commits: 0 for the negotiated fee (a blank
 // there is a typo mid-edit), null for the client cost, which has a real unset
 // state that must survive being cleared.
-function CostCell({value,onCommit,style,title,blankAs=0}){
-  const [draft,setDraft,commit]=useDraft(value,onCommit,d=>d===""?blankAs:(parseInt(d)||0));
-  return <MoneyInput value={draft} onChange={setDraft} onBlur={commit} title={title}
-    onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}} style={style}/>;
+//
+// Money is saved on purpose, not on blur: type, then Save (or Enter). Esc
+// throws the edit away. Clicking elsewhere keeps the draft — amber, with its
+// Save button still showing — so a stray click can neither lose a figure nor
+// commit a half-typed one. `crId`/`field` let others see who is editing it.
+function CostCell({value,onCommit,style,title,blankAs=0,crId,field,meta}){
+  const live=useContext(LiveCtx);
+  const [draft,setDraft,commit,{dirty,cancel,changedUnder}]=useDraft(value,onCommit,d=>d===""?blankAs:(parseInt(d)||0));
+  useUnsaved(dirty);
+  const others=live?.editorsOf?.(crId,field)||[];
+  const save=()=>{ commit(); live?.setEditing?.(null); };
+  const discard=()=>{ cancel(); live?.setEditing?.(null); };
+  const money=v=>v==null?"—":fmtINR(v);
+  const mini={border:"none",borderRadius:4,fontFamily:"'Sora'",fontSize:9.5,fontWeight:600,cursor:"pointer",padding:"3px 7px",lineHeight:1.2};
+  return <span style={{display:"inline-flex",flexDirection:"column",gap:2}}><span style={{display:"inline-flex",alignItems:"center",gap:4,flexWrap:"nowrap"}}>
+    <MoneyInput value={draft} onChange={setDraft} title={title} aria-label={field==="clientCost"?"Client cost":"Cost"}
+      onFocus={()=>live?.setEditing?.(crId,field)}
+      onBlur={()=>{ if(!dirty) live?.setEditing?.(null); }}
+      onKeyDown={e=>{
+        if(e.key==="Enter"){ e.preventDefault(); save(); e.currentTarget.blur(); }
+        else if(e.key==="Escape"){ e.preventDefault(); discard(); e.currentTarget.blur(); }
+      }}
+      style={{...style,...(dirty?{borderBottom:`1px solid ${T.amber}`,background:`${T.amber}14`,borderRadius:3}:{})}}/>
+    {dirty&&<>
+      <button type="button" data-testid="cost-save" onMouseDown={e=>e.preventDefault()} onClick={save} title="Save (Enter)"
+        style={{...mini,background:T.green,color:"#fff"}}>Save</button>
+      <button type="button" onMouseDown={e=>e.preventDefault()} onClick={discard} title="Discard (Esc)"
+        style={{...mini,background:"transparent",color:T.sub,padding:"3px 4px"}}>✕</button>
+    </>}
+    {!dirty&&others.length>0&&<span title={`${others.map(o=>o.user).join(", ")} ${others.length>1?"are":"is"} editing this`}
+      style={{fontSize:9,color:T.accent,fontWeight:600,whiteSpace:"nowrap"}}>✎ {others[0].user.split(" ")[0]}</span>}
+    </span>
+    {changedUnder&&<span data-testid="cost-moved" title={`Saved value changed to ${money(value)}${meta?.by?` by ${meta.by}`:""} while you were typing. Save to replace it, or ✕ to take theirs.`}
+      style={{fontSize:9,color:T.red,fontWeight:600,whiteSpace:"nowrap",cursor:"help"}}>
+      ⚠ now {money(value)}{meta?.by?` · saved by ${meta.by.split(" ")[0]}`:""}</span>}
+  </span>;
 }
 
-// How many posts this creator owes. Draft-on-blur for the same reason as
-// CostCell, and one more: every commit writes a timeline entry, so committing
-// per keystroke would log "1 → 1", "1 → 12", "1 → 123" for one edit and bury
-// the real change in noise. Clamped at 1 — a locked creator owing zero posts
+// How many posts this creator owes. Commits on blur (one small integer, and
+// every commit writes a timeline entry, so per keystroke would log "1 → 1",
+// "1 → 12", "1 → 123"). Clamped at 1 — a locked creator owing zero posts
 // is not a scope change, it's a mistake.
 function DelivCell({value,onCommit,style,title}){
-  const [draft,setDraft,commit]=useDraft(value,onCommit,d=>Math.max(1,parseInt(d)||1));
+  const [draft,setDraft,commit,{dirty}]=useDraft(value,onCommit,d=>Math.max(1,parseInt(d)||1));
+  useUnsaved(dirty);
   return <input type="number" min={1} value={draft} title={title}
     onChange={e=>setDraft(e.target.value)} onBlur={commit}
     onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}} style={style}/>;
@@ -3709,9 +3775,10 @@ function DelivCell({value,onCommit,style,title}){
     // money cell above.
 function AssetCell({label,asset,canEdit,onPatch,style={}}){
   const [draft,setDraft]=useState(asset.fileLink||"");
-  // Re-sync when the campaign or creator underneath changes, so the box never
-  // shows a stale draft from a previously selected row.
-  useEffect(()=>{setDraft(asset.fileLink||"");},[asset.fileLink]);
+  // Re-sync when the saved link changes (another row, or someone else's edit
+  // arriving live) — but never over a link that is being typed right now.
+  const typing=useRef(false);
+  useEffect(()=>{ if(!typing.current) setDraft(asset.fileLink||""); },[asset.fileLink]);
   const commit=()=>{
     const v=draft.trim();
     if(v!==(asset.fileLink||"")) onPatch({fileLink:v||null});
@@ -3722,7 +3789,7 @@ function AssetCell({label,asset,canEdit,onPatch,style={}}){
     {canEdit
       ? <select value={asset.status} onChange={e=>onPatch({status:e.target.value})} style={{background:"transparent",border:`1px solid ${T.border}`,color:ASSET_COLOR[asset.status]||T.sub,fontSize:10,fontFamily:"'Sora'",outline:"none",borderRadius:4,padding:"3px 6px",width:"100%",marginBottom:8}}>{ASSET_STATUSES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>
       : <span style={stS(asset.status)}>{ASSET_STATUSES.find(s=>s.id===asset.status)?.label}</span>}
-    {canEdit&&<input value={draft} onChange={e=>setDraft(e.target.value)} onBlur={commit}
+    {canEdit&&<input value={draft} onChange={e=>setDraft(e.target.value)} onFocus={()=>{typing.current=true;}} onBlur={()=>{typing.current=false;commit();}}
       onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}}
       placeholder="Attach file link…" style={{...INP,fontSize:10,padding:"5px 8px",resize:"none"}}/>}
     {asset.fileLink
@@ -3744,7 +3811,8 @@ function LiveLinks({links,platform,canEdit,onChange}){
   // A trailing blank row is what makes "add another" work without a button
   // while editing; it is never persisted, because withLiveLinks drops empties.
   const [draft,setDraft]=useState(links);
-  useEffect(()=>{setDraft(links);},[links.join("|")]);
+  const typing=useRef(false); // a live update must not replace a URL mid-typing
+  useEffect(()=>{ if(!typing.current) setDraft(links); },[links.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
   const rows=canEdit?[...draft,""]:draft;
   const commit=next=>{const clean=next.filter(Boolean); if(clean.join("|")!==links.join("|")) onChange(clean);};
   const setAt=(i,v)=>setDraft(d=>{const n=[...d];n[i]=v;return n;});
@@ -3755,7 +3823,7 @@ function LiveLinks({links,platform,canEdit,onChange}){
       return(<div key={i}>
         {canEdit
           ? <div style={{display:"flex",gap:4,alignItems:"center"}}>
-              <input value={u} onChange={e=>setAt(i,e.target.value)} onBlur={()=>commit(draft)}
+              <input value={u} onChange={e=>setAt(i,e.target.value)} onFocus={()=>{typing.current=true;}} onBlur={()=>{typing.current=false;commit(draft);}}
                 onKeyDown={e=>{if(e.key==="Enter")e.currentTarget.blur();}}
                 placeholder={i===0?`${label} URL…`:`${label} URL (${i+1})`}
                 style={{...INP,fontSize:10,padding:"5px 8px",resize:"none",flex:1,borderColor:bad?T.red:T.border}}/>
@@ -3852,22 +3920,27 @@ function TabDeliverables({camp,role,currentUser,onUpdateCreators,onLogTimeline})
   // `creators` stays the FULL list so edits below splice back into the real
   // array; `rows` is what actually renders. Filtering the state itself would
   // drop every non-locked creator on the first save.
-  const [creators,setCreators]=useState(camp.creators||[]);
+  const [creators,setCreators,crRef]=useRoster(camp.creators);
   const rows=creators.filter(isLocked);
   const [fetching,setFetching]=useState({});
   const canEdit=["ea","cm","am","pcm","founder"].includes(role);
   const sync=next=>{setCreators(next);onUpdateCreators(next);};
-  const pCr=(id,obj)=>sync(creators.map(c=>c._id===id?{...c,...obj}:c));
-  const pCon=(id,obj)=>pCr(id,{concept:{...(creators.find(c=>c._id===id)?.concept||{}),...obj}});
-  const pDem=(id,obj)=>pCr(id,{demo:{...(creators.find(c=>c._id===id)?.demo||{}),...obj}});
-  const pLiv=(id,obj)=>pCr(id,{live:{...(creators.find(c=>c._id===id)?.live||{}),...obj}});
+  // All from crRef — the roster as it is NOW. The Refresh below awaits the
+  // network and then patches; reading the render's `creators` there wrote back
+  // a copy from before the fetch started, undoing anything saved meanwhile.
+  const cur=id=>crRef.current.find(c=>c._id===id);
+  const pCr=(id,obj)=>sync(crRef.current.map(c=>c._id===id?{...c,...obj}:c));
+  const pCon=(id,obj)=>pCr(id,{concept:{...(cur(id)?.concept||{}),...obj}});
+  const pDem=(id,obj)=>pCr(id,{demo:{...(cur(id)?.demo||{}),...obj}});
+  const pLiv=(id,obj)=>pCr(id,{live:{...(cur(id)?.live||{}),...obj}});
   /* setCreators, NOT sync: the thread is already persisted by the append
      endpoint, and routing it through onUpdateCreators would fire a campaign
      PATCH that rewrites creators[] from this tab's copy — the exact overwrite
-     the endpoint exists to avoid. */
+     the endpoint exists to avoid. (Saves are field-level now and skip
+     threads anyway; this stays local so the reply shows at once.) */
   const setThread=(id,asset,comments)=>setCreators(cs=>cs.map(c=>
     c._id===id?{...c,[asset]:{...(c[asset]||{}),comments}}:c));
-  const pTrk=(id,obj)=>pCr(id,{tracking:{...(creators.find(c=>c._id===id)?.tracking||{}),...obj}});
+  const pTrk=(id,obj)=>pCr(id,{tracking:{...(cur(id)?.tracking||{}),...obj}});
   // Scope changes are audited. Cost is frozen once a creator is locked because
   // the fee is committed in Billing — but the number of posts that fee buys
   // stayed editable, so re-scoping a locked creator silently re-priced the deal
@@ -4819,6 +4892,7 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
       {/* Drill-in nav: back to grid + step through the filtered list */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
         <button onClick={onBack} style={navBtn}>← Campaigns</button>
+        <LiveViewers campId={camp.id}/>
         <div style={{display:"flex",alignItems:"center",gap:2}}>
           <button onClick={onPrev} disabled={!hasPrev} style={{...navBtn,opacity:hasPrev?1:0.3,cursor:hasPrev?"pointer":"default"}}>‹ Prev</button>
           <button onClick={onNext} disabled={!hasNext} style={{...navBtn,opacity:hasNext?1:0.3,cursor:hasNext?"pointer":"default"}}>Next ›</button>
@@ -5329,12 +5403,106 @@ function PitchClientModal({onClose}){
   </div>);
 }
 
+// ── LIVE: who's here, save status, clashes ──────────────────────────────────
+// Provided by the root. `editorsOf(crId, field)` — others editing that cell;
+// `viewersOf(campId)` — others on that campaign; `setEditing(crId, field)`
+// tells them what this tab is editing (null when done).
+const LiveCtx=createContext(null);
+
+const firstName=n=>String(n||"Someone").trim().split(/\s+/)[0];
+// Who else has this campaign open, beside the back button. Editing outranks
+// viewing; one chip per person however many tabs they have.
+function LiveViewers({campId}){
+  const live=useContext(LiveCtx);
+  const users=live?.viewersOf?.(campId)||[];
+  const byUser=new Map();
+  for(const u of users){ const k=u.user||"Someone"; const prev=byUser.get(k); if(!prev||u.state==="edit") byUser.set(k,u); }
+  const list=[...byUser.values()];
+  if(!list.length) return <div/>;
+  return(<div data-testid="live-viewers" style={{display:"flex",alignItems:"center",gap:6,fontFamily:SF,fontSize:10.5,color:T.sub}}>
+    <span style={{width:6,height:6,borderRadius:"50%",background:T.green,boxShadow:`0 0 0 3px ${T.green}22`}}/>
+    {list.slice(0,4).map(u=>(
+      <span key={u.user} title={u.state==="edit"?`${u.user} is editing${u.field?` ${u.field==="clientCost"?"a client cost":u.field==="cost"?"a cost":u.field}`:""}`:`${u.user} has this campaign open`}
+        style={{display:"inline-flex",alignItems:"center",gap:5,padding:"3px 9px 3px 3px",borderRadius:20,background:"#FFFFFF",border:`1px solid ${u.state==="edit"?`${T.accent}55`:"rgba(0,0,0,0.08)"}`}}>
+        <span style={{width:18,height:18,borderRadius:"50%",background:u.state==="edit"?T.accent:"#E8E8ED",color:u.state==="edit"?"#fff":T.sub,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700}}>{initials(u.user||"?")}</span>
+        {firstName(u.user)}{u.state==="edit"&&<span style={{color:T.accent,fontWeight:600}}>· editing</span>}
+      </span>
+    ))}
+    {list.length>4&&<span>+{list.length-4}</span>}
+  </div>);
+}
+
+// Bottom-left, quiet unless it has something to say.
+function SaveStatus({status,liveUp}){
+  const {state,pending}=status;
+  const look={
+    saving:  {dot:T.amber, text:`Saving${pending>1?` ${pending} changes`:""}…`},
+    retrying:{dot:T.red,   text:"Can't reach the server — your changes are kept and will retry"},
+    conflict:{dot:T.red,   text:"Waiting for you — someone else changed the same thing"},
+    idle:    {dot:liveUp?T.green:T.label, text:liveUp?"All changes saved · live":"All changes saved"},
+  }[state]||{dot:T.label,text:""};
+  return(<div data-testid="save-status" data-state={state} role="status" aria-live="polite"
+    style={{position:"fixed",left:16,bottom:16,zIndex:9000,display:"flex",alignItems:"center",gap:7,padding:"6px 11px",
+      background:"rgba(255,255,255,0.94)",backdropFilter:"blur(12px)",border:"1px solid rgba(0,0,0,0.08)",borderRadius:20,
+      fontFamily:SF,fontSize:10.5,color:state==="idle"?"#86868B":"#1D1D1F",boxShadow:"0 4px 16px rgba(0,0,0,0.08)",
+      opacity:state==="idle"?0.85:1,transition:"opacity .2s"}}>
+    <span style={{width:7,height:7,borderRadius:"50%",background:look.dot}}/>{look.text}
+  </div>);
+}
+
+const FIELD_LABEL={cost:"Cost (what we pay)",clientCost:"Client cost",status:"Status",collab:"Collab type",payType:"Pay type",
+  numDeliverables:"Deliverables",stage:"Stage",budget:"Budget",creatorBudget:"Creator budget",end:"End date",start:"Start date",
+  name:"Name",handle:"Handle",followers:"Followers",niche:"Niche",state:"State",amId:"AM",cmId:"CM",eaId:"EA"};
+const labelOf=path=>{
+  const [top,sub]=path.split(".");
+  if(FIELD_LABEL[path])return FIELD_LABEL[path];
+  const nice=k=>FIELD_LABEL[k]||String(k).replace(/([A-Z])/g," $1").replace(/^./,c=>c.toUpperCase());
+  return sub?`${nice(top)} · ${nice(sub)}`:nice(top);
+};
+const showVal=(path,v)=>{
+  if(v==null||v==="")return "—";
+  if(/cost|budget|amount/i.test(path)&&typeof v==="number")return fmtINR(v);
+  if(typeof v==="object")return JSON.stringify(v).slice(0,80);
+  if(path==="status")return CR_JOURNEY.find(s=>s.id===v)?.label||v;
+  return String(v).slice(0,80);
+};
+// Someone else saved a different value for the same field first. Nothing has
+// been written; this person picks.
+function ConflictModal({conflict,subject,onResolve}){
+  const {conflicts}=conflict;
+  return(<div style={{position:"fixed",inset:0,zIndex:9500,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+    <div style={{position:"absolute",inset:0,background:"rgba(4,5,10,0.55)",backdropFilter:"blur(4px)"}}/>
+    <div data-testid="conflict-modal" role="dialog" aria-modal="true" style={{position:"relative",width:"min(460px,94vw)",background:"#FFFFFF",borderRadius:14,padding:"20px 22px",fontFamily:SF,boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
+      <div style={{fontSize:15,fontWeight:600,color:"#1D1D1F",marginBottom:4}}>Someone changed this first</div>
+      <div style={{fontSize:11.5,color:"#6E6E73",marginBottom:14,lineHeight:1.5}}>
+        {subject?<>On <b style={{color:"#1D1D1F"}}>{subject}</b>, </>:""}a different value was saved while you were editing. Nothing of yours has been saved yet — choose which one to keep.
+      </div>
+      {conflicts.map(c=>(
+        <div key={c.path} style={{border:"1px solid rgba(0,0,0,0.08)",borderRadius:10,padding:"10px 12px",marginBottom:8}}>
+          <div style={{fontSize:10,fontWeight:600,color:"#86868B",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>{labelOf(c.path)}</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,fontSize:12}}>
+            <div><div style={{fontSize:10,color:"#86868B"}}>{c.by?`${c.by}${c.at?` · ${prettyDateTime(c.at)}`:""}`:"Saved now"}</div><div style={{fontWeight:600,color:"#1D1D1F"}}>{showVal(c.path,c.current)}</div></div>
+            <div><div style={{fontSize:10,color:"#86868B"}}>Yours</div><div style={{fontWeight:600,color:T.accent}}>{showVal(c.path,c.yours)}</div></div>
+          </div>
+        </div>
+      ))}
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:12}}>
+        <Btn variant="subtle" onClick={()=>onResolve("theirs")} style={{padding:"9px 14px",fontSize:12}}>Keep theirs</Btn>
+        <Btn variant="primary" onClick={()=>onResolve("mine")} style={{padding:"9px 14px",fontSize:12}}>Use mine</Btn>
+      </div>
+    </div>
+  </div>);
+}
+
 // ── ROOT ─────────────────────────────────────────────────────────────────────
 export default function InternalCampaigns(){
   const { user, brandFilter, setBrandFilter, brands: ctxBrands, refreshBrands } = useOutletContext() || {};
   const currentUser = user || { role:"am", teamId:"t7", name:"Demo" };
   const role = ["accounts_head","accounts_exec"].includes(currentUser.role) ? "accounts" : currentUser.role;
   const [campaigns,setCampaigns]=useState([]);
+  // Always the newest list, for handlers that run twice in a tick or after an
+  // await (see commitCampaign) — `campaigns` in a closure can be a render old.
+  const campaignsRef=useRef(campaigns); campaignsRef.current=campaigns;
   const [loading,setLoading]=useState(true);
   const [loadError,setLoadError]=useState(null);
   const [brands,setBrands]=useState([]);
@@ -5376,7 +5544,10 @@ export default function InternalCampaigns(){
           // `cr.cost` depends on the fee→cost migration having already run in that
           // environment. Wrong order and creator invoices render ₹0 silently,
           // because 0 is a legal cost.
-      .then(data=>{ if(!cancelled){ setCampaigns(data.map(c=>({...c,stage:normStage(c.stage),creators:(c.creators||[]).map(normCreator)}))); setLoading(false); } })
+      .then(data=>{ if(!cancelled){
+        for(const c of data) if(c.rev!=null) knownRev.current[c.id]=c.rev;
+        const list=data.map(c=>({...c,stage:normStage(c.stage),creators:(c.creators||[]).map(normCreator)}));
+        campaignsRef.current=list; setCampaigns(list); setLoading(false); } })
       .catch(err=>{ if(!cancelled){ setLoadError(err.message); setLoading(false); } });
     return ()=>{ cancelled=true; };
   },[]);
@@ -5421,6 +5592,128 @@ export default function InternalCampaigns(){
   const [toast,setToast]=useState(null);
   const curRole=getR(role);
   const showToast=useCallback(msg=>{setToast(msg);setTimeout(()=>setToast(null),2800);},[]);
+
+  // ── Saving & live updates ─────────────────────────────────────────────────
+  // Every edit on this page goes through commitCampaign: the change shows at
+  // once, and lib/campaignSync.js sends ONLY what it changed — row by row,
+  // field by field — through one ordered queue. Two people on one campaign no
+  // longer overwrite each other, and a save that can't get through is retried
+  // rather than dropped. Changes made elsewhere arrive over a live stream and
+  // are re-read here, without touching anything still being saved or typed.
+  const actorRef=useRef(currentUser.name||role); actorRef.current=currentUser.name||role;
+  const knownRev=useRef({});        // id → newest rev this page has seen
+  const localVer=useRef({});        // id → bumped on every local edit (guards re-reads)
+  const [saveStatus,setSaveStatus]=useState({state:"idle",pending:0});
+  const [conflict,setConflict]=useState(null);
+  const [presence,setPresence]=useState({});   // campaignId → [{key,user,crId,field,state}]
+  const [liveUp,setLiveUp]=useState(false);
+  const putCampaign=useCallback(doc=>{
+    const c={...doc,stage:normStage(doc.stage),creators:(doc.creators||[]).map(normCreator)};
+    if(doc.rev!=null) knownRev.current[c.id]=Math.max(knownRev.current[c.id]||0,doc.rev);
+    const has=campaignsRef.current.some(x=>x.id===c.id);
+    campaignsRef.current=has?campaignsRef.current.map(x=>x.id===c.id?c:x):[c,...campaignsRef.current];
+    setCampaigns(campaignsRef.current);
+  },[]);
+  const dropCampaign=useCallback(id=>{
+    if(!campaignsRef.current.some(c=>c.id===id))return;
+    campaignsRef.current=campaignsRef.current.filter(c=>c.id!==id);
+    setCampaigns(campaignsRef.current);
+  },[]);
+  const engineRef=useRef(null);
+  // Re-read one campaign. Skipped (and retried once the queue empties) while
+  // this tab still has writes for it in flight, or if it was edited here while
+  // the read was on its way — either would put an older copy over newer work.
+  const refetchCampaign=useCallback(async id=>{
+    const eng=engineRef.current;
+    if(eng?.hasPending(id))return;
+    const v=localVer.current[id]||0;
+    let doc;
+    try{ doc=await CampaignsAPI.get(id); }catch(e){ if(e?.status===404) doc=null; else return; }
+    if(eng?.hasPending(id)||(localVer.current[id]||0)!==v)return;
+    if(doc===null){ dropCampaign(id); return; }
+    putCampaign(doc);
+  },[putCampaign,dropCampaign]);
+  const refetchTimers=useRef({});
+  const scheduleRefetch=useCallback((id,ms=250)=>{
+    clearTimeout(refetchTimers.current[id]);
+    refetchTimers.current[id]=setTimeout(()=>refetchCampaign(id),ms);
+  },[refetchCampaign]);
+  if(!engineRef.current) engineRef.current=createSyncEngine({
+    actor:()=>actorRef.current,
+    onStatus:setSaveStatus,
+    onConflict:c=>new Promise(resolve=>setConflict({...c,resolve})),
+    onSaved:(id,{rev})=>{ if(rev!=null) knownRev.current[id]=Math.max(knownRev.current[id]||0,rev); },
+    // Once this tab's writes for a campaign are all in, re-read it: picks up
+    // anything others saved meanwhile, and the server's own bookkeeping.
+    onDrained:id=>scheduleRefetch(id,350),
+    onError:msg=>showToast(msg),
+  });
+  const commitCampaign=useCallback((id,mutate)=>{
+    const prev=campaignsRef.current.find(c=>c.id===id);
+    if(!prev)return null;
+    const next=mutate(prev);
+    if(!next||next===prev)return prev;
+    campaignsRef.current=campaignsRef.current.map(c=>c.id===id?next:c);
+    setCampaigns(campaignsRef.current);
+    localVer.current[id]=(localVer.current[id]||0)+1;
+    engineRef.current.persist(prev,next);
+    return next;
+  },[]);
+  // Anything this page missed (stream down, laptop asleep): compare revs.
+  const checkRevs=useCallback(async()=>{
+    let revs; try{ revs=await CampaignsAPI.revs(); }catch{ return; }
+    for(const [id,rev] of Object.entries(revs||{})) if((knownRev.current[id]||0)<rev) scheduleRefetch(id,50);
+    for(const c of campaignsRef.current) if(!(c.id in revs)&&!engineRef.current.hasPending(c.id)) dropCampaign(c.id);
+  },[scheduleRefetch,dropCampaign]);
+  useEffect(()=>connectLive({
+    user:actorRef.current,
+    onConnection:setLiveUp,
+    onCampaign:ev=>{
+      if(!ev?.id)return;
+      if(ev.kind==="removed"){ if(!engineRef.current.hasPending(ev.id)) dropCampaign(ev.id); return; }
+      if(ev.rev!=null&&(knownRev.current[ev.id]||0)>=ev.rev)return; // our own save, already applied
+      scheduleRefetch(ev.id);
+    },
+    onPresence:({campaignId,users})=>setPresence(p=>({...p,[campaignId]:(users||[]).filter(u=>u.key!==TAB_KEY)})),
+  }),[scheduleRefetch,dropCampaign]);
+  // Stream (re)connected → catch up. Stream down → poll until it's back.
+  useEffect(()=>{
+    if(liveUp){ checkRevs(); return; }
+    const t=setInterval(checkRevs,20000);
+    return ()=>clearInterval(t);
+  },[liveUp,checkRevs]);
+  useEffect(()=>{
+    const onVisible=()=>{ if(document.visibilityState==="visible") checkRevs(); };
+    const onOnline=()=>{ engineRef.current.kick(); checkRevs(); };
+    // Leaving with work not yet saved — queued writes, or a cost typed but not
+    // saved — gets the browser's "leave site?" prompt.
+    const onLeave=e=>{
+      if(engineRef.current.pending>0||unsavedDrafts.size>0){ e.preventDefault(); e.returnValue=""; return ""; }
+    };
+    document.addEventListener("visibilitychange",onVisible);
+    window.addEventListener("online",onOnline);
+    window.addEventListener("beforeunload",onLeave);
+    return ()=>{ document.removeEventListener("visibilitychange",onVisible); window.removeEventListener("online",onOnline); window.removeEventListener("beforeunload",onLeave); };
+  },[checkRevs]);
+  // Presence: this tab is on `selectedId` (and maybe editing one cell of it).
+  const editingRef=useRef(null);
+  const sendPresence=useCallback((state,extra={})=>{
+    const campaignId=selectedRef.current; if(!campaignId)return;
+    CampaignsAPI.presence({campaignId,key:TAB_KEY,user:actorRef.current,state,...extra});
+  },[]);
+  const selectedRef=useRef(null);
+  const liveCtx=useMemo(()=>({
+    viewersOf:id=>presence[id]||[],
+    editorsOf:(crId,field)=>(presence[selectedRef.current]||[]).filter(u=>u.state==="edit"&&u.crId===crId&&u.field===field),
+    setEditing:(crId,field)=>{
+      editingRef.current=crId?{crId,field}:null;
+      sendPresence(crId?"edit":"view",crId?{crId,field}:{});
+    },
+  }),[presence,sendPresence]);
+  const resolveConflict=useCallback(choice=>{
+    setConflict(c=>{ c?.resolve?.(choice); return null; });
+    if(choice==="theirs") showToast("Kept the saved value");
+  },[showToast]);
   const onAction=useCallback((action,data={})=>{
     let updatedCamp=null;
     // Why a gated transition refused, if it did. The guards below re-check
@@ -5428,8 +5721,7 @@ export default function InternalCampaigns(){
     // bottom used to fire regardless, so a blocked action reported success and
     // the user was left looking at a stage that hadn't moved with no idea why.
     let blocked=null;
-    setCampaigns(prev=>prev.map(c=>{
-      if(c.id!==selectedId)return c;
+    commitCampaign(selectedId,c=>{
       const addEv=(ev,actor)=>[...(c.timeline||[]),{date:today(),event:ev,actor:actor||"Ops"}];
       let next=c;
       // Staffing a slot is also the gate into execution: with a locked brief
@@ -5509,12 +5801,12 @@ export default function InternalCampaigns(){
       }
       updatedCamp=next;
       return next;
-    }));
-    // DB sync — happens after setCampaigns so updatedCamp is set
+    });
+    // The campaign itself is already saving (commitCampaign sends just the
+    // fields this action changed). What follows are the billing side effects.
     setTimeout(()=>{
       if(updatedCamp&&!blocked){
-        const{id,...rest}=updatedCamp;
-        CampaignsAPI.update(id,rest).catch(()=>showToast("Save failed — check connection"));
+        const{id}=updatedCamp;
         // Billing side effects. Non-blocking by design: the campaign's stage is
         // the source of truth for the pipeline, so a failed billing write must
         // never hold it up. Non-blocking is not the same as silent, though —
@@ -5650,7 +5942,7 @@ export default function InternalCampaigns(){
       }
     },0);
     showToast(blocked||ACTION_MSGS[action]||action);
-  },[selectedId,showToast,role,currentUser]);
+  },[selectedId,showToast,role,currentUser,commitCampaign]);
   // Double-check gate: stage-changing actions go through a confirmation modal
   // before onAction applies (and persists) anything. Pure assignments skip it.
   const [pendingAction,setPendingAction]=useState(null); // {action,data}
@@ -5658,19 +5950,16 @@ export default function InternalCampaigns(){
     if(!needsConfirm(action)){onAction(action,data);return;}
     setPendingAction({action,data});
   },[onAction]);
-  const onSaveBrief=useCallback(patch=>{setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,brief:{...c.brief,...patch}}));CampaignsAPI.update(selectedId,{brief:{...(campaigns.find(c=>c.id===selectedId)?.brief||{}),...patch}}).catch(()=>showToast("Save failed — check connection"));showToast("Brief updated");},[selectedId,showToast,campaigns]);
-  const onSaveInsights=useCallback(patch=>{setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,insights:{...c.insights,...patch}}));CampaignsAPI.update(selectedId,{insights:{...(campaigns.find(c=>c.id===selectedId)?.insights||{}),...patch}}).catch(()=>showToast("Save failed — check connection"));showToast("Insights updated");},[selectedId,showToast,campaigns]);
+  // Only the brief/insights keys this edit touched are sent (brief.objective,
+  // insights.whatWorked…), so two people editing different parts both keep theirs.
+  const onSaveBrief=useCallback(patch=>{commitCampaign(selectedId,c=>({...c,brief:{...c.brief,...patch}}));showToast("Brief updated");},[selectedId,showToast,commitCampaign]);
+  const onSaveInsights=useCallback(patch=>{commitCampaign(selectedId,c=>({...c,insights:{...c.insights,...patch}}));showToast("Insights updated");},[selectedId,showToast,commitCampaign]);
   // Appends an audit entry to the selected campaign's timeline and persists it.
+  // Appended on the server, never rewritten — entries from two people at once both stay.
   const onLogTimeline=useCallback(event=>{
     const entry={date:today(),event,actor:currentUser.name||role};
-    let nextTimeline=null;
-    setCampaigns(prev=>prev.map(c=>{
-      if(c.id!==selectedId)return c;
-      nextTimeline=[...(c.timeline||[]),entry];
-      return{...c,timeline:nextTimeline};
-    }));
-    if(nextTimeline)CampaignsAPI.update(selectedId,{timeline:nextTimeline}).catch(()=>showToast("Save failed — check connection"));
-  },[selectedId,currentUser,role,showToast]);
+    commitCampaign(selectedId,c=>({...c,timeline:[...(c.timeline||[]),entry]}));
+  },[selectedId,currentUser,role,commitCampaign]);
   // Campaign-level patch (creatorBudget from the Brief tab). onSaveBrief only
   // touches brief{}; this writes fields that live on the campaign itself.
   const onSaveCampaign=useCallback(patch=>{
@@ -5680,23 +5969,22 @@ export default function InternalCampaigns(){
     // but the client was never sent the list and nothing was logged, and the
     // Creators tab showed neither the countdown nor the "sent" badge.
     // Same derivation as onUpdateCreators, from the other direction.
-    const camp=campaigns.find(c=>c.id===selectedId);
+    const camp=campaignsRef.current.find(c=>c.id===selectedId);
     const next=camp&&{...camp,...patch};
     const sending=!!next&&!camp.sentToClient&&rosterReady(next);
     const full=sending?{...patch,sentToClient:true}:patch;
-    setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,...full}));
-    CampaignsAPI.update(selectedId,full).catch(()=>showToast("Save failed — check connection"));
+    commitCampaign(selectedId,c=>({...c,...full}));
     showToast("Campaign updated");
     if(sending){
       showToast(`Roster complete — creator list sent to ${camp.client||"client"}`);
       onLogTimeline(`Roster confirmed — ${lockedCountOf(next)} creators locked, creator list sent to client`);
     }
-  },[selectedId,showToast,campaigns,onLogTimeline]);
+  },[selectedId,showToast,onLogTimeline,commitCampaign]);
   const onUpdateCreators=useCallback(next=>{
     // Resolved before the state update, not inside it: React state updaters
     // must be pure, and StrictMode double-invokes them in development — which
     // would fire every expense POST twice.
-    const camp=campaigns.find(c=>c.id===selectedId);
+    const camp=campaignsRef.current.find(c=>c.id===selectedId);
     // Sending the roster to the client is no longer an action someone takes —
     // it's a consequence of the roster being finished. Derived here rather than
     // on the Creators tab because a creator can be locked from more than one
@@ -5704,8 +5992,8 @@ export default function InternalCampaigns(){
     // flag is already true on every save after this one.
     const sending=!!camp&&!camp.sentToClient&&rosterReady(camp,next);
     const patch={creators:next,...(sending?{sentToClient:true}:{})};
-    setCampaigns(prev=>prev.map(c=>c.id!==selectedId?c:{...c,...patch}));
-    CampaignsAPI.update(selectedId,patch).catch(()=>showToast("Save failed — check connection"));
+    // Saved as the rows/fields that differ — never the whole list.
+    commitCampaign(selectedId,c=>({...c,...patch}));
     if(camp)syncCreatorExpenses(camp,camp.creators,next,()=>showToast("Creator cost saved, but Billing wasn't updated — check connection"));
     // Re-read the expenses the sync just wrote, so the Creator Payment donut
     // moves with the roster instead of waiting for a page reload.
@@ -5714,7 +6002,7 @@ export default function InternalCampaigns(){
       showToast(`Roster complete — creator list sent to ${camp.client||"client"}`);
       onLogTimeline(`Roster confirmed — ${next.filter(isLockedCreator).length} creators locked, creator list sent to client`);
     }
-  },[selectedId,showToast,campaigns,onLogTimeline]);
+  },[selectedId,showToast,onLogTimeline,commitCampaign]);
   // `mode` is "archive" (default — deleted:true, restorable) or "purge" (the
   // document is erased). See DeleteCampaignModal, which is where it is chosen.
   const onDeleteCampaign=useCallback(async(id,mode="archive")=>{
@@ -5723,7 +6011,7 @@ export default function InternalCampaigns(){
     try{
       // Both log the actor; archive also lands it on the campaign's timeline.
       await (purge?CampaignsAPI.purge:CampaignsAPI.archive)(id,currentUser.name||role);
-      setCampaigns(prev=>prev.filter(c=>c.id!==id));
+      dropCampaign(id);
       setSelId(null);
       showToast(purge?"Campaign permanently deleted":"Campaign archived");
       // The shell's brand filter only offers brands that still have a live
@@ -5756,7 +6044,7 @@ export default function InternalCampaigns(){
       // generic line only when the request never landed.
       showToast(e?.body?.error||"Delete failed — check connection");
     }
-  },[role,showToast,currentUser,refreshBrands]);
+  },[role,showToast,currentUser,refreshBrands,dropCampaign]);
   const onCreate=useCallback(f=>{
     if(!canCreate(role))return;
     // Stamp the correct role slot with the logged-in user's teamId
@@ -5806,12 +6094,15 @@ export default function InternalCampaigns(){
         ...(deferred?[{date:today(),event:"Raised without a budget — to be allocated once the client agrees a number",actor:currentUser.name||role.toUpperCase()}]:[])],
     };
     // Save campaign
-    CampaignsAPI.create(c).catch(()=>showToast("Save failed — check connection"));
+    // Through the save queue, so edits made in the next second wait for it.
+    knownRev.current[c.id]=1;
+    engineRef.current.create(c);
     // No billing document is raised here. Each one is created at the point the
     // thing it records actually happens — brief signed off → Quote, client PO
     // recorded → Invoice (with a real NET-30 due date). See the brief_complete
     // and raise_po side effects in onAction.
-    setCampaigns(p=>[c,...p]);setSelId(c.id);setCreate(false);showToast("Campaign created");
+    campaignsRef.current=[c,...campaignsRef.current];setCampaigns(campaignsRef.current);
+    setSelId(c.id);setCreate(false);showToast("Campaign created");
   },[showToast,role,currentUser,brandName]);
   // Two steps, deliberately. `inScope` is everything this person is allowed to
   // see under the current brand and search — that is what the view counts are
@@ -5837,6 +6128,18 @@ export default function InternalCampaigns(){
   // `campaigns`, or the detail panel (and its Creators tab) keeps showing a
   // campaign from another brand after the brand filter changes.
   const selected=visible.find(c=>c.id===selectedId)||null;
+  // Tell the others this tab is on `selectedId`; refreshed while it stays open,
+  // and withdrawn on the way out.
+  selectedRef.current=selected?.id||null;
+  useEffect(()=>{
+    if(!selected?.id)return;
+    const id=selected.id;
+    sendPresence("view");
+    const t=setInterval(()=>{ const e=editingRef.current; sendPresence(e?"edit":"view",e||{}); },25000);
+    const bye=()=>CampaignsAPI.presence({campaignId:id,key:TAB_KEY,user:actorRef.current,state:"leave"});
+    window.addEventListener("pagehide",bye);
+    return ()=>{ clearInterval(t); window.removeEventListener("pagehide",bye); editingRef.current=null; bye(); };
+  },[selected?.id,sendPresence]);
   // Grid-first drill-in: a selection only ever gets *cleared* (back to the
   // grid) when it drops out of the active filters — it's never replaced with
   // another campaign automatically, since that'd be jarring in a full
@@ -5858,7 +6161,13 @@ export default function InternalCampaigns(){
   const showEndedNotice=stageFilter==="ended"&&endedCount>0&&noticeAck!==endedCount;
   if(loading)return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",background:"#F5F5F7",fontFamily:SF,fontSize:13,color:"#6E6E73"}}>Loading campaigns…</div>);
   if(loadError)return(<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",background:"#F5F5F7",fontFamily:SF,fontSize:13,gap:8,color:"#6E6E73"}}><div>Couldn't reach the campaigns API.</div><div style={{fontSize:11,color:"#86868B"}}>{loadError}</div></div>);
-  return(<div style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7",fontFamily:SF,color:"#1D1D1F",overflow:"hidden"}}>
+  const conflictSubject=conflict?.op?.crId
+    ?(()=>{ const c=campaignsRef.current.find(x=>x.id===conflict.op.campId); const r=c?.creators?.find(x=>x._id===conflict.op.crId)||conflict.row;
+        return r?`${r.name||r.handle||"this creator"}${c?` · ${c.name}`:""}`:null; })()
+    :campaignsRef.current.find(x=>x.id===conflict?.op?.campId)?.name;
+  return(<LiveCtx.Provider value={liveCtx}><div style={{display:"flex",flexDirection:"column",height:"100%",background:"#F5F5F7",fontFamily:SF,color:"#1D1D1F",overflow:"hidden"}}>
+    <SaveStatus status={saveStatus} liveUp={liveUp}/>
+    {conflict&&<ConflictModal conflict={conflict} subject={conflictSubject} onResolve={resolveConflict}/>}
     {/* Toast */}
     {toast&&<div style={{position:"fixed",bottom:24,right:24,zIndex:9999,padding:"11px 18px",background:"rgba(29,29,31,0.92)",backdropFilter:"blur(16px)",borderRadius:12,fontSize:12,color:"#FFFFFF",fontFamily:SF,boxShadow:"0 8px 32px rgba(0,0,0,0.24)",letterSpacing:"-0.01em"}}>{toast}</div>}
     <AnimatePresence mode="wait">
@@ -5929,5 +6238,5 @@ export default function InternalCampaigns(){
         onConfirm={()=>{onAction(pendingAction.action,pendingAction.data);setPendingAction(null);}}
         onCancel={()=>setPendingAction(null)}/>}
     </AnimatePresence>
-  </div>);
+  </div></LiveCtx.Provider>);
 }

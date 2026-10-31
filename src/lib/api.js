@@ -259,6 +259,42 @@ export const UsersAPI = authCrud("/api/users");
 export const BrandCredentialsAPI = authCrud("/api/brand-credentials");
 
 // ── Creators (founder directory) ─────────────────────────────────────────────
+// ── Creator finder ───────────────────────────────────────────────────────────
+// A separate service (../creator-finder) that discovers Instagram creators by
+// niche/bio, 20 at a time. Kept off the main backend on purpose: discovery
+// makes many HikerAPI calls and has its own database and daily limit.
+// VITE_FINDER_KEY is a shared key, not a secret — it only stops stray traffic
+// from spending credits.
+const FINDER = import.meta.env.VITE_FINDER_URL || "";
+const FINDER_KEY = import.meta.env.VITE_FINDER_KEY || "";
+
+async function finderRequest(path, options = {}) {
+  const res = await fetch(`${FINDER}${path}`, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(FINDER_KEY ? { "x-finder-key": FINDER_KEY } : {}) },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    const err = new Error(`Finder ${options.method || "GET"} ${path} failed: ${res.status} ${body}`);
+    err.status = res.status;
+    try { err.body = JSON.parse(body); } catch { err.body = null; }
+    throw err;
+  }
+  return res.json();
+}
+
+export const FinderAPI = {
+  configured: !!FINDER,
+  meta: () => finderRequest(`/api/find/meta`),
+  // filters: { sizes: ["nano"|"micro"|"macro"|"mega"], hasEmail }; exclude: handles to leave out
+  search: ({ query, filters, exclude }) =>
+    finderRequest(`/api/find/search`, { method: "POST", body: JSON.stringify({ query, filters, exclude }) }),
+  next: (sessionId, { exclude } = {}) =>
+    finderRequest(`/api/find/search/${encodeURIComponent(sessionId)}/next`, { method: "POST", body: JSON.stringify({ exclude }) }),
+  // Stored photo on the finder (survives Instagram's expiring CDN links), else the CDN link.
+  avatarUrl: (r) => (r?.avatar ? `${FINDER}${r.avatar}` : r?.picUrl || null),
+};
+
 export const CreatorsAPI = {
   list: (brandId) => request(`/api/creators${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ""}`),
   // A creator added straight to the directory — no campaign roster behind

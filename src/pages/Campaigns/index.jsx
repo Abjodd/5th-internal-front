@@ -33,7 +33,8 @@ import AvatarPicker from "../../components/AvatarPicker";
 import Donut from "../../components/Donut";
 import PitchClient from "../PitchClient";
 import PitchDraft from "../PitchDraft";
-import { Send, Users2, MapPin, CalendarDays, Pencil, ChevronDown, ChevronRight } from "lucide-react";
+import { Send, Users2, MapPin, CalendarDays, Pencil, ChevronDown, ChevronRight, Download } from "lucide-react";
+import { downloadCampaignsWorkbook } from "../../lib/campaignExport";
 
 // ── TOKENS ───────────────────────────────────────────────────────────────────
 import { T as BASE_T } from "../../theme/tokens";
@@ -4838,6 +4839,10 @@ function Detail({camp,role,currentUser,expenseById,onAction,onSaveBrief,onSaveCa
             </div>
             <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
               <Pill tone={stCol} dot style={{padding:"5px 12px",fontSize:11}}>{pl.label}</Pill>
+              {/* This campaign alone, same sheet format as the nav's all-campaigns download. */}
+              <Btn variant="ghost" onClick={()=>downloadCampaignsWorkbook([camp],camp.name||"Campaign")} style={{fontSize:10,padding:"4px 10px",display:"inline-flex",alignItems:"center",gap:5}}>
+                <Download size={11}/> Sheet
+              </Btn>
               {can(role,"deleteCampaign")&&<Btn variant="danger" onClick={()=>setConfirmDelete(true)} style={{fontSize:10,padding:"4px 10px"}}>Delete</Btn>}
             </div>
           </div>

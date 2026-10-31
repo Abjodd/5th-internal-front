@@ -31,6 +31,7 @@ import { ConfirmDialog } from "../Requests/shared";
 import { T } from "../../theme/tokens";
 import { AddCreatorModal } from "../Campaigns";
 import VendorsPanel from "./VendorsPanel";
+import FindCreators from "./FindCreators";
 import { MANAGEMENT, MANAGEMENT_CHOICES, MANAGEMENT_LABEL, managementOf } from "../../lib/management";
 import {
   Card, CardGrid, CARD_CSS, Fact, GhostBtn, INP, Notice, PAY_LABELS, Pill, Select, panel, panelTitle,
@@ -576,6 +577,7 @@ export function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onE
 const TABS = [
   { id: "creators", label: "Creators", blurb: "Every creator we work with — profiles, onboarding details and generated invoices.", placeholder: "Search name, handle, state, campaign…" },
   { id: "vendors", label: "Vendors", blurb: "The agencies and talent managers that invoice us on a creator's behalf.", placeholder: "Search vendor, contact, GSTIN, creator…" },
+  { id: "find", label: "Find creators", blurb: "Discover new Instagram creators by niche, category or bio — 20 at a time.", placeholder: "" },
 ];
 
 export default function Creators() {
@@ -700,12 +702,12 @@ export default function Creators() {
           <div style={{ fontSize: 11, color: T.sub, marginTop: 4 }}>{active.blurb}</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <input
+          {tab !== "find" && <input
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder={active.placeholder}
             style={{ ...INP, width: 260 }}
-          />
+          />}
           {tab === "creators" && (
             <Select value={mgmt} onChange={e => setMgmt(e.target.value)}
               title="Filter by creator type"
@@ -737,7 +739,9 @@ export default function Creators() {
               transition: "color 0.15s",
             }}>
             {t.label}
-            <Pill color={tab === t.id ? T.accent : T.label}>{t.id === "creators" ? creators.length : vendors.length}</Pill>
+            {t.id === "find"
+              ? <Pill color={tab === t.id ? T.accent : T.label}>New</Pill>
+              : <Pill color={tab === t.id ? T.accent : T.label}>{t.id === "creators" ? creators.length : vendors.length}</Pill>}
             {tab === t.id && <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 2, borderRadius: 1, background: T.accent }} />}
           </button>
         ))}
@@ -786,6 +790,15 @@ export default function Creators() {
             patchCreator(creator.id, { vendorId: null }, `${creator.name} unassigned from ${vendor.name}`)}
           modal={vendorModal}
           onModal={setVendorModal}
+        />
+      )}
+
+      {!loading && !error && tab === "find" && (
+        <FindCreators
+          creators={creators}
+          canEdit={canEdit}
+          onToast={showToast}
+          onCreated={created => created && setCreators(prev => (prev.some(c => c.id === created.id) ? prev : [...prev, created]))}
         />
       )}
 

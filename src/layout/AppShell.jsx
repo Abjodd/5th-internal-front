@@ -4,12 +4,13 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck,
   Settings as SettingsIcon, Building2, Search, ChevronDown, Check, Circle, Send,
-  UserCheck,
+  UserCheck, Download, Loader2,
 } from "lucide-react";
 import { SECTIONS, canAccess, getRole } from "../routes/sections";
 import { useAuth } from "../context/AuthContext";
 import { ClientsAPI, UsersAPI, CampaignsAPI } from "../lib/api";
-import { seesAllCampaigns } from "../lib/campaign";
+import { seesAllCampaigns, canSeeCampaign } from "../lib/campaign";
+import { downloadCampaignsWorkbook } from "../lib/campaignExport";
 
 const SECTION_ICONS = {
   LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck, Building2, Send,
@@ -735,6 +736,57 @@ function RailButton({ label, onClick, children }) {
   );
 }
 
+// ── CAMPAIGN DOWNLOAD ────────────────────────────────────────────────────────
+// Always in the nav: one Excel workbook, a tab per campaign, in the agency's
+// report-sheet format (lib/campaignExport.js). Scoped like the Campaigns board
+// — the campaigns this user can open, narrowed to the brand filter if one is
+// set — and built in the browser from GET /api/campaigns.
+function CampaignDownload({ user, brandFilter, brands }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(null); // { text, ok }
+  const timer = useRef(null);
+  const flash = (text, ok) => { setNote({ text, ok }); clearTimeout(timer.current); timer.current = setTimeout(() => setNote(null), 3500); };
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const brandName = brandFilter ? brands.find(b => b.id === brandFilter)?.name : null;
+  const label = brandName ? `Download ${brandName} campaigns (Excel)` : "Download all campaigns (Excel)";
+
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const all = await CampaignsAPI.list();
+      const mine = (all || []).filter(c => canSeeCampaign(c, user?.role, user?.teamId) && (!brandFilter || c.brandId === brandFilter));
+      if (!mine.length) { flash("No campaigns to download", false); return; }
+      downloadCampaignsWorkbook(mine, brandName ? `${brandName} campaigns` : "All campaigns");
+      flash(`Downloaded ${mine.length} campaign${mine.length === 1 ? "" : "s"}`, true);
+    } catch {
+      flash("Download failed — check connection", false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "relative", display: "flex" }}>
+      <style>{"@keyframes fa-dl-spin{to{transform:rotate(360deg)}}"}</style>
+      <RailButton label={label} onClick={run}>
+        {busy
+          ? <Loader2 size={16} strokeWidth={1.9} style={{ animation: "fa-dl-spin 0.9s linear infinite" }} />
+          : <Download size={16} strokeWidth={1.9} />}
+      </RailButton>
+      {note && (
+        <div role="status" style={{
+          position: "absolute", top: 44, right: 0, whiteSpace: "nowrap", zIndex: 40,
+          padding: "7px 12px", borderRadius: 10, fontSize: 11.5, fontFamily: "'Sora', sans-serif",
+          background: "rgba(29,29,31,0.92)", color: note.ok ? "#FFFFFF" : "#FFB4B4",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.2)", textShadow: "none",
+        }}>{note.text}</div>
+      )}
+    </div>
+  );
+}
+
 function CommandPalette({ open, onClose, sections, brands, onBrand, brandFilter, showBrands = true }) {
   const [q, setQ] = useState("");
   const [i, setI] = useState(0);
@@ -1070,6 +1122,7 @@ export default function AppShell() {
             <RailButton label="Search  (⌘K)" onClick={() => setSearchOpen(true)}>
               <Search size={16} strokeWidth={1.9} />
             </RailButton>
+            <CampaignDownload user={user} brandFilter={brandFilter} brands={brands} />
             <UserMenu user={user} onLogout={handleLogout} />
           </Pill>
         </div>

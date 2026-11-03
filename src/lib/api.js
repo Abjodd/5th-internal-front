@@ -291,8 +291,22 @@ export const FinderAPI = {
     finderRequest(`/api/find/search`, { method: "POST", body: JSON.stringify({ query, filters, exclude }) }),
   next: (sessionId, { exclude } = {}) =>
     finderRequest(`/api/find/search/${encodeURIComponent(sessionId)}/next`, { method: "POST", body: JSON.stringify({ exclude }) }),
+  // Profiles from their links, on any platform (the only way in for Facebook,
+  // X and LinkedIn). → { results, errors: [{ link, error }], spent, usage }
+  lookup: (links, { refresh } = {}) =>
+    finderRequest(`/api/find/lookup`, { method: "POST", body: JSON.stringify({ links, refresh: !!refresh }) }),
   // Stored photo on the finder (survives Instagram's expiring CDN links), else the CDN link.
   avatarUrl: (r) => (r?.avatar ? `${FINDER}${r.avatar}` : r?.picUrl || null),
+
+  // Content tools (creator-finder tools.js) — SocialKit's transcripts,
+  // summaries, stats, comments, posts, search and downloads.
+  tools: () => finderRequest(`/api/find/tools`),
+  toolCredits: () => finderRequest(`/api/find/tools/credits`),
+  // → a run { id, status: "running", progress } — poll toolRun(id) until done/error
+  runTool: ({ service, input, options }) =>
+    finderRequest(`/api/find/tools/run`, { method: "POST", body: JSON.stringify({ service, input, options }) }),
+  toolRun: (id) => finderRequest(`/api/find/tools/runs/${encodeURIComponent(id)}`),
+  toolRuns: (limit = 15) => finderRequest(`/api/find/tools/runs?limit=${limit}`),
 };
 
 export const CreatorsAPI = {
@@ -349,6 +363,16 @@ export const InvoicePdfAPI = {
 
 // The live stream (server-sent events) — see lib/campaignSync.js connectLive.
 export const LIVE_URL = `${BASE}/api/live`;
+
+// Client portal → Insights → Audience Voice: comments on a brand's live posts,
+// read by Gemini (backend commentInsights.js). Status for the panel on a
+// campaign's Insights tab, and the team's Refresh. `force` re-buys comments
+// already fetched this week.
+export const CommentInsightsAPI = {
+  status: (brandId) => request(`/api/comment-insights/${encodeURIComponent(brandId)}`),
+  refresh: (brandId, { force } = {}) =>
+    request(`/api/comment-insights/${encodeURIComponent(brandId)}/refresh`, { method: "POST", body: JSON.stringify({ force: !!force }) }),
+};
 
 export const CampaignsAPI = {
   list: () => request("/api/campaigns"),

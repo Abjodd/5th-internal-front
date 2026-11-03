@@ -344,12 +344,25 @@ export const extUrl = u => {
   return /^https?:\/\//i.test(t) ? t : `https://${t}`;
 };
 
+// Every platform a creator can be on, in the order pickers and filters show
+// them. `platform` is stored as one of these labels; platformLabel() maps the
+// odd lower-case or legacy spelling ("instagram", "Twitter", "X") onto them.
+export const PLATFORMS = ["Instagram", "YouTube", "TikTok", "Facebook", "Twitter / X", "LinkedIn", "Moj", "Josh", "Snapchat", "Other"];
+export const platformLabel = (p) => {
+  const t = String(p || "").trim();
+  if (!t) return null;
+  if (/^(twitter|x|twitter\s*\/\s*x)$/i.test(t)) return "Twitter / X";
+  return PLATFORMS.find(x => x.toLowerCase() === t.toLowerCase()) || t;
+};
+
 // LinkedIn / Moj / Josh / Other have no derivable pattern from a handle alone
 // (a LinkedIn slug may be /in/ or /company/), so they're deliberately absent —
 // profileUrl returns null for them and the handle stays plain text.
 const PROFILE_URL = {
   "Instagram":   h => `https://www.instagram.com/${h}/`,
   "YouTube":     h => `https://www.youtube.com/@${h}`,
+  "TikTok":      h => `https://www.tiktok.com/@${h}`,
+  "Facebook":    h => `https://www.facebook.com/${h}`,
   "Twitter / X": h => `https://x.com/${h}`,
   "Snapchat":    h => `https://www.snapchat.com/add/${h}`,
 };

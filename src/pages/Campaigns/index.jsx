@@ -8,13 +8,14 @@
 import { createPortal } from "react-dom";
 import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
-import { CampaignsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI, CreatorsAPI, VendorsAPI } from "../../lib/api";
+import { CampaignsAPI, CommentInsightsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI, CreatorsAPI, VendorsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
 import { fmtCompact, fmtINR, fmtCPV, prettyDate, prettyDateTime, initials, ISO_DATE, todayISO, isoDay } from "../../lib/format";
 import { useBrandAccents } from "../../lib/brandAccent";
 import { settleSchedule } from "../../lib/invoiceMoney";
 import { payeeOf, payeeFor, isPayable, canInvoice } from "../../lib/payee";
+import { PLATFORMS as CREATOR_PLATFORMS } from "../../lib/campaign";
 import { creatorBudgetOf, numReqOf, costOf, clientCostOf, agencyFeeOf, baseBudgetOf, normCreator, creatorExpensePlan, isLockedCreator, canSeeCampaign, creatorKeyOf,
          PIPELINE, PL_IDS, COMMON_STAGES, FIN_STAGES, EXEC_STAGES, EXEC_NODES,
          normStage, stageIdx, extUrl, rosterReady, rosterGap, poGaps, hasBudget, budgetPending, lockedCountOf,
@@ -164,7 +165,9 @@ const INDIAN_STATES = [
 const AGENCY = {
   name:    "5th Avenue",
 };
-const PLATFORMS = ["Instagram","YouTube","Twitter / X","LinkedIn","Moj","Josh","Snapchat","Other"];
+// The shared list (lib/campaign.js), so the roster, the directory filter and
+// Find Creators agree on how a platform is spelled.
+const PLATFORMS = CREATOR_PLATFORMS;
 // Campaign niches — chosen on the Commercial step and used to steer the
 // Generate suggestions towards same/similar creators. NICHE_SIMILAR groups
 // niches that share an audience so "Generate" isn't limited to an exact match
@@ -3916,6 +3919,17 @@ function AssetThread({campaignId,creator,asset,label,comments,canEdit,author,onT
   </div>);
 }
 
+// "today, 2:16 pm" / "yesterday, 12:00 am" / "3 Nov, 12:00 am" — always IST,
+// with the day, so a midnight update can be told apart from an afternoon one.
+function fetchedWhen(iso){
+  const d=new Date(iso);if(Number.isNaN(d.getTime()))return "";
+  const day=x=>x.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"});
+  const t=d.toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",timeZone:"Asia/Kolkata"});
+  const now=new Date(),yest=new Date(now.getTime()-86400000);
+  if(day(d)===day(now))return `today, ${t}`;
+  if(day(d)===day(yest))return `yesterday, ${t}`;
+  return `${d.toLocaleDateString("en-IN",{day:"numeric",month:"short",timeZone:"Asia/Kolkata"})}, ${t}`;
+}
 function TabDeliverables({camp,role,currentUser,onUpdateCreators,onLogTimeline}){
   // `creators` stays the FULL list so edits below splice back into the real
   // array; `rows` is what actually renders. Filtering the state itself would
@@ -3970,9 +3984,14 @@ function TabDeliverables({camp,role,currentUser,onUpdateCreators,onLogTimeline})
       // null means "this platform doesn't expose it" (YouTube has no forward
       // count) — summing as 0 would report a real zero. Stays null unless at
       // least one link actually returned a number.
-      const sum=k=>ok.some(m=>m[k]!=null)?ok.reduce((s,m)=>s+(m[k]||0),0):null;
+      // A count no link reported this time keeps the last known one (same
+      // number of posts) instead of blanking it — one Instagram reply without
+      // a comment count used to wipe the Comments tile.
+      const prev=cur(id)?.tracking||{};
+      const sum=k=>ok.some(m=>m[k]!=null)?ok.reduce((s,m)=>s+(m[k]||0),0):(prev[k]!=null&&(prev.postsCounted||1)===ok.length?prev[k]:null);
       pTrk(id,{views:sum("views"),likes:sum("likes"),comments:sum("comments"),forwards:sum("forwards"),
-        postsCounted:ok.length,lastFetched:new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})});
+        postsCounted:ok.length,lastFetched:new Date().toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",timeZone:"Asia/Kolkata"}),
+        lastFetchedAt:new Date().toISOString(),lastFetchedBy:currentUser?.name||"Someone"});
     }
     const failed=results.length-ok.length;
     setFetchErrs(errs=>({...errs,[id]:failed
@@ -4172,7 +4191,10 @@ const externalCpv = totV > 0 && campaignBudget > 0
                 {trk.postsCounted>1&&<div style={{fontSize:8,color:T.label,marginBottom:4}}>Summed across {trk.postsCounted} posts</div>}
                 {fetchErrs[cr._id]&&<div style={{fontSize:9,color:T.red,marginBottom:4}}>{fetchErrs[cr._id]}</div>}
                 {!trk.views&&!isFetch&&!fetchErrs[cr._id]&&<div style={{fontSize:9.5,color:T.label,fontStyle:"italic"}}>No data — click Refresh</div>}
-                {trk.lastFetched&&<div style={{fontSize:8,color:T.label,marginTop:5}}>Last fetched: {trk.lastFetched}</div>}
+                {(trk.lastFetchedAt||trk.lastFetched)&&<div style={{fontSize:8,color:T.label,marginTop:5}} title="Numbers update by themselves every night at 12 am, or whenever someone presses Refresh.">
+                  Last fetched: {trk.lastFetchedAt?fetchedWhen(trk.lastFetchedAt):trk.lastFetched}{trk.lastFetchedBy?` · ${trk.lastFetchedBy==="Nightly refresh"?"nightly update":trk.lastFetchedBy}`:""}
+                </div>}
+                <div style={{fontSize:8,color:T.mute,marginTop:2}}>Updates every night at 12 am · or press Refresh</div>
               </>}
             </div>
           </div>
@@ -4692,6 +4714,57 @@ const INSIGHT_FIELDS=[
   {key:"nextActions",label:"Next Actions",n:"03"},
   {key:"areasToImprove",label:"Areas to Improve",n:"04"},
 ];
+// What the client sees under Insights → Audience Voice (their portal): the
+// comments on this brand's live posts, read by AI. Brand-wide, not per
+// campaign — the portal shows one read across all their posts. It refreshes
+// weekly on its own; Refresh is for "a big post just went live".
+function AudienceVoicePanel({brandId,brandName}){
+  const [st,setSt]=useState(null);
+  const [err,setErr]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const load=useCallback(()=>CommentInsightsAPI.status(brandId).then(s=>{setSt(s);setErr(null);return s;}).catch(e=>{setErr(e.body?.error||e.message);return null;}),[brandId]);
+  useEffect(()=>{ if(brandId) load(); },[brandId,load]);
+  // While a run is going, check back every few seconds.
+  useEffect(()=>{
+    if(st?.status!=="running")return;
+    const t=setInterval(load,4000);
+    return()=>clearInterval(t);
+  },[st?.status,load]);
+  const refresh=async(force)=>{
+    setBusy(true);setErr(null);
+    try{ setSt(await CommentInsightsAPI.refresh(brandId,{force})); }
+    catch(e){ setErr(e.body?.error||e.message); }
+    finally{ setBusy(false); }
+  };
+  if(!brandId)return null;
+  const t=st?.totals, run=st?.lastRun, running=st?.status==="running";
+  return(<div style={{border:`1px solid ${T.border}`,borderRadius:8,padding:"14px 16px",marginBottom:22,background:T.raised}}>
+    <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+      <Lbl>Audience Voice — comment analysis</Lbl>
+      <span style={{fontSize:9,color:T.gold,border:`1px solid ${T.gold}30`,borderRadius:3,padding:"1px 6px"}}>Shown to client · all {brandName||"brand"} posts</span>
+      <div style={{marginLeft:"auto",display:"flex",gap:6}}>
+        <Btn variant="subtle" disabled={busy||running} onClick={()=>refresh(false)}>{running?"Running…":"Refresh now"}</Btn>
+        <Btn variant="ghost" disabled={busy||running} onClick={()=>refresh(true)}>Re-fetch all comments</Btn>
+      </div>
+    </div>
+    <div style={{fontSize:11,color:T.sub,marginTop:8,lineHeight:1.6}}>
+      {err?<span style={{color:T.red}}>{err}</span>
+        :!st?"Loading…"
+        :running?(st.statusNote||"Fetching and reading comments…")
+        :st.status==="none"?"Not run yet for this brand. It runs weekly on its own once posts are live, or press Refresh now."
+        :<>
+          {st.generatedAt?<>Last updated {prettyDateTime(st.generatedAt)}. </>:null}
+          {t?<>{t.comments} comments read across {t.analysedPosts} of {t.posts} posts. </>:null}
+          {run&&!run.error?<>Last run used {run.requests} Instagram request{run.requests===1?"":"s"}{run.analysed?`, re-read ${run.analysed} post${run.analysed===1?"":"s"}`:""}{run.skippedForBudget?`, ${run.skippedForBudget} post(s) left for the next run (request cap)`:""}.</>:null}
+          {st.status==="error"&&<span style={{color:T.red}}> Last run failed: {st.statusNote||run?.error}. The client still sees the previous analysis.</span>}
+        </>}
+    </div>
+    <div style={{fontSize:10,color:T.label,marginTop:6}}>
+      Refresh reuses comments fetched in the last 7 days (free) and only re-reads posts whose comments changed. "Re-fetch all comments" buys them again — about 7 Instagram requests per post.
+    </div>
+  </div>);
+}
+
 function TabInsights({camp,role,currentUser,onSaveInsights}){
   const [edit,setEdit]=useState(null);
   const [draft,setDraft]=useState("");
@@ -4708,6 +4781,7 @@ function TabInsights({camp,role,currentUser,onSaveInsights}){
     cancel();
   };
   return(<div>
+    {["founder","pcm","am","cm"].includes(role)&&<AudienceVoicePanel brandId={camp.brandId} brandName={camp.client}/>}
     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:18}}>
       <Lbl>Campaign retrospective</Lbl>
       <span style={{fontSize:9,color:T.gold,border:`1px solid ${T.gold}30`,borderRadius:3,padding:"1px 6px"}}>Shown to client</span>

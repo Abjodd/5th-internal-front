@@ -58,7 +58,7 @@ export const SECTIONS = [
     label: "Creators",
     shortLabel: "Creators",
     icon: "✦",
-    lucide: "Sparkles",
+    lucide: "UsersRound",
     color: T.pink,
     roles: ["founder"],
   },

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback, createContext, useCo
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck,
+  LayoutDashboard, SquareKanban, IndianRupee, Sparkles, UsersRound, Inbox, ShieldCheck,
   Settings as SettingsIcon, Building2, Search, ChevronDown, Check, Circle, Send,
   UserCheck, Download, Loader2,
 } from "lucide-react";
@@ -13,7 +13,7 @@ import { seesAllCampaigns, canSeeCampaign } from "../lib/campaign";
 import { downloadCampaignsWorkbook } from "../lib/campaignExport";
 
 const SECTION_ICONS = {
-  LayoutDashboard, SquareKanban, IndianRupee, Sparkles, Inbox, ShieldCheck, Building2, Send,
+  LayoutDashboard, SquareKanban, IndianRupee, Sparkles, UsersRound, Inbox, ShieldCheck, Building2, Send,
   UserCheck,
   Settings: SettingsIcon,
 };

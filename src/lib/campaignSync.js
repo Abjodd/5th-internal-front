@@ -49,12 +49,17 @@ const ROW_SKIP = new Set(["_id", "rev", "editedBy", "updatedAt", "updatedBy", "c
 // Inside an object field: threads have their own append route; the metrics
 // history is extended by the server.
 const SUB_SKIP = new Set(["comments", "history"]);
+// A "comments" key is only a thread when it's a list. tracking.comments is the
+// post's comment COUNT from Refresh and must save like views and likes — it
+// used to be skipped with the threads, so it showed for whoever pressed
+// Refresh and was blank after a reload or for anyone else.
+const skipSub = (s, a, b) => SUB_SKIP.has(s) && (s !== "comments" || Array.isArray(a) || Array.isArray(b));
 // Campaign keys with their own routes, or owned by the server.
 const CAMP_SKIP = new Set(["id", "_id", "rev", "editedBy", "updatedAt", "creators", "creatorIds", "timeline", "deleted", "deletedAt"]);
 // Campaign objects edited one key at a time (brief.objective, insights.reach…).
 const CAMP_SUBDIFF = new Set(["brief", "insights"]);
 
-const stripSub = (o) => (isObj(o) ? Object.fromEntries(Object.entries(o).filter(([k]) => !SUB_SKIP.has(k))) : o);
+const stripSub = (o) => (isObj(o) ? Object.fromEntries(Object.entries(o).filter(([k, v]) => !skipSub(k, v))) : o);
 
 /** `{ set, from }` for one roster row: top-level fields, or one level into an object field. */
 export function diffRow(prev = {}, next = {}) {
@@ -70,8 +75,8 @@ export function diffRow(prev = {}, next = {}) {
       const subs = new Set([...Object.keys(isObj(a) ? a : {}), ...Object.keys(b)]);
       let whole = false;
       for (const s of subs) {
-        if (SUB_SKIP.has(s)) continue;
         const av = isObj(a) ? a[s] : undefined, bv = b[s];
+        if (skipSub(s, av, bv)) continue;
         if (deepEqual(av, bv)) continue;
         if (!KEY_OK.test(s)) { whole = true; break; }
         set[`${k}.${s}`] = norm(bv);

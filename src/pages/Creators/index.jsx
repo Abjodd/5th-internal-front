@@ -26,6 +26,21 @@ import BrandLogo from "../../components/BrandLogo";
 import { RefreshCw } from "lucide-react";
 import { fmtCompact, fmtINR } from "../../lib/format";
 import { payeeOf } from "../../lib/payee";
+import { PLATFORMS, platformLabel } from "../../lib/campaign";
+import PlatformLogo, { platformKey } from "../../components/PlatformLogo";
+
+// Platform filter: one label per platform however it was spelled when saved.
+// A creator counts on every platform they're known on — their main one plus
+// any whose details Find Creators saved under `socials` (a YouTube channel
+// linked onto an Instagram creator shows under both).
+const SOCIAL_LABEL = { instagram: "Instagram", youtube: "YouTube", tiktok: "TikTok", facebook: "Facebook", x: "Twitter / X", linkedin: "LinkedIn" };
+const platformsOfCreator = (c) => {
+  const set = new Set([platformLabel(c.platform) || "Not set"]);
+  for (const k of Object.keys(c.socials || {})) if (SOCIAL_LABEL[k]) set.add(SOCIAL_LABEL[k]);
+  if (set.size > 1) set.delete("Not set");
+  return [...set];
+};
+const platformRank = (p) => { const i = PLATFORMS.indexOf(p); return i < 0 ? (p === "Not set" ? 99 : 50) : i; };
 import { readPdfAsDataUri, PDF_ACCEPT } from "../../lib/pdf";
 import { ConfirmDialog } from "../Requests/shared";
 import { T } from "../../theme/tokens";
@@ -442,6 +457,56 @@ function ManagementPick({ creator, onSet }) {
   );
 }
 
+// ── SOCIAL PROFILES ──────────────────────────────────────────────────────────
+// Everything Find Creators knew when the creator was added, per platform
+// (stored as `socials.<platform>` by POST /api/creators). Read-only: it's a
+// snapshot of the platform, dated, not something the team edits.
+const SOCIAL_ORDER = ["instagram", "youtube", "tiktok", "facebook", "x", "linkedin"];
+function SocialsPanel({ socials }) {
+  const keys = Object.keys(socials).sort((a, b) => SOCIAL_ORDER.indexOf(a) - SOCIAL_ORDER.indexOf(b));
+  const n = (v) => (v == null ? null : fmtCompact(v));
+  return (
+    <div style={{ ...panel, flex: 1.4 }} data-testid="socials-panel">
+      <div style={panelTitle}>Social profiles ({keys.length})</div>
+      {keys.map((k, i) => {
+        const d = socials[k] || {};
+        const label = SOCIAL_LABEL[k] || k;
+        const x = d.extra || {};
+        return (
+          <div key={k} style={{ padding: "8px 0", borderBottom: i < keys.length - 1 ? `1px solid ${T.border}` : "none" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: T.text, display: "inline-flex", alignItems: "center", gap: 5 }}><PlatformLogo platform={k} size={12} />{label}</span>
+              {d.profileUrl
+                ? <a href={d.profileUrl} target="_blank" rel="noreferrer" style={{ fontSize: 10.5, color: T.accent, textDecoration: "none" }}>@{d.username}</a>
+                : <span style={{ fontSize: 10.5, color: T.sub }}>@{d.username}</span>}
+              {d.verified && <Pill color={T.accent}>Verified</Pill>}
+              <span style={{ marginLeft: "auto", fontSize: 9, color: T.label }}>{d.savedAt ? `saved ${String(d.savedAt).slice(0, 10)}` : ""}</span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 12px", fontSize: 10, color: T.sub, marginBottom: d.bio ? 4 : 0 }}>
+              {n(d.followers) && <span><b style={{ color: T.text }}>{n(d.followers)}</b> {k === "youtube" ? "subscribers" : "followers"}</span>}
+              {n(d.following) && <span><b style={{ color: T.text }}>{n(d.following)}</b> following</span>}
+              {n(d.posts) && <span><b style={{ color: T.text }}>{n(d.posts)}</b> {k === "youtube" || k === "tiktok" ? "videos" : "posts"}</span>}
+              {n(d.totalLikes) && <span><b style={{ color: T.text }}>{n(d.totalLikes)}</b> likes</span>}
+              {n(x.connections) && <span><b style={{ color: T.text }}>{n(x.connections)}</b> connections</span>}
+              {d.category && <span>{d.category}</span>}
+              {(d.detectedLocation || x.location) && <span>📍 {d.detectedLocation || x.location}</span>}
+              {x.joinedAt && <span>joined {String(x.joinedAt).slice(0, 10)}</span>}
+              {d.email && <a href={`mailto:${d.email}`} style={{ color: T.green, textDecoration: "none" }}>{d.email}</a>}
+              {d.website && <a href={d.website} target="_blank" rel="noreferrer" style={{ color: T.accent, textDecoration: "none" }}>{d.website.replace(/^https?:\/\/(www\.)?/, "")}</a>}
+            </div>
+            {d.bio && <div style={{ fontSize: 10.5, color: T.sub, lineHeight: 1.5, whiteSpace: "pre-line" }}>{d.bio}</div>}
+            {(d.foundVia || d.searchQuery) && (
+              <div style={{ fontSize: 9, color: T.label, marginTop: 3 }}>
+                Found {d.searchQuery ? `searching “${d.searchQuery}”` : ""}{d.searchLocation ? ` in ${d.searchLocation}` : ""}{d.foundVia ? ` · via ${d.foundVia}` : ""}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── EXPANDED DETAIL ──────────────────────────────────────────────────────────
 export function CreatorDetail({ inf, vendor, vendors, open, canEdit, onEdit, onAssign, onSetManagement, onToast }) {
   const pd = inf.personalDetails || {};
@@ -511,6 +576,9 @@ export function CreatorDetail({ inf, vendor, vendors, open, canEdit, onEdit, onA
         ))}
       </div>
 
+      {/* What Find Creators saved about each platform the creator is on */}
+      {inf.socials && Object.keys(inf.socials).length > 0 && <SocialsPanel socials={inf.socials} />}
+
       {/* Stored managedBy, not managementOf(): assigning a vendor must not hide
           an agreement we signed and still hold. */}
       {inf.managedBy === "fifthavenue" && (
@@ -555,7 +623,9 @@ export function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onE
       // Delhi · Bright Talent" reads as three facts of the same kind, and only
       // one of them is a thing you can go and open.
       footer={<>
-        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "inline-flex", alignItems: "center", gap: 4 }}>
+          {/* every platform they're on — the main one first */}
+          {platformsOfCreator(inf).filter((p) => platformKey(p)).map((p) => <PlatformLogo key={p} platform={p} size={11} />)}
           {inf.platform || "—"}{inf.state ? ` · ${inf.state}` : ""}
         </span>
         {kind === "vendor"
@@ -577,7 +647,7 @@ export function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onE
 const TABS = [
   { id: "creators", label: "Creators", blurb: "Every creator we work with — profiles, onboarding details and generated invoices.", placeholder: "Search name, handle, state, campaign…" },
   { id: "vendors", label: "Vendors", blurb: "The agencies and talent managers that invoice us on a creator's behalf.", placeholder: "Search vendor, contact, GSTIN, creator…" },
-  { id: "find", label: "Find creators", blurb: "Discover new Instagram creators by niche, category or bio — 20 at a time.", placeholder: "" },
+  { id: "find", label: "Find creators", blurb: "Discover new creators on Instagram, YouTube and TikTok by niche, or look up any profile link — 20 at a time.", placeholder: "" },
 ];
 
 export default function Creators() {
@@ -591,6 +661,7 @@ export default function Creators() {
   const [error, setError]     = useState(null);
   const [query, setQuery]     = useState("");
   const [mgmt, setMgmt]       = useState("all");   // creator-type filter
+  const [platform, setPlatform] = useState("all"); // platform filter
   const [expanded, setExpanded] = useState(null);   // creator id
   const [editTarget, setEditTarget] = useState(null); // creator being edited (founder only)
   // null = closed · {} = add · a vendor = edit. One state for the Vendors tab's
@@ -667,6 +738,13 @@ export default function Creators() {
     return n;
   }, [creators]);
 
+  // Platforms actually present in the directory, in a fixed order, with counts.
+  const platformCounts = useMemo(() => {
+    const n = new Map();
+    for (const c of creators) for (const p of platformsOfCreator(c)) n.set(p, (n.get(p) || 0) + 1);
+    return [...n.entries()].sort((a, b) => platformRank(a[0]) - platformRank(b[0]) || a[0].localeCompare(b[0]));
+  }, [creators]);
+
   // Tag then text, so the search box searches within whatever is filtered to.
   // The tag's own label is part of the haystack — typing "vendor" finds them
   // without going near the dropdown.
@@ -675,12 +753,13 @@ export default function Creators() {
     return creators.filter(i => {
       const kind = managementOf(i);
       if (mgmt !== "all" && kind !== mgmt) return false;
+      if (platform !== "all" && !platformsOfCreator(i).includes(platform)) return false;
       if (!q) return true;
-      return [i.name, i.handle, i.niche, i.state, MANAGEMENT_LABEL[kind],
+      return [i.name, i.handle, i.niche, i.state, MANAGEMENT_LABEL[kind], i.platform,
               vendorById.get(i.vendorId)?.name, ...(i.campaigns || []).map(c => c.name)]
         .filter(Boolean).some(v => String(v).toLowerCase().includes(q));
     });
-  }, [creators, query, mgmt, vendorById]);
+  }, [creators, query, mgmt, platform, vendorById]);
 
   // Defense in depth — the shell already hides this section from non-founders.
   if (!can(role, "seeCreators")) {
@@ -718,6 +797,15 @@ export default function Creators() {
               ))}
             </Select>
           )}
+          {tab === "creators" && platform !== "all" && platformKey(platform) && <PlatformLogo platform={platform} size={15} />}
+          {tab === "creators" && (
+            <Select value={platform} onChange={e => setPlatform(e.target.value)}
+              title="Filter by platform" data-testid="platform-filter"
+              style={{ color: platform === "all" ? T.sub : T.text }}>
+              <option value="all">All platforms ({creators.length})</option>
+              {platformCounts.map(([p, n]) => <option key={p} value={p}>{p} ({n})</option>)}
+            </Select>
+          )}
           {tab === "vendors" && canEdit && (
             <button onClick={() => setVendorModal({})} style={{
               padding: "8px 16px", borderRadius: 6, fontSize: 11.5, fontWeight: 500, fontFamily: "'Sora'",
@@ -730,7 +818,7 @@ export default function Creators() {
       {/* Tabs — same underline treatment the Requests inbox uses */}
       <div style={{ display: "flex", gap: 22, borderBottom: `1px solid ${T.border}`, marginBottom: 18 }}>
         {TABS.map(t => (
-          <button key={t.id} onClick={() => { setTab(t.id); setQuery(""); setMgmt("all"); }}
+          <button key={t.id} onClick={() => { setTab(t.id); setQuery(""); setMgmt("all"); setPlatform("all"); }}
             style={{
               position: "relative", display: "flex", alignItems: "center", gap: 7,
               padding: "0 0 9px", background: "transparent", border: "none", cursor: "pointer",
@@ -753,7 +841,7 @@ export default function Creators() {
 
       {!loading && !error && tab === "creators" && (
         visible.length === 0
-          ? <Notice tone="empty">{query || mgmt !== "all" ? "No creators match your search." : "No creators in the directory yet."}</Notice>
+          ? <Notice tone="empty">{query || mgmt !== "all" || platform !== "all" ? "No creators match your search." : "No creators in the directory yet."}</Notice>
           : (
             <CardGrid>
               {visible.map(inf => (

@@ -733,7 +733,7 @@ function BrandCard({ group, creatorById, canEdit, busy, onEditDeal, onAskRemove,
   };
 
   return (
-    <Reveal i={i} className="fx-lift" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 18, overflow: "hidden", boxShadow: T.shadow, display: "flex", flexDirection: "column" }}>
+    <Reveal i={i} className="fx-lift" style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 18, overflow: "hidden", boxShadow: T.shadow, display: "flex", flexDirection: "column", height: "100%", boxSizing: "border-box" }}>
       {/* Masthead */}
       <div style={{ position: "relative", padding: "20px 20px 16px", background: `linear-gradient(135deg, ${accent}21 0%, ${accent}0A 55%, rgba(255,255,255,0) 100%)`, borderBottom: `1px solid ${T.border}` }}>
         <div aria-hidden style={{ position: "absolute", right: -40, top: -50, width: 170, height: 170, borderRadius: "50%", background: `radial-gradient(circle, ${accent}26, transparent 70%)`, pointerEvents: "none" }} />
@@ -803,11 +803,23 @@ function BrandCard({ group, creatorById, canEdit, busy, onEditDeal, onAskRemove,
       </div>
 
       {/* Deals */}
-      <div style={{ padding: "10px 12px 6px", flex: 1 }}>
+      <div style={{ padding: "10px 12px 6px", flex: "1 1 auto", minHeight: 0 }}>
         <div style={{ fontSize: 8.5, fontWeight: 600, color: T.label, textTransform: "uppercase", letterSpacing: "0.08em", padding: "0 8px 4px" }}>Deals</div>
-        {deals.map(d => (
-          <BrandDealRow key={d.id} d={d} creator={creatorById.get(d.creatorId)} canEdit={canEdit} busy={busy} onEdit={onEditDeal} onAskRemove={onAskRemove} />
-        ))}
+        <div
+          className="bc-deals-scroll"
+          style={{
+            height: 104,
+            maxHeight: 104,
+            overflowY: deals.length > 2 ? "auto" : "hidden",
+            overflowX: "hidden",
+            scrollbarGutter: "stable",
+            paddingRight: 2,
+          }}
+        >
+          {deals.map(d => (
+            <BrandDealRow key={d.id} d={d} creator={creatorById.get(d.creatorId)} canEdit={canEdit} busy={busy} onEdit={onEditDeal} onAskRemove={onAskRemove} />
+          ))}
+        </div>
       </div>
 
       {canEdit && (
@@ -822,6 +834,10 @@ function BrandCard({ group, creatorById, canEdit, busy, onEditDeal, onAskRemove,
 
 const BRAND_CSS = `
   .bc-row { transition: background .15s ease; }
+  .bc-deals-scroll { overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #CBD5E1 transparent; }
+  .bc-deals-scroll::-webkit-scrollbar { width: 5px; }
+  .bc-deals-scroll::-webkit-scrollbar-track { background: transparent; }
+  .bc-deals-scroll::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 999px; }
   .bc-row:hover { background: ${T.hover}; }
   .bc-row .bc-actions { opacity: .35; transition: opacity .15s ease; }
   .bc-row:hover .bc-actions, .bc-row:focus-within .bc-actions { opacity: 1; }
@@ -993,7 +1009,7 @@ export default function CampaignsTab({ creators, deals, dealsLoading, canEdit, o
           <MoneyBand count={visible.length} clientCost={totals.clientCost} internalCost={totals.internalCost} />
 
           {view === "brands" ? (
-            <div style={{ display: "grid", gap: 16, alignItems: "start", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))" }}>
+            <div style={{ display: "grid", gap: 16, alignItems: "start", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", alignItems: "stretch" }}>
               {brandGroups.map((g, i) => (
                 <BrandCard key={g.name} i={i} group={g} creatorById={creatorById} canEdit={canEdit} busy={busy}
                   onEditDeal={editFromBoard} onAskRemove={setRemoving}

@@ -38,6 +38,7 @@ import { CreatorDetail } from "../Creators";
 import { Pill, Select, INP, Notice } from "../Creators/shared";
 import CreatorAvatar from "../../components/CreatorAvatar";
 import CreatorHandle from "../../components/CreatorHandle";
+import BrandLogo from "../../components/BrandLogo";
 import { CreatorsAPI } from "../../lib/api";
 import { fmtCompact, initials } from "../../lib/format";
 import { T } from "../../theme/tokens";
@@ -145,15 +146,15 @@ const CSS = `
 
   .mc-card__platform {
     position: absolute;
-    top: 14px;
-    left: 14px;
-    max-width: calc(100% - 70px);
+    top: 10px;
+    left: 10px;
+    max-width: calc(100% - 54px);
     overflow: hidden;
-    padding: 5px 10px;
+    padding: 4px 8px;
     border-radius: 999px;
     background: rgba(14,20,44,.55);
     color: #fff;
-    font: 600 10.5px/1.2 system-ui, sans-serif;
+    font: 600 8.5px/1.2 system-ui, sans-serif;
     letter-spacing: .1em;
     text-overflow: ellipsis;
     text-transform: uppercase;
@@ -169,8 +170,10 @@ const CSS = `
     height: 34px;
     align-items: center;
     justify-content: center;
-    border-radius: 50%;
-    background: #fff;
+    border-radius: 0;
+    background: transparent;
+    border: none;
+    box-shadow: none;
     color: #1B2548;
     opacity: 0;
     transform: translate(-4px, 4px);
@@ -202,9 +205,9 @@ const CSS = `
 
   .mc-card__info {
     position: absolute;
-    right: 18px;
-    bottom: 18px;
-    left: 18px;
+    right: 12px;
+    bottom: 12px;
+    left: 12px;
     z-index: 1;
     min-width: 0;
     color: #fff;
@@ -214,9 +217,9 @@ const CSS = `
   .mc-card__name {
     overflow: hidden;
     font-family: "Instrument Serif", Georgia, serif;
-    font-size: 32px;
+    font-size: 23px;
     font-weight: 400;
-    line-height: 1.02;
+    line-height: 1.05;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -225,10 +228,10 @@ const CSS = `
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: 5px;
-    margin-top: 4px;
+    gap: 4px;
+    margin-top: 3px;
     color: rgba(255,255,255,.86);
-    font-size: 13px;
+    font-size: 10px;
     line-height: 1.4;
   }
 
@@ -255,8 +258,8 @@ const CSS = `
   .mc-card__tags {
     display: flex;
     min-width: 0;
-    gap: 5px;
-    margin-top: 8px;
+    gap: 4px;
+    margin-top: 6px;
     overflow: hidden;
     white-space: nowrap;
   }
@@ -264,11 +267,11 @@ const CSS = `
   .mc-card__tag {
     max-width: 48%;
     overflow: hidden;
-    padding: 3px 9px;
+    padding: 2px 7px;
     border-radius: 999px;
     background: rgba(255,255,255,.16);
     color: #fff;
-    font-size: 11px;
+    font-size: 9px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -276,9 +279,9 @@ const CSS = `
   .mc-card__stats {
     display: grid;
     grid-template-columns: 1.2fr 1fr 1fr;
-    gap: 6px;
-    margin-top: 14px;
-    padding-top: 12px;
+    gap: 5px;
+    margin-top: 9px;
+    padding-top: 8px;
     border-top: 1px solid rgba(255,255,255,.25);
   }
 
@@ -289,7 +292,7 @@ const CSS = `
   .mc-card__value {
     overflow: hidden;
     color: #fff;
-    font-size: 17px;
+    font-size: 13px;
     font-weight: 600;
     line-height: 1.2;
     text-overflow: ellipsis;
@@ -299,10 +302,10 @@ const CSS = `
 
   .mc-card__label {
     overflow: hidden;
-    margin-top: 3px;
+    margin-top: 2px;
     color: rgba(255,255,255,.78);
-    font-size: 9px;
-    letter-spacing: .12em;
+    font-size: 7px;
+    letter-spacing: .08em;
     text-overflow: ellipsis;
     text-transform: uppercase;
     white-space: nowrap;
@@ -310,14 +313,30 @@ const CSS = `
 
   .mc-card-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 24px;
+    /* Six columns on wide screens makes creator cards about 40% smaller
+       while keeping the same portrait proportions and card content. */
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 18px;
+    align-items: start;
+  }
+
+  @media (max-width: 1450px) {
+    .mc-card-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .mc-card__name { font-size: 26px; }
+    .mc-card__meta { font-size: 11px; }
+    .mc-card__value { font-size: 15px; }
+    .mc-card__label { font-size: 8px; }
+    .mc-card__platform { font-size: 9px; }
   }
 
   @media (max-width: 1024px) {
     .mc-card-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 20px;
+      gap: 16px;
     }
   }
 
@@ -334,12 +353,16 @@ const CSS = `
     }
 
     .mc-card__name {
-      font-size: 27px;
+      font-size: 23px;
     }
 
+    .mc-card__meta { font-size: 10px; }
+
     .mc-card__value {
-      font-size: 15px;
+      font-size: 13px;
     }
+
+    .mc-card__label { font-size: 7px; }
   }
 
   @media (max-width: 520px) {
@@ -358,12 +381,16 @@ const CSS = `
     }
 
     .mc-card__name {
-      font-size: 32px;
+      font-size: 28px;
     }
 
+    .mc-card__meta { font-size: 12px; }
+
     .mc-card__value {
-      font-size: 17px;
+      font-size: 16px;
     }
+
+    .mc-card__label { font-size: 8px; }
   }
 
   @media (hover: none) {
@@ -427,8 +454,8 @@ function Photo({ inf, ratio = "4 / 5" }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: `linear-gradient(160deg, ${T.pink}1F, ${T.purple}1F)`,
-        color: T.pink,
+        background: "#F7F8FA",
+        color: "#202D55",
         fontSize: 44,
         fontWeight: 600,
         letterSpacing: "0.02em",
@@ -474,7 +501,7 @@ const CardStat = ({ label, value, color = T.text, first }) => (
   </div>
 );
 
-function RosterCard({ inf, vendor, onOpen, selected = false }) {
+function RosterCard({ inf, vendor, deals = [], onOpen, selected = false }) {
   const tags = nicheTags(inf.niche).slice(0, 2);
   const src = CreatorsAPI.avatarUrl(inf);
   const [broken, setBroken] = useState(null);
@@ -484,7 +511,12 @@ function RosterCard({ inf, vendor, onOpen, selected = false }) {
   const handle = rawHandle ? `@${rawHandle.replace(/^@+/, "")}` : "";
 
   const location = inf?.state ? String(inf.state).trim() : "";
-  const campaigns = Array.isArray(inf?.campaigns) ? inf.campaigns.length : 0;
+  // Count the actual managed brand-deal records. The Campaigns tab stores
+  // each deal as a Project with creatorId, which may not be joined into
+  // inf.campaigns on the creator record.
+  const campaigns = deals.filter(
+    (deal) => String(deal?.creatorId ?? "") === String(inf?.id ?? "")
+  ).length;
   const avgER = inf?.avgER != null && inf.avgER !== "" ? `${inf.avgER}%` : "—";
 
   const hasPhoto = Boolean(src && src !== broken);
@@ -669,7 +701,8 @@ const IconBtn = ({ children, disabled, onClick, label }) => (
       alignItems: "center",
       justifyContent: "center",
       background: "transparent",
-      border: `1px solid ${T.border}`,
+      border: "none",
+      boxShadow: "none",
       color: disabled ? T.label : T.text,
       cursor: disabled ? "default" : "pointer",
       opacity: disabled ? 0.45 : 1,
@@ -683,6 +716,7 @@ function CreatorDrawer({
   inf,
   vendor,
   vendors,
+  deals = [],
   position,
   total,
   onPrev,
@@ -720,8 +754,23 @@ function CreatorDrawer({
   const profilePhoto = CreatorsAPI.avatarUrl(inf);
   const followers = fmtCompact(inf.followers);
   const avgER = inf.avgER != null && inf.avgER !== "" ? `${inf.avgER}%` : "—";
-  const campaignCount = Array.isArray(inf.campaigns) ? inf.campaigns.length : 0;
+  // Keep the drawer count consistent with the roster card: managed campaign
+  // records are stored in `deals` and linked to creators through `creatorId`.
+  const campaignCount = deals.filter(
+    (deal) => String(deal?.creatorId ?? "") === String(inf?.id ?? "")
+  ).length;
   const invoiceCount = Array.isArray(inf.invoices) ? inf.invoices.length : 0;
+  // Show the real brands attached to this creator's deal records in the
+  // profile footer, instead of repeating the creator's own handle.
+  const dealBrands = [...new Map(
+    deals
+      .filter((deal) => String(deal?.creatorId ?? "") === String(inf?.id ?? "") && deal?.brand)
+      .map((deal) => [String(deal.brand).trim().toLowerCase(), {
+        name: String(deal.brand).trim(),
+        website: deal.brandWebsite || "",
+      }])
+      .filter(([key, brand]) => key && brand.name)
+  ).values()];
 
   return (
     <div className="mc-drawer-root" style={{ position: "fixed", inset: 0, zIndex: 500 }}>
@@ -748,18 +797,10 @@ function CreatorDrawer({
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    border: 1px solid rgba(255,255,255,.72);
+    border: 1px solid #E5E7EB;
     border-radius: 24px;
-    background: linear-gradient(
-      135deg,
-      rgba(239,244,255,.88),
-      rgba(249,240,255,.82) 52%,
-      rgba(255,247,235,.88)
-    );
-    box-shadow: 0 30px 100px rgba(10,18,45,.35),
-      inset 0 1px 0 rgba(255,255,255,.9);
-    backdrop-filter: blur(28px);
-    -webkit-backdrop-filter: blur(28px);
+    background: #F7F8FA;
+    box-shadow: 0 24px 70px rgba(32,45,85,.18);
     animation: mc-slide .26s cubic-bezier(.2,.7,.2,1);
   }
 
@@ -767,9 +808,9 @@ function CreatorDrawer({
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 12px 16px;
-    border-bottom: 1px solid rgba(255,255,255,.72);
-    background: rgba(255,255,255,.34);
+    padding: 6px 16px;
+    border-bottom: 1px solid transparent;
+    background: transparent;
     flex-shrink: 0;
   }
 
@@ -779,7 +820,7 @@ function CreatorDrawer({
     display: grid;
     grid-template-columns: 260px minmax(0,1fr);
     gap: 16px;
-    padding: 18px;
+    padding: 4px 18px 18px;
     overflow: hidden;
     box-sizing: border-box;
   }
@@ -789,15 +830,10 @@ function CreatorDrawer({
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    border: 1px solid rgba(255,255,255,.78);
+    border: 1px solid #E5E7EB;
     border-radius: 20px;
-    background: linear-gradient(
-      160deg,
-      rgba(255,255,255,.62),
-      rgba(221,230,255,.36)
-    );
-    box-shadow: 0 10px 30px rgba(64,82,140,.09),
-      inset 0 1px 0 rgba(255,255,255,.9);
+    background: #FFFFFF;
+    box-shadow: 0 4px 16px rgba(32,45,85,.05);
   }
 
   .mc-drawer-portrait {
@@ -805,7 +841,7 @@ function CreatorDrawer({
     min-height: 220px;
     flex: 1;
     overflow: hidden;
-    background: linear-gradient(145deg,#c8d7f5,#e7d7f1,#f8e4d5);
+    background: #F7F8FA;
   }
 
   .mc-drawer-portrait img {
@@ -867,11 +903,11 @@ function CreatorDrawer({
     margin-top: 11px;
     padding: 6px 10px;
     border-radius: 999px;
-    background: rgba(224,255,249,.94);
-    color: #087f78;
+    background: #F7F8FA;
+    color: #202D55;
     font-size: 10px;
     font-weight: 700;
-    border: 1px solid rgba(255,255,255,.8);
+    border: 1px solid #E5E7EB;
   }
 
   .mc-drawer-profile-stats {
@@ -883,15 +919,15 @@ function CreatorDrawer({
 
   .mc-drawer-glass-stat {
     padding: 12px 11px;
-    border: 1px solid rgba(255,255,255,.76);
+    border: 1px solid #E5E7EB;
     border-radius: 13px;
-    background: rgba(255,255,255,.56);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.8);
+    background: #FFFFFF;
+    box-shadow: none;
   }
 
   .mc-drawer-glass-stat strong {
     display: block;
-    color: #172444;
+    color: #202D55;
     font-size: 19px;
     line-height: 1.1;
     font-weight: 700;
@@ -900,7 +936,7 @@ function CreatorDrawer({
   .mc-drawer-glass-stat span {
     display: block;
     margin-top: 5px;
-    color: #77819a;
+    color: #6B7280;
     font-size: 9px;
     letter-spacing: .09em;
     text-transform: uppercase;
@@ -908,6 +944,61 @@ function CreatorDrawer({
 
   .mc-drawer-profile-footer {
     padding: 0 12px 12px;
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  /* Brand logos stay in one horizontal row. If there are more logos than
+     the profile card can fit, scroll sideways instead of wrapping vertically. */
+  .mc-drawer-brand-logos {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 2px 1px 8px;
+    box-sizing: border-box;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(53,71,108,.35) transparent;
+  }
+
+  .mc-drawer-brand-logos::-webkit-scrollbar {
+    height: 5px;
+  }
+
+  .mc-drawer-brand-logos::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .mc-drawer-brand-logos::-webkit-scrollbar-thumb {
+    background: rgba(53,71,108,.3);
+    border-radius: 999px;
+  }
+
+  .mc-drawer-brand-logo {
+    display: flex;
+    flex: 0 0 40px;
+    width: 40px;
+    height: 40px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    box-shadow: 0 2px 6px rgba(32,45,85,.05);
+    box-sizing: border-box;
+  }
+
+  .mc-drawer-brand-empty {
+    color: #6B7280;
+    font-size: 10px;
+    white-space: nowrap;
   }
 
   .mc-drawer-instagram {
@@ -919,8 +1010,8 @@ function CreatorDrawer({
     padding: 10px;
     border: 1px solid rgba(255,255,255,.75);
     border-radius: 12px;
-    color: #35476c;
-    background: rgba(255,255,255,.5);
+    color: #202D55;
+    background: #FFFFFF;
     font-size: 11px;
     box-sizing: border-box;
   }
@@ -933,6 +1024,7 @@ function CreatorDrawer({
     padding: 6px 8px 18px;
     box-sizing: border-box;
     scrollbar-gutter: stable;
+    background: transparent;
   }
 
   /* Main CreatorDetail wrapper */
@@ -944,16 +1036,13 @@ function CreatorDrawer({
 
   /* Individual sections/cards */
   .mc-drawer-content > div > * {
-    min-width: 0;
-    padding: 14px 16px !important;
-    border: 1px solid rgba(255,255,255,.82) !important;
-    border-radius: 16px !important;
-    background: rgba(255,255,255,.64) !important;
-    box-shadow: 0 8px 24px rgba(70,86,135,.06),
-      inset 0 1px 0 rgba(255,255,255,.95) !important;
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    box-sizing: border-box;
+     min-width: 0;
+     padding: 14px 16px !important;
+     border: none !important;
+     border-radius: 12px !important;
+     background: transparent !important;
+     box-shadow: none !important;
+     box-sizing: border-box;
   }
 
   .mc-drawer-content button {
@@ -1068,7 +1157,22 @@ function CreatorDrawer({
               <div className="mc-drawer-glass-stat"><strong style={{ color: invoiceCount ? "#079b68" : "#8791a5" }}>{invoiceCount}</strong><span>Invoices</span></div>
             </div>
             <div className="mc-drawer-profile-footer">
-              <div className="mc-drawer-instagram">{inf.handle ? `@${String(inf.handle).replace(/^@+/, "")}` : "Creator profile"}</div>
+              <div className="mc-drawer-brand-logos" aria-label="Brands on deals">
+                {dealBrands.length > 0 ? (
+                  dealBrands.map((brand) => (
+                    <span
+                      key={brand.name.toLowerCase()}
+                      className="mc-drawer-brand-logo"
+                      title={brand.name}
+                      aria-label={brand.name}
+                    >
+                      <BrandLogo brand={brand.name} website={brand.website} size={32} radius={16} />
+                    </span>
+                  ))
+                ) : (
+                  <span className="mc-drawer-brand-empty">No brand deals yet</span>
+                )}
+              </div>
               {tags.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 }}>{tags.map((tag) => <Pill key={tag} color={T.pink}>{tag}</Pill>)}</div>}
             </div>
           </section>
@@ -1103,6 +1207,7 @@ export default function CreatorsTab({
   onSaveEdit,
   patchCreator,
   showToast,
+  deals = [],
 }) {
   const [query, setQuery] = useState("");
   const [platformFilter, setPlatformFilter] = useState("");
@@ -1540,6 +1645,7 @@ export default function CreatorsTab({
               key={inf.id}
               inf={inf}
               vendor={vendorById.get(inf.vendorId)}
+              deals={deals}
               selected={openId === inf.id}
               onOpen={() => setOpenId(inf.id)}
             />
@@ -1552,6 +1658,7 @@ export default function CreatorsTab({
           inf={selected}
           vendor={vendorById.get(selected.vendorId)}
           vendors={vendors}
+          deals={deals}
           position={idx + 1}
           total={visible.length}
           onPrev={idx > 0 ? goPrev : null}

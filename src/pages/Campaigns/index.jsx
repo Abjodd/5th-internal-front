@@ -8,6 +8,7 @@
 import { createPortal } from "react-dom";
 import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
+import { INDIAN_STATES as SHARED_INDIAN_STATES, indianStateName, placeKey } from "../../lib/creatorPlace";
 import { CampaignsAPI, CommentInsightsAPI, InstagramAPI, YouTubeAPI, PostMetricsAPI, InvoicesAPI, ExpensesAPI, ClientPOsAPI, PurchaseOrdersAPI, QuotesAPI, ClientsAPI, InvoicePdfAPI, UsersAPI, CreatorsAPI, VendorsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { validateCreatorDetails, requiredForPayType, validateField, sanitizeField } from "../../lib/validators";
@@ -153,14 +154,10 @@ const PAYMENT_TYPES = [{id:"",label:"— Select —"},{id:"vendor",label:"To Ven
 const COLLAB_TYPES = [{id:"",label:"— Select —"},{id:"collab",label:"Collab"},{id:"non_collab",label:"Non-Collab"},{id:"ugc",label:"UGC"}];
 // Full names — stored as-is on creator.state and matched by name in the
 // client portal's STATES_META (5th-client-front/src/lib/geo.js).
-const INDIAN_STATES = [
-  "Andaman & Nicobar","Andhra Pradesh","Arunachal Pradesh","Assam","Bihar",
-  "Chandigarh","Chhattisgarh","Dadra & Nagar Haveli","Daman & Diu","Delhi",
-  "Goa","Gujarat","Haryana","Himachal Pradesh","Jammu & Kashmir","Jharkhand",
-  "Karnataka","Kerala","Lakshadweep","Madhya Pradesh","Maharashtra","Manipur",
-  "Meghalaya","Mizoram","Nagaland","Odisha","Puducherry","Punjab","Rajasthan",
-  "Sikkim","Tamil Nadu","Tripura","Uttar Pradesh","Uttarakhand","West Bengal",
-];
+// One list for the whole app (lib/creatorPlace.js) — this copy was missing
+// Telangana and Ladakh.
+const INDIAN_STATES = SHARED_INDIAN_STATES;
+const indianCountry = (c) => placeKey(c) === "india";
 // ── AGENCY ENTITY (for invoice generation) ───────────────────────────────────
 const AGENCY = {
   name:    "5th Avenue",
@@ -472,6 +469,8 @@ const mkCreator = (src={}, cost) => ({
   // brand has agreed to. Their answer in the portal is what moves it on.
   status:   "suggested",
   state:    src.state   || null,
+  country:  src.country || null,
+  city:     src.city    || null,
   // Unset until someone chooses — see COLLAB_TYPES.
   collab:   src.collab  || null,
   payType:  src.payType || null,
@@ -2626,6 +2625,7 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
   const [f,setF]=useState({
     name:editing?.name||"",platform:editing?.platform||"Instagram",handle:editing?.handle||"",igUrl:editing?.igUrl||"",
     phone:editing?.phone||"",niche:editing?.niche||"",state:editing?.state||"",
+    country:editing?.country||(editing?.state&&indianStateName(editing.state)?"India":""),city:editing?.city||"",
     followers:editing?.followers!=null?String(editing.followers):"",avgLikes:editing?.avgLikes!=null?String(editing.avgLikes):"",avgER:editing?.avgER!=null?String(editing.avgER):"",
     pan:pd0.pan||"",email:pd0.email||"",address:pd0.address||"",
     bankName:pd0.bankName||"",bankAccount:pd0.bankAccount||"",bankBranch:pd0.bankBranch||"",ifsc:pd0.ifsc||"",
@@ -2679,6 +2679,8 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
       phone:     p.phone     ||row.phone||"",
       niche:     p.niche     ||row.niche||"",
       state:     p.state     ||row.state||"",
+      country:   p.country   ||row.country||"",
+      city:      p.city      ||row.city||"",
       followers: p.followers ||String(row.followers??""),
       avgLikes:  p.avgLikes  ||String(row.avgLikes??""),
       avgER:     p.avgER     ||String(row.avgER??""),
@@ -2770,6 +2772,7 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
         ...editing,
         name:f.name, platform:f.platform, handle:f.handle, igUrl:f.igUrl||null,
         phone:f.phone||null, niche:f.niche, state:f.state||null,
+        country:f.country.trim()||null, city:f.city.trim()||null,
         followers:f.followers, avgLikes:f.avgLikes||null, avgER:parseFloat(f.avgER)||null,
         askingPrice:parseInt(askingPrice)||null,
         // Belt and braces: the input is read-only when the fee is committed,
@@ -2799,6 +2802,8 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
       askingPrice:parseInt(askingPrice)||null,
       igFetched,
       state:f.state||null,
+      country:f.country.trim()||null,
+      city:f.city.trim()||null,
       payType:f.payType||null,
       payId:payId||null,
       personalDetails,
@@ -2904,7 +2909,17 @@ export function AddCreatorModal({onAdd,onClose,editing=null,costLocked=false}){
         <div style={{marginBottom:12}}><Lbl style={{display:"block",marginBottom:4}}>Phone <span style={{fontSize:8,color:T.label,textTransform:"none",letterSpacing:0}}>— internal only</span></Lbl><PhoneInput value={f.phone} onChange={v=>u("phone",v)} style={{...INP,resize:"none",borderColor:errors.phone?T.red:`${T.amber}30`}}/><Err k="phone"/></div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
           <div><Lbl style={{display:"block",marginBottom:4}}>Niche</Lbl><input value={f.niche} onChange={e=>u("niche",e.target.value)} placeholder="e.g. Food, Fitness, Lifestyle" style={{...INP,resize:"none"}}/></div>
-          <div><Lbl style={{display:"block",marginBottom:4}}>State</Lbl><select value={f.state} onChange={e=>u("state",e.target.value)} style={{...INP,resize:"none"}}><option value="">— Select —</option>{INDIAN_STATES.map(s=><option key={s}>{s}</option>)}</select></div>
+          <div><Lbl style={{display:"block",marginBottom:4}}>Country</Lbl><input value={f.country} list="cr-countries" onChange={e=>u("country",e.target.value)} placeholder="e.g. India" style={{...INP,resize:"none"}}/>
+            <datalist id="cr-countries">{["India","UAE","USA","UK","Canada","Australia","Singapore","Saudi Arabia","Qatar","Nepal","Sri Lanka","Bangladesh"].map(c=><option key={c} value={c}/>)}</datalist></div>
+        </div>
+        {/* Where they are — the Creators tab filters on country, state/region and city */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+          <div><Lbl style={{display:"block",marginBottom:4}}>{!f.country||indianCountry(f.country)?"State":"State / region"}</Lbl>
+            {!f.country||indianCountry(f.country)
+              ? <select value={indianStateName(f.state)||f.state} onChange={e=>u("state",e.target.value)} style={{...INP,resize:"none"}}><option value="">— Select —</option>{INDIAN_STATES.map(s=><option key={s}>{s}</option>)}{f.state&&!indianStateName(f.state)&&<option value={f.state}>{f.state}</option>}</select>
+              : <input value={f.state} onChange={e=>u("state",e.target.value)} placeholder="e.g. Dubai, California" style={{...INP,resize:"none"}}/>}
+          </div>
+          <div><Lbl style={{display:"block",marginBottom:4}}>City</Lbl><input value={f.city} onChange={e=>u("city",e.target.value)} placeholder="e.g. Kochi" style={{...INP,resize:"none"}}/></div>
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:14}}>
           {[["Followers","followers","e.g. 820K"],["Avg Likes","avgLikes","e.g. 32K"],["Avg ER%","avgER","e.g. 4.2"]].map(([l,k,ph])=>(

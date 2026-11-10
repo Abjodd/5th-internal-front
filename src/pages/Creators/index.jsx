@@ -18,7 +18,8 @@
  */
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
-import { CreatorsAPI, InvoicePdfAPI, VendorsAPI } from "../../lib/api";
+import { CreatorsAPI, FinderAPI, InvoicePdfAPI, VendorsAPI } from "../../lib/api";
+import { placeOfCreator, placeLabel, nichesOfCreator } from "../../lib/creatorPlace";
 import { can } from "../../lib/rbac";
 import CreatorHandle from "../../components/CreatorHandle";
 import CreatorAvatar from "../../components/CreatorAvatar";
@@ -602,8 +603,10 @@ export function CreatorDetail({ inf, vendor, vendors, open, canEdit, onEdit, onA
 // Exported for pages/Managed, which shows the same card for the subset of the
 // directory managed directly (managedBy === "fifthavenue") rather than
 // rebuilding it — one card design, used by both.
-export function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, onAssign, onSetManagement, onToast, avatarSize = 40, avatarRadius = 10 }) {
+export function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onEdit, onAssign, onSetManagement, onToast, place, avatarSize = 40, avatarRadius = 10 }) {
   const kind = managementOf(inf);
+  // City, region (and country abroad) — from the profile, or what Find creators worked out.
+  const where = placeLabel(place !== undefined ? place : placeOfCreator(inf));
   return (
     <Card
       open={open}
@@ -626,7 +629,7 @@ export function CreatorCard({ inf, vendor, vendors, open, onToggle, canEdit, onE
         <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "inline-flex", alignItems: "center", gap: 4 }}>
           {/* every platform they're on — the main one first */}
           {platformsOfCreator(inf).filter((p) => platformKey(p)).map((p) => <PlatformLogo key={p} platform={p} size={11} />)}
-          {inf.platform || "—"}{inf.state ? ` · ${inf.state}` : ""}
+          {inf.platform || "—"}{where ? ` · ${where}` : ""}
         </span>
         {kind === "vendor"
           ? <Pill color={T.gold}>{vendor?.name || MANAGEMENT_LABEL.vendor}</Pill>
@@ -662,6 +665,19 @@ export default function Creators() {
   const [query, setQuery]     = useState("");
   const [mgmt, setMgmt]       = useState("all");   // creator-type filter
   const [platform, setPlatform] = useState("all"); // platform filter
+  // Location and niche filters. "all" = any; "__none" = not known yet.
+  const NO_FILTER = { country: "all", region: "all", city: "all", niche: "all" };
+  const [where, setWhere] = useState(NO_FILTER);
+  const setW = (k, v) => setWhere((w) => ({
+    ...w, [k]: v,
+    // narrowing the country/region clears what sat under the old one
+    ...(k === "country" ? { region: "all", city: "all" } : {}),
+    ...(k === "region" ? { city: "all" } : {}),
+  }));
+  // The finder's Country → State → City tree, so creators added before
+  // country/city were saved can still be placed from what Find creators
+  // detected. Optional: without it, profile fields and Indian states still work.
+  const [placeTree, setPlaceTree] = useState(null);
   const [expanded, setExpanded] = useState(null);   // creator id
   const [editTarget, setEditTarget] = useState(null); // creator being edited (founder only)
   // null = closed · {} = add · a vendor = edit. One state for the Vendors tab's
@@ -731,6 +747,41 @@ export default function Creators() {
 
   const vendorById = useMemo(() => new Map(vendors.map(v => [v.id, v])), [vendors]);
 
+  useEffect(() => {
+    if (tab !== "creators" || placeTree || !FinderAPI.configured) return;
+    let live = true;
+    FinderAPI.meta().then((m) => { if (live && m?.placeTree?.length) setPlaceTree(m.placeTree); }).catch(() => {});
+    return () => { live = false; };
+  }, [tab, placeTree]);
+
+  // Each creator's place and niches, worked out once per list.
+  const facts = useMemo(() => new Map(creators.map((c) => [c.id, { place: placeOfCreator(c, placeTree), niches: nichesOfCreator(c) }])), [creators, placeTree]);
+  const factsOf = (c) => facts.get(c.id) || { place: null, niches: [] };
+
+  // Options with counts — only places and niches someone in the directory
+  // actually has. Region and city follow the country (and region) picked.
+  const filterOptions = useMemo(() => {
+    const count = (pick) => {
+      const n = new Map();
+      for (const c of creators) { const v = pick(factsOf(c)); for (const x of [].concat(v || [])) n.set(x, (n.get(x) || 0) + 1); }
+      return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    };
+    const inCountry = (p) => where.country === "all" || p?.country === where.country;
+    const inRegion = (p) => where.region === "all" || p?.state === where.region;
+    const countries = count((f) => f.place?.country);
+    // India first — most of the directory — then by count.
+    countries.sort((a, b) => (b[0] === "India") - (a[0] === "India"));
+    const unknown = creators.filter((c) => !factsOf(c).place).length;
+    const regions = count((f) => (inCountry(f.place) ? f.place?.state : null));
+    const cities = count((f) => (inCountry(f.place) && inRegion(f.place) ? f.place?.city : null));
+    const nicheCount = new Map(), nicheName = new Map();
+    for (const c of creators) for (const n of factsOf(c).niches) {
+      const k = n.toLowerCase(); nicheCount.set(k, (nicheCount.get(k) || 0) + 1); if (!nicheName.has(k)) nicheName.set(k, n);
+    }
+    const niches = [...nicheCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k, n]) => [k, nicheName.get(k), n]);
+    return { countries, unknown, regions, cities, niches };
+  }, [creators, facts, where.country, where.region]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const mgmtCounts = useMemo(() => {
     // Keys come from MANAGEMENT so a renamed or added type can't desync them.
     const n = { all: creators.length, ...Object.fromEntries(MANAGEMENT.map(m => [m.id, 0])) };
@@ -754,12 +805,18 @@ export default function Creators() {
       const kind = managementOf(i);
       if (mgmt !== "all" && kind !== mgmt) return false;
       if (platform !== "all" && !platformsOfCreator(i).includes(platform)) return false;
+      const { place, niches } = factsOf(i);
+      if (where.country === "__none" ? !!place : where.country !== "all" && place?.country !== where.country) return false;
+      if (where.region !== "all" && place?.state !== where.region) return false;
+      if (where.city !== "all" && place?.city !== where.city) return false;
+      if (where.niche !== "all" && !niches.some((n) => n.toLowerCase() === where.niche)) return false;
       if (!q) return true;
-      return [i.name, i.handle, i.niche, i.state, MANAGEMENT_LABEL[kind], i.platform,
+      return [i.name, i.handle, i.niche, ...niches, placeLabel(place), place?.country, MANAGEMENT_LABEL[kind], i.platform,
               vendorById.get(i.vendorId)?.name, ...(i.campaigns || []).map(c => c.name)]
         .filter(Boolean).some(v => String(v).toLowerCase().includes(q));
     });
-  }, [creators, query, mgmt, platform, vendorById]);
+  }, [creators, query, mgmt, platform, vendorById, where, facts]); // eslint-disable-line react-hooks/exhaustive-deps
+  const filtering = query || mgmt !== "all" || platform !== "all" || Object.values(where).some((v) => v !== "all");
 
   // Defense in depth — the shell already hides this section from non-founders.
   if (!can(role, "seeCreators")) {
@@ -818,7 +875,7 @@ export default function Creators() {
       {/* Tabs — same underline treatment the Requests inbox uses */}
       <div style={{ display: "flex", gap: 22, borderBottom: `1px solid ${T.border}`, marginBottom: 18 }}>
         {TABS.map(t => (
-          <button key={t.id} onClick={() => { setTab(t.id); setQuery(""); setMgmt("all"); setPlatform("all"); }}
+          <button key={t.id} onClick={() => { setTab(t.id); setQuery(""); setMgmt("all"); setPlatform("all"); setWhere(NO_FILTER); }}
             style={{
               position: "relative", display: "flex", alignItems: "center", gap: 7,
               padding: "0 0 9px", background: "transparent", border: "none", cursor: "pointer",
@@ -835,13 +892,52 @@ export default function Creators() {
         ))}
       </div>
 
+      {/* Location + niche — from the profile, or what Find creators found */}
+      {tab === "creators" && !loading && !error && creators.length > 0 && (
+        <div data-testid="creator-filters" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, margin: "-6px 0 16px" }}>
+          <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: T.label, marginRight: 2 }}>Location</span>
+          <Select value={where.country} onChange={(e) => setW("country", e.target.value)} title="Filter by country" data-testid="country-filter"
+            style={{ color: where.country === "all" ? T.sub : T.text, minWidth: 150 }}>
+            <option value="all">Any country</option>
+            {filterOptions.countries.map(([c, n]) => <option key={c} value={c}>{c} ({n})</option>)}
+            {filterOptions.unknown > 0 && <option value="__none">Location not known ({filterOptions.unknown})</option>}
+          </Select>
+          <Select value={where.region} onChange={(e) => setW("region", e.target.value)} title="Filter by state / region" data-testid="region-filter"
+            disabled={where.country === "__none" || !filterOptions.regions.length}
+            style={{ color: where.region === "all" ? T.sub : T.text, minWidth: 150, opacity: where.country === "__none" || !filterOptions.regions.length ? 0.5 : 1 }}>
+            <option value="all">{where.country !== "all" && where.country !== "__none" ? `Anywhere in ${where.country}` : "Any region"}</option>
+            {filterOptions.regions.map(([r, n]) => <option key={r} value={r}>{r} ({n})</option>)}
+          </Select>
+          <Select value={where.city} onChange={(e) => setW("city", e.target.value)} title="Filter by city" data-testid="city-filter"
+            disabled={where.country === "__none" || !filterOptions.cities.length}
+            style={{ color: where.city === "all" ? T.sub : T.text, minWidth: 140, opacity: where.country === "__none" || !filterOptions.cities.length ? 0.5 : 1 }}>
+            <option value="all">Any city</option>
+            {filterOptions.cities.map(([c, n]) => <option key={c} value={c}>{c} ({n})</option>)}
+          </Select>
+          <span style={{ width: 1, height: 18, background: T.border, margin: "0 6px" }} />
+          <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: T.label, marginRight: 2 }}>Niche</span>
+          <Select value={where.niche} onChange={(e) => setW("niche", e.target.value)} title="Filter by niche — includes the niche they were found under in Find creators" data-testid="niche-filter"
+            style={{ color: where.niche === "all" ? T.sub : T.text, minWidth: 160 }}>
+            <option value="all">Any niche</option>
+            {filterOptions.niches.map(([k, label, n]) => <option key={k} value={k}>{label} ({n})</option>)}
+          </Select>
+          {filtering && (
+            <button type="button" onClick={() => { setWhere(NO_FILTER); setMgmt("all"); setPlatform("all"); setQuery(""); }}
+              style={{ background: "none", border: "none", color: T.accent, fontSize: 11, fontFamily: "'Sora'", cursor: "pointer", padding: "4px 6px" }}>
+              Clear filters
+            </button>
+          )}
+          <span style={{ marginLeft: "auto", fontSize: 10.5, color: T.label }}>{visible.length} of {creators.length} creators</span>
+        </div>
+      )}
+
       {/* States */}
       {loading && <Notice>Loading creators…</Notice>}
       {error && !loading && <Notice tone="error">Could not load creators from the backend: {error}</Notice>}
 
       {!loading && !error && tab === "creators" && (
         visible.length === 0
-          ? <Notice tone="empty">{query || mgmt !== "all" || platform !== "all" ? "No creators match your search." : "No creators in the directory yet."}</Notice>
+          ? <Notice tone="empty">{filtering ? "No creators match these filters." : "No creators in the directory yet."}</Notice>
           : (
             <CardGrid>
               {visible.map(inf => (
@@ -852,6 +948,7 @@ export default function Creators() {
                   vendors={vendors}
                   open={expanded === inf.id}
                   onToggle={() => setExpanded(expanded === inf.id ? null : inf.id)}
+                  place={factsOf(inf).place}
                   canEdit={canEdit}
                   onEdit={setEditTarget}
                   onToast={showToast}

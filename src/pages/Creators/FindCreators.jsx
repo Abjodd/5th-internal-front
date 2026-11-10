@@ -18,6 +18,7 @@
  * comments, downloads… through SocialKit).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { placeOfResult } from "../../lib/creatorPlace";
 import { BadgeCheck, Mail, MapPin, Search, UserPlus, UserRoundSearch, Check, Loader2, X, Wand2, Link2 } from "lucide-react";
 import { CreatorsAPI, FinderAPI } from "../../lib/api";
 import { fmtCompact } from "../../lib/format";
@@ -441,18 +442,26 @@ export default function FindCreators({ creators = [], canEdit, onToast, onCreate
       // The photo goes as bytes: the finder keeps its own copy, and platform
       // CDN links (TikTok's especially) expire within days.
       const avatarImage = await photoDataUri(FinderAPI.avatarUrl(r));
+      const fromSearch = r.why?.via === "profile link" ? null : search;
+      // Where they are, as Country / State / City, so the Creators tab can
+      // filter on it (and the client portal's Regional Map can place them).
+      const place = placeOfResult(r, fromSearch, placeTree);
       const created = await CreatorsAPI.create({
         name: r.fullName || r.username,
         handle: `@${r.username}`,
         platform: pf.directory,
         igUrl: r.profileUrl || r.igUrl,   // the profile link on any platform (see profileUrl in lib/campaign.js)
         followers: fmtCompact(r.followers),
-        niche: search?.expanded?.niches?.join(", ") || search?.query || "",
+        // The niche(s) they came up under — what the Creators tab's Niche filter reads.
+        niche: fromSearch?.expanded?.niches?.join(", ") || fromSearch?.query || "",
+        ...(place?.country ? { country: place.country } : {}),
+        ...(place?.state ? { state: place.state } : {}),
+        ...(place?.city ? { city: place.city } : {}),
         ...(r.publicEmail ? { personalDetails: { email: r.publicEmail } } : {}),
         ...(avatarImage ? { avatarImage } : {}),
         // Everything the finder knows, kept on the creator under
         // socials.<platform> (backend routes/creators.js).
-        discovery: discoveryOf(r, r.why?.via === "profile link" ? null : search),
+        discovery: { ...discoveryOf(r, fromSearch), ...(place ? { place } : {}) },
       });
       setAdded((s) => new Set(s).add(r.username));
       if (created?.linked) {

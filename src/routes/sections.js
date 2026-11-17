@@ -77,6 +77,18 @@ export const SECTIONS = [
     roles: ["founder"],
   },
   {
+    // The agency's service lines as tabs — Consultant (live), Client flow and
+    // CRM (coming). See pages/Services.
+    id: "services",
+    path: "/services",
+    label: "Services",
+    shortLabel: "Services",
+    icon: "◆",
+    lucide: "BriefcaseBusiness",
+    color: T.accent,
+    roles: ["founder"],
+  },
+  {
     // Every inbound landing-page submission — brand signups and creator
     // applications — as two tabs of one inbox. Creator applications used to
     // hang off the Creators directory; see pages/Requests/index.jsx.

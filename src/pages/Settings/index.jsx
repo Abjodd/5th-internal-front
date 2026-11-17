@@ -5,6 +5,9 @@
  *   · Internal — platform users (pcm, cm, am, ea, accounts…) from /api/users
  *   · Brand Portal — external client logins from /api/brand-credentials,
  *     each mapped to a brandId (= Client._id)
+ *   · Consultant Login — logins for the consultant portal (built later) from
+ *     /api/consultant-credentials, each mapped to a consultantId (Services →
+ *     Consultant)
  *
  * The DB stores { id, username, hashKey } — hashKey is sha256(password),
  * so the actual password can never be displayed; the hash is shown instead
@@ -13,8 +16,8 @@
  * the doc is removed from Mongo so the id sequence stays consistent).
  */
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { useOutletContext } from "react-router-dom";
-import { UsersAPI, BrandCredentialsAPI, ClientsAPI } from "../../lib/api";
+import { useOutletContext, useSearchParams } from "react-router-dom";
+import { UsersAPI, BrandCredentialsAPI, ClientsAPI, ConsultantCredentialsAPI, ConsultantsAPI } from "../../lib/api";
 import { can } from "../../lib/rbac";
 import { PLATFORM_ROLES } from "../../routes/sections";
 import { T } from "../../theme/tokens";
@@ -162,8 +165,21 @@ function PasswordCell({ api, record }) {
 // One modal for both collections: `kind` decides which fields show (role for
 // internal users, brand for portal credentials). `editing` = existing record
 // (password optional = reset) vs null = create (password required).
-function CredentialModal({ kind, editing, brands, defaultBrandId, currentAvatarUrl, onClose, onSave, onCreateBrand }) {
+// A readable strong password: no look-alike characters (0/O, 1/l/I), with a
+// capital, a digit and a symbol — easy to read out to a consultant.
+function generatePassword(len = 14) {
+  const sets = ["ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghijkmnpqrstuvwxyz", "23456789", "@#$%&*!?"];
+  const all = sets.join("");
+  const rnd = (n) => { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % n; };
+  const chars = sets.map((set) => set[rnd(set.length)]);
+  while (chars.length < len) chars.push(all[rnd(all.length)]);
+  for (let i = chars.length - 1; i > 0; i--) { const j = rnd(i + 1); [chars[i], chars[j]] = [chars[j], chars[i]]; }
+  return chars.join("");
+}
+
+function CredentialModal({ kind, editing, brands, consultants = [], defaultBrandId, defaultConsultantId, currentAvatarUrl, onClose, onSave, onCreateBrand }) {
   const isUser = kind === "internal";
+  const isConsultant = kind === "consultants";
   const [form, setForm] = useState({
     username: editing?.username || "",
     name:     editing?.name || "",
@@ -171,8 +187,21 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, currentAvatarU
     role:     editing?.role || "cm",
     teamId:   editing?.teamId || "",
     brandId:  editing?.brandId || defaultBrandId || "",
+    consultantId: editing?.consultantId || defaultConsultantId || "",
     password: "",
   });
+  const [showPw, setShowPw] = useState(false);
+  // Picking a consultant fills the login from their record when those fields are still empty.
+  const pickConsultant = (id) => {
+    const c = consultants.find((x) => x.id === id);
+    setForm((p) => ({
+      ...p, consultantId: id,
+      username: p.username || c?.primaryContact?.email || c?.email || "",
+      name: p.name || c?.primaryContact?.name || "",
+      title: p.title || c?.primaryContact?.designation || "",
+    }));
+    setErr("");
+  };
   // Kept OUT of `form` on purpose: this is the three-state avatar value
   // (undefined = untouched · null = remove · data URI = replace), and `form` is
   // spread wholesale into the patch, which would turn "untouched" into an
@@ -196,11 +225,12 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, currentAvatarU
     if (!form.username.trim()) return setErr("Username (email) is required.");
     if (!form.name.trim())     return setErr("Name is required.");
     if (!editing && !form.password) return setErr("Password is required for a new login.");
-    if (!isUser && !form.brandId)   return setErr("Select a brand for this credential.");
+    if (isConsultant && !form.consultantId) return setErr("Select the consultant this login is for.");
+    if (!isUser && !isConsultant && !form.brandId) return setErr("Select a brand for this credential.");
     setSaving(true);
     try {
       let brandId = form.brandId;
-      if (!isUser && brandId === "__new__") {
+      if (!isUser && !isConsultant && brandId === "__new__") {
         const created = await onCreateBrand(pendingBrandName);
         brandId = created.id;
       }
@@ -220,7 +250,7 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, currentAvatarU
       <div style={{ position: "relative", width: "min(440px,94vw)", maxHeight: "88vh", background: T.surface, border: `1px solid ${T.borderMid}`, borderRadius: 10, overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: T.shadowLg }}>
         <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontFamily: "'Newsreader',serif", fontSize: 17, color: T.text, fontStyle: "italic" }}>
-            {editing ? `Edit — ${editing.name}` : isUser ? "Add team member" : "Add brand credential"}
+            {editing ? `Edit — ${editing.name}` : isUser ? "Add team member" : isConsultant ? "Add consultant login" : "Add brand credential"}
           </div>
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: T.sub, fontSize: 16, cursor: "pointer" }}>✕</button>
         </div>
@@ -247,12 +277,12 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, currentAvatarU
             </div>
             <div>
               <Lbl>Title</Lbl>
-              <input value={form.title} onChange={e => u("title", e.target.value)} placeholder={isUser ? "e.g. Category Manager" : "e.g. Marketing Head"} style={INP} />
+              <input value={form.title} onChange={e => u("title", e.target.value)} placeholder={isUser ? "e.g. Category Manager" : isConsultant ? "e.g. Partner" : "e.g. Marketing Head"} style={INP} />
             </div>
           </div>
           <div style={{ marginBottom: 12 }}>
             <Lbl>Username (login email)</Lbl>
-            <input value={form.username} onChange={e => u("username", e.target.value)} placeholder={isUser ? "name@5thavenue.in" : "name@brand.com"} style={INP} />
+            <input value={form.username} onChange={e => u("username", e.target.value)} placeholder={isUser ? "name@5thavenue.in" : isConsultant ? "name@consultant.com" : "name@brand.com"} style={INP} />
           </div>
           {isUser ? (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
@@ -266,6 +296,20 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, currentAvatarU
                 <Lbl>Team ID (auto-assigned if blank)</Lbl>
                 <input value={form.teamId} onChange={e => u("teamId", e.target.value)} placeholder="e.g. t3 — links campaigns (amId/cmId/eaId)" style={INP} />
               </div>
+            </div>
+          ) : isConsultant ? (
+            <div style={{ marginBottom: 12 }}>
+              <Lbl>Consultant</Lbl>
+              <select value={form.consultantId} onChange={e => pickConsultant(e.target.value)} data-testid="consultant-select"
+                style={{ ...INP, cursor: "pointer", marginTop: 5, color: form.consultantId ? T.text : T.sub }}>
+                <option value="">Select a consultant…</option>
+                {[...consultants].sort((a, b) => a.name.localeCompare(b.name)).map(c => (
+                  <option key={c.id} value={c.id}>{c.name}{c.status === "inactive" ? " (inactive)" : ""}</option>
+                ))}
+              </select>
+              {consultants.length === 0 && (
+                <div style={{ fontSize: 9.5, color: T.amber, marginTop: 6 }}>No consultants yet — add one in Services → Consultant first.</div>
+              )}
             </div>
           ) : (
             <div style={{ marginBottom: 12 }}>
@@ -282,8 +326,20 @@ function CredentialModal({ kind, editing, brands, defaultBrandId, currentAvatarU
           )}
           <div style={{ marginBottom: 4 }}>
             <Lbl>{editing ? "Reset password (leave blank to keep current)" : "Password"}</Lbl>
-            <input type="password" value={form.password} onChange={e => u("password", e.target.value)}
-              placeholder={editing ? "••••••••" : "Set an initial password"} style={INP} />
+            <div style={{ display: "flex", gap: 6 }}>
+              <input type={showPw ? "text" : "password"} value={form.password} onChange={e => u("password", e.target.value)}
+                placeholder={editing ? "••••••••" : "Set an initial password"} style={{ ...INP, flex: 1, fontFamily: showPw && form.password ? "monospace" : INP.fontFamily }} data-testid="password-input" />
+              <button type="button" onClick={() => { u("password", generatePassword()); setShowPw(true); }} title="Generate a strong password"
+                style={{ fontSize: 10.5, color: T.accent, background: "transparent", border: `1px solid ${T.accent}30`, borderRadius: 5, padding: "0 10px", cursor: "pointer", fontFamily: "'Sora'", whiteSpace: "nowrap" }}>
+                Generate
+              </button>
+              {form.password && (
+                <button type="button" onClick={() => setShowPw(v => !v)} title={showPw ? "Hide" : "Show"}
+                  style={{ fontSize: 10.5, color: T.sub, background: "transparent", border: `1px solid ${T.border}`, borderRadius: 5, padding: "0 8px", cursor: "pointer", fontFamily: "'Sora'" }}>
+                  {showPw ? "Hide" : "Show"}
+                </button>
+              )}
+            </div>
             <div style={{ fontSize: 9.5, color: T.label, marginTop: 5 }}>
               Stored as a SHA-256 hash key plus an encrypted copy for the founder's reveal — plaintext is never stored.
             </div>
@@ -580,7 +636,13 @@ export default function Settings() {
   const { user, brands = [], brandFilter, refreshBrands } = useOutletContext() || {};
   const role = user?.role;
 
-  const [tab, setTab] = useState("internal");          // internal | external
+  // ?tab=consultants&consultant=cs1 — the consultant card's "Manage logins" lands here.
+  const [params, setParams] = useSearchParams();
+  const [tab, setTabState] = useState(() => (["internal", "external", "brands", "consultants"].includes(params.get("tab")) ? params.get("tab") : "internal"));
+  const setTab = (t) => { setTabState(t); setParams(t === "internal" ? {} : { tab: t }, { replace: true }); };
+  const consultantFromLink = params.get("consultant") || "";
+  const [ccreds, setCcreds] = useState([]);           // consultant portal logins
+  const [consultants, setConsultants] = useState([]);
   const [users, setUsers] = useState([]);
   const [creds, setCreds] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -591,7 +653,7 @@ export default function Settings() {
   const [creatingBrand, setCreatingBrand] = useState(false);
   const [deletingBrand, setDeletingBrand] = useState(null); // brand record pending cascade delete
 
-  const api    = tab === "internal" ? UsersAPI : BrandCredentialsAPI;
+  const api    = tab === "internal" ? UsersAPI : tab === "consultants" ? ConsultantCredentialsAPI : BrandCredentialsAPI;
   // Brand Portal tab respects the global brand filter (top bar), same as
   // Campaigns/Billing. Internal users aren't brand-scoped, so no filter there.
   const visibleCreds = brandFilter ? creds.filter(c => c.brandId === brandFilter) : creds;
@@ -600,16 +662,23 @@ export default function Settings() {
   // by name. The DB id (u3 / bc2) is no longer surfaced — rows are shown with a
   // plain running number instead (see the "#" column below).
   const rows = useMemo(() => {
+    if (tab === "consultants") {
+      const list = consultantFromLink ? ccreds.filter(c => c.consultantId === consultantFromLink) : ccreds;
+      return [...list].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    }
     if (tab !== "internal") return [...visibleCreds].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     return [...users].sort((a, b) => roleRank(a.role) - roleRank(b.role) || (a.name || "").localeCompare(b.name || ""));
-  }, [tab, users, visibleCreds]);
-  const setRows = tab === "internal" ? setUsers : setCreds;
+  }, [tab, users, visibleCreds, ccreds, consultantFromLink]);
+  const setRows = tab === "internal" ? setUsers : tab === "consultants" ? setCcreds : setCreds;
 
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    Promise.all([UsersAPI.list(), BrandCredentialsAPI.list()])
-      .then(([u, c]) => { setUsers(u); setCreds(c); })
+    // Consultant data is optional here: a backend from before consultants
+    // existed answers 404, and the other tabs must still load.
+    Promise.all([UsersAPI.list(), BrandCredentialsAPI.list(),
+      ConsultantCredentialsAPI.list().catch(() => []), ConsultantsAPI.list().catch(() => [])])
+      .then(([u, c, cc, cs]) => { setUsers(u); setCreds(c); setCcreds(cc); setConsultants(cs); })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
   }, []);
@@ -617,6 +686,7 @@ export default function Settings() {
   useEffect(() => { if (can(role, "manageSettings")) load(); }, [role, load]);
 
   const brandName = id => brands.find(b => b.id === id)?.name || id || "—";
+  const consultantName = id => consultants.find(c => c.id === id)?.name || id || "—";
 
   // Create / update handlers passed into the modal. Ids and teamIds are
   // assigned by the backend, continuing the seed sequence (u10, bc3, t10, …).
@@ -629,7 +699,7 @@ export default function Settings() {
     if (modal.mode === "edit") {
       const patch = {
         username: form.username, name: form.name, title: form.title,
-        ...(isUser ? { role: form.role, ...(form.teamId ? { teamId: form.teamId } : {}) } : { brandId: form.brandId }),
+        ...(isUser ? { role: form.role, ...(form.teamId ? { teamId: form.teamId } : {}) } : tab === "consultants" ? { consultantId: form.consultantId } : { brandId: form.brandId }),
         ...(form.password ? { password: form.password } : {}),
         ...avatarPatch,
       };
@@ -642,7 +712,7 @@ export default function Settings() {
       const created = await api.create({
         avatar, username: form.username, name: form.name, title: form.title,
         password: form.password,
-        ...(isUser ? { role: form.role, ...(form.teamId ? { teamId: form.teamId } : {}) } : { brandId: form.brandId }),
+        ...(isUser ? { role: form.role, ...(form.teamId ? { teamId: form.teamId } : {}) } : tab === "consultants" ? { consultantId: form.consultantId } : { brandId: form.brandId }),
         ...avatarPatch,
       });
       setRows(prev => [...prev, created]);
@@ -685,6 +755,7 @@ export default function Settings() {
     { id: "internal", label: `Internal Users (${users.length})` },
     { id: "external", label: `Brand Portal (${visibleCreds.length})` },
     { id: "brands", label: `Brand Settings (${brands.length})` },
+    { id: "consultants", label: `Consultant Login (${ccreds.length})` },
   ];
   // Brands themselves come from a brand-creation flow elsewhere (the "Add
   // brand credential" modal's inline BrandPicker) — this tab is for editing
@@ -701,14 +772,14 @@ export default function Settings() {
             Settings
           </div>
           <div style={{ fontSize: 11, color: T.sub, marginTop: 4 }}>
-            Every login in the system — internal team and brand portal. The DB stores hash keys; reveal shows the actual password (founder only).
+            Every login in the system — internal team, brand portal and consultant portal. The DB stores hash keys; reveal shows the actual password (founder only).
           </div>
         </div>
         {tab === "brands" ? (
           <Btn variant="primary" onClick={() => setCreatingBrand(true)}>+ Add brand</Btn>
         ) : (
           <Btn variant="primary" onClick={() => setModal({ mode: "add" })}>
-            + {tab === "internal" ? "Add team member" : "Add brand credential"}
+            + {tab === "internal" ? "Add team member" : tab === "consultants" ? "Add consultant login" : "Add brand credential"}
           </Btn>
         )}
       </div>
@@ -725,6 +796,19 @@ export default function Settings() {
         ))}
       </div>
 
+      {tab === "consultants" && !loading && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 11, color: T.sub, marginBottom: 12 }}>
+          <span>Logins for the consultant portal (coming soon). Each one belongs to a consultant from Services → Consultant and will show that consultant's details and brands.</span>
+          {consultantFromLink && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <Pill color={T.gold}>Only {consultantName(consultantFromLink)}</Pill>
+              <button onClick={() => setParams({ tab: "consultants" }, { replace: true })}
+                style={{ fontSize: 10.5, color: T.accent, background: "none", border: "none", cursor: "pointer", fontFamily: "'Sora'", padding: 0 }}>Show all</button>
+            </span>
+          )}
+        </div>
+      )}
+
       {/* States */}
       {loading && <div style={{ padding: 40, fontSize: 12, color: T.sub, textAlign: "center" }}>Loading credentials…</div>}
       {error && !loading && (
@@ -736,7 +820,9 @@ export default function Settings() {
         <div style={{ padding: 40, fontSize: 12, color: T.label, textAlign: "center", fontStyle: "italic" }}>
           {tab === "external" && brandFilter && creds.length > 0
             ? "No brand credentials for the selected brand — clear the brand filter or add one above."
-            : `No ${tab === "internal" ? "users" : "brand credentials"} yet — add the first one above.`}
+            : tab === "consultants"
+              ? (consultantFromLink ? `No logins for ${consultantName(consultantFromLink)} yet — add one above.` : "No consultant logins yet — add one above. Each login is for one consultant's portal (coming soon).")
+              : `No ${tab === "internal" ? "users" : "brand credentials"} yet — add the first one above.`}
         </div>
       )}
       {tab === "brands" && !loading && !error && brands.length === 0 && (
@@ -761,7 +847,7 @@ export default function Settings() {
                 <th style={thS}>Name</th>
                 <th style={thS}>Username</th>
                 <th style={thS}>Password</th>
-                <th style={thS}>{tab === "internal" ? "Role" : "Brand"}</th>
+                <th style={thS}>{tab === "internal" ? "Role" : tab === "consultants" ? "Consultant" : "Brand"}</th>
                 <th style={thS}>Title</th>
                 <th style={{ ...thS, textAlign: "right" }}>Actions</th>
               </tr>
@@ -781,7 +867,9 @@ export default function Settings() {
                     <td style={tdS}>
                       {tab === "internal"
                         ? <Pill color={r.role === "founder" ? T.purple : T.accent}>{roleLabel(r.role)}</Pill>
-                        : <Pill color={T.teal}>{brandName(r.brandId)}</Pill>}
+                        : tab === "consultants"
+                          ? <Pill color={T.gold}>{consultantName(r.consultantId)}</Pill>
+                          : <Pill color={T.teal}>{brandName(r.brandId)}</Pill>}
                     </td>
                     <td style={{ ...tdS, color: T.sub }}>{r.title || "—"}</td>
                     <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
@@ -821,7 +909,9 @@ export default function Settings() {
           kind={tab}
           editing={modal.mode === "edit" ? modal.record : null}
           brands={brands}
+          consultants={consultants}
           defaultBrandId={brandFilter}
+          defaultConsultantId={consultantFromLink}
           currentAvatarUrl={modal.mode === "edit" ? api.avatarUrl(modal.record) : null}
           onClose={() => setModal(null)}
           onSave={handleSave}

@@ -14,6 +14,7 @@ import Billing from "./pages/Billing";
 import Summary from "./pages/Summary";
 import Creators from "./pages/Creators";
 import Managed from "./pages/Managed";
+import Services from "./pages/Services";
 import Requests from "./pages/Requests";
 import Settings from "./pages/Settings";
 import Profile from "./pages/Profile";
@@ -60,6 +61,7 @@ export default function App() {
             {/* Founder-only — AppShell blocks other roles via sections.js */}
             <Route path="/creators"  element={<Creators />} />
             <Route path="/managed"   element={<Managed />} />
+            <Route path="/services"  element={<Services />} />
             <Route path="/requests"  element={<Requests />} />
             <Route path="/settings"  element={<Settings />} />
             {/* Pitch Client is now a modal opened from the Campaigns page

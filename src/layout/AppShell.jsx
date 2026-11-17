@@ -4,17 +4,16 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   LayoutDashboard, SquareKanban, IndianRupee, Sparkles, UsersRound, Inbox, ShieldCheck,
   Settings as SettingsIcon, Building2, Search, ChevronDown, Check, Circle, Send,
-  UserCheck, Download, Loader2,
+  UserCheck, BriefcaseBusiness,
 } from "lucide-react";
 import { SECTIONS, canAccess, getRole } from "../routes/sections";
 import { useAuth } from "../context/AuthContext";
 import { ClientsAPI, UsersAPI, CampaignsAPI } from "../lib/api";
-import { seesAllCampaigns, canSeeCampaign } from "../lib/campaign";
-import { downloadCampaignsWorkbook } from "../lib/campaignExport";
+import { seesAllCampaigns } from "../lib/campaign";
 
 const SECTION_ICONS = {
   LayoutDashboard, SquareKanban, IndianRupee, Sparkles, UsersRound, Inbox, ShieldCheck, Building2, Send,
-  UserCheck,
+  UserCheck, BriefcaseBusiness,
   Settings: SettingsIcon,
 };
 
@@ -243,7 +242,7 @@ function useNavSurfaceState(paneRef, navRef, routeKey) {
   return state;
 }
 
-function Pill({ children, style = {}, padded = true }) {
+function Pill({ children, style = {}, padded = true, className }) {
   const { scrolled, merged, glass } = useNavSurface();
   // Over a block that opts into merging (the Founder Summary's cover
   // photograph), the pill drops its chrome entirely — no fill, no blur, no
@@ -252,7 +251,7 @@ function Pill({ children, style = {}, padded = true }) {
   // that block scrolls out from under the nav.
   const bare = merged;
   return (
-    <div style={{
+    <div className={className} style={{
       display: "flex", alignItems: "center",
       height: 52, borderRadius: 999,
       background: bare ? "transparent" : scrolled ? glass.fillScrolled : glass.fill,
@@ -272,6 +271,76 @@ function Pill({ children, style = {}, padded = true }) {
   );
 }
 
+/**
+ * The section tabs as a strip that scrolls sideways when the window is too
+ * narrow for all of them: the scrollbar is hidden, a soft fade shows which
+ * side has more, a mouse wheel scrolls it sideways, and the current section
+ * is always scrolled into view. Centred when everything fits (auto margins,
+ * not justify-content, so nothing is cut off when it doesn't).
+ */
+function NavStrip({ sections }) {
+  const ref = useRef(null);
+  const location = useLocation();
+  const [edges, setEdges] = useState({ left: false, right: false });
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    setEdges({ left: el.scrollLeft > 2, right: el.scrollLeft + el.clientWidth < el.scrollWidth - 2 });
+  }, []);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    // A vertical wheel over the strip scrolls it sideways (trackpads already do).
+    const onWheel = (e) => {
+      if (el.scrollWidth <= el.clientWidth || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      e.preventDefault();
+      el.scrollLeft += e.deltaY;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => { ro.disconnect(); el.removeEventListener("wheel", onWheel); };
+  }, [measure]);
+  // Keep the current section in the middle of the strip (not at an edge, where
+  // the fade would half-hide it) — on navigation and whenever the width changes.
+  const centreActive = useCallback((smooth) => {
+    const el = ref.current, a = el?.querySelector("a.active");
+    if (!el || !a || el.scrollWidth <= el.clientWidth) return;
+    const left = a.offsetLeft - (el.clientWidth - a.offsetWidth) / 2;
+    el.scrollTo({ left: Math.max(0, left), behavior: smooth ? "smooth" : "auto" });
+  }, []);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => centreActive(true));
+    return () => cancelAnimationFrame(id);
+  }, [location.pathname, centreActive]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    let last = el.clientWidth;
+    const ro = new ResizeObserver(() => { if (el.clientWidth !== last) { last = el.clientWidth; centreActive(false); } });
+    ro.observe(el);
+    const t = setTimeout(() => centreActive(false), 300); // after fonts settle
+    return () => { ro.disconnect(); clearTimeout(t); };
+  }, [centreActive]);
+  const fade = (dir) => `linear-gradient(to ${dir}, transparent 0, #000 28px)`;
+  const mask = edges.left && edges.right ? `${fade("right")}, ${fade("left")}` : edges.left ? fade("right") : edges.right ? fade("left") : "none";
+  return (
+    <div ref={ref} className="nav-strip" onScroll={measure} style={{
+      display: "flex", alignItems: "center", gap: 3, minWidth: 0, width: "100%", height: "100%",
+      overflowX: "auto", overflowY: "hidden", padding: "0 8px", boxSizing: "border-box",
+      // two masks intersect, so each fade only dims its own side
+      WebkitMaskImage: mask, maskImage: mask,
+      WebkitMaskComposite: edges.left && edges.right ? "source-in" : undefined,
+      maskComposite: edges.left && edges.right ? "intersect" : undefined,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 3, margin: "0 auto", flexShrink: 0 }}>
+        {sections.map(s => <SectionTab key={s.id} section={s} />)}
+      </div>
+    </div>
+  );
+}
+
 function SectionTab({ section }) {
   const [hovered, setHovered] = useState(false);
   const { glass } = useNavSurface();
@@ -283,7 +352,7 @@ function SectionTab({ section }) {
       style={({ isActive }) => ({
         position: "relative",
         display: "flex", alignItems: "center", gap: 7,
-        padding: "0 15px", height: 38, borderRadius: 999,
+        padding: "0 var(--nav-tab-pad, 15px)", height: 38, borderRadius: 999,
         background: "transparent", border: "none",
         cursor: "pointer", fontFamily: "'Sora', sans-serif",
         fontSize: 13, fontWeight: isActive ? 600 : 500,
@@ -389,7 +458,7 @@ function UserMenu({ user, onLogout }) {
         }}
       >
         <UserAvatar user={user} size={30} bg={glass.chipOnFill} fg={glass.chipOnText} />
-        <div style={{ textAlign: "left" }}>
+        <div className="nav-user-text" style={{ textAlign: "left" }}>
           <div style={{ fontWeight: 600, fontSize: 12.5, color: glass.text, lineHeight: 1.25, transition: "color 0.35s ease" }}>
             {user.name.split(" ")[0]}
           </div>
@@ -736,57 +805,6 @@ function RailButton({ label, onClick, children }) {
   );
 }
 
-// ── CAMPAIGN DOWNLOAD ────────────────────────────────────────────────────────
-// Always in the nav: one Excel workbook, a tab per campaign, in the agency's
-// report-sheet format (lib/campaignExport.js). Scoped like the Campaigns board
-// — the campaigns this user can open, narrowed to the brand filter if one is
-// set — and built in the browser from GET /api/campaigns.
-function CampaignDownload({ user, brandFilter, brands }) {
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState(null); // { text, ok }
-  const timer = useRef(null);
-  const flash = (text, ok) => { setNote({ text, ok }); clearTimeout(timer.current); timer.current = setTimeout(() => setNote(null), 3500); };
-  useEffect(() => () => clearTimeout(timer.current), []);
-
-  const brandName = brandFilter ? brands.find(b => b.id === brandFilter)?.name : null;
-  const label = brandName ? `Download ${brandName} campaigns (Excel)` : "Download all campaigns (Excel)";
-
-  const run = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const all = await CampaignsAPI.list();
-      const mine = (all || []).filter(c => canSeeCampaign(c, user?.role, user?.teamId) && (!brandFilter || c.brandId === brandFilter));
-      if (!mine.length) { flash("No campaigns to download", false); return; }
-      downloadCampaignsWorkbook(mine, brandName ? `${brandName} campaigns` : "All campaigns");
-      flash(`Downloaded ${mine.length} campaign${mine.length === 1 ? "" : "s"}`, true);
-    } catch {
-      flash("Download failed — check connection", false);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div style={{ position: "relative", display: "flex" }}>
-      <style>{"@keyframes fa-dl-spin{to{transform:rotate(360deg)}}"}</style>
-      <RailButton label={label} onClick={run}>
-        {busy
-          ? <Loader2 size={16} strokeWidth={1.9} style={{ animation: "fa-dl-spin 0.9s linear infinite" }} />
-          : <Download size={16} strokeWidth={1.9} />}
-      </RailButton>
-      {note && (
-        <div role="status" style={{
-          position: "absolute", top: 44, right: 0, whiteSpace: "nowrap", zIndex: 40,
-          padding: "7px 12px", borderRadius: 10, fontSize: 11.5, fontFamily: "'Sora', sans-serif",
-          background: "rgba(29,29,31,0.92)", color: note.ok ? "#FFFFFF" : "#FFB4B4",
-          boxShadow: "0 8px 24px rgba(0,0,0,0.2)", textShadow: "none",
-        }}>{note.text}</div>
-      )}
-    </div>
-  );
-}
-
 function CommandPalette({ open, onClose, sections, brands, onBrand, brandFilter, showBrands = true }) {
   const [q, setQ] = useState("");
   const [i, setI] = useState(0);
@@ -1081,7 +1099,10 @@ export default function AppShell() {
           position: "absolute", top: 0, left: 0, right: 0, zIndex: 30,
           pointerEvents: "none",
           display: "flex", alignItems: "center", gap: 14,
-          padding: "14px 18px 0", flexWrap: "wrap",
+          // One row, always. It used to wrap, so once the tabs outgrew the
+          // width the user chip dropped to a second row and covered the page.
+          // Now the tab strip shrinks and scrolls sideways instead.
+          padding: "14px 18px 0", flexWrap: "nowrap",
           // Lift the labels off a photo, but only over a DARK one. `merged`
           // alone was wrong: the Summary cover is data-nav-tone="light", so the
           // pills wear dark ink and a black halo just smudged it.
@@ -1092,7 +1113,7 @@ export default function AppShell() {
           textShadow: merged && onDark ? "0 1px 4px rgba(0,0,0,0.30)" : "none",
           transition: "text-shadow 0.4s ease",
         }}>
-          <Pill style={{ padding: "0 20px" }}>
+          <Pill className="nav-logo" style={{ padding: "0 20px" }}>
             <span style={{
               fontFamily: "'Sora', sans-serif", fontSize: 13, fontWeight: 700,
               textTransform: "uppercase", color: glass.text, letterSpacing: "0.24em",
@@ -1112,17 +1133,14 @@ export default function AppShell() {
             <BrandSelect brands={filterBrands} value={brandFilter} onChange={handleBrandChange} />
           </Pill>
 
-          <Pill style={{ flex: "1 1 auto", minWidth: 0, justifyContent: "center", overflowX: "auto" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 3, minWidth: 0 }}>
-              {visibleSections.map(s => <SectionTab key={s.id} section={s} />)}
-            </div>
+          <Pill style={{ flex: "1 1 0", minWidth: 120, padding: 0, overflow: "hidden" }}>
+            <NavStrip sections={visibleSections} />
           </Pill>
 
           <Pill style={{ padding: "0 6px 0 10px", gap: 4 }}>
             <RailButton label="Search  (⌘K)" onClick={() => setSearchOpen(true)}>
               <Search size={16} strokeWidth={1.9} />
             </RailButton>
-            <CampaignDownload user={user} brandFilter={brandFilter} brands={brands} />
             <UserMenu user={user} onLogout={handleLogout} />
           </Pill>
         </div>

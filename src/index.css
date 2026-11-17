@@ -211,3 +211,13 @@ button:not(:disabled):active {
 /* DateInput popover hovers */
 .dp-day:hover { background: rgba(47, 62, 107, 0.10) !important; }
 .dp-nav:not(:disabled):hover { background: rgba(28, 24, 16, 0.06); color: #1C1A15; }
+
+/* Top-bar tab strip (AppShell NavStrip): scrolls sideways when the window is
+   too narrow for every section, with no visible scrollbar — the edge fades
+   show there's more. */
+.nav-strip { scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.nav-strip::-webkit-scrollbar { display: none; }
+/* Narrow windows: the wordmark and the user's name give their room to the tabs. */
+@media (max-width: 1560px) { :root { --nav-tab-pad: 11px; } }
+@media (max-width: 1180px) { .nav-user-text { display: none; } :root { --nav-tab-pad: 10px; } }
+@media (max-width: 900px) { .nav-logo { display: none !important; } }

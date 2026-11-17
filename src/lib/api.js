@@ -257,6 +257,28 @@ function authCrud(basePath) {
 
 export const UsersAPI = authCrud("/api/users");
 export const BrandCredentialsAPI = authCrud("/api/brand-credentials");
+// Consultant portal logins (Settings → Consultant Login), one consultant each.
+export const ConsultantCredentialsAPI = authCrud("/api/consultant-credentials");
+
+// ── Consultants (Services → Consultant) ──────────────────────────────────────
+// Everything about a consultant is kept here, internally; the consultant
+// portal (later) reads the same record. PATCH takes only the sections that
+// changed — each section is saved whole.
+export const ConsultantsAPI = {
+  list: () => request("/api/consultants"),
+  // Profile picture (set here or by the consultant from their portal).
+  avatarUrl: avatarUrlFor("/api/consultants"),
+  get: (id) => request(`/api/consultants/${encodeURIComponent(id)}`),
+  create: (body) => request("/api/consultants", { method: "POST", body: JSON.stringify(body) }),
+  update: (id, patch) => request(`/api/consultants/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  remove: (id) => request(`/api/consultants/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  documents: {
+    list: (id) => request(`/api/consultants/${encodeURIComponent(id)}/documents`),
+    upload: (id, doc) => request(`/api/consultants/${encodeURIComponent(id)}/documents`, { method: "POST", body: JSON.stringify(doc) }),
+    remove: (id, docId) => request(`/api/consultants/${encodeURIComponent(id)}/documents/${docId}`, { method: "DELETE" }),
+    fileUrl: (id, docId, download = false) => `${BASE}/api/consultants/${encodeURIComponent(id)}/documents/${docId}/file${download ? "?download=1" : ""}`,
+  },
+};
 
 // ── Creators (founder directory) ─────────────────────────────────────────────
 // ── Creator finder ───────────────────────────────────────────────────────────

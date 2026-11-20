@@ -5671,6 +5671,16 @@ export default function InternalCampaigns(){
   // Query params are stripped right after so a refresh does not reopen it.
   const [searchParams,setSearchParams]=useSearchParams();
   useEffect(()=>{
+    // /campaigns?open=<id>&brand=<brandId> — a campaign card in Settings →
+    // Brand Settings opens that campaign here.
+    const openId=searchParams.get("open");
+    if(openId){
+      const brandParam=searchParams.get("brand");
+      if(brandParam&&setBrandFilter)setBrandFilter(brandParam);
+      setSelId(openId);
+      setSearchParams({},{replace:true});
+      return;
+    }
     if(searchParams.get("new")!=="1")return;
     const brandParam=searchParams.get("brand");
     if(brandParam&&setBrandFilter)setBrandFilter(brandParam);

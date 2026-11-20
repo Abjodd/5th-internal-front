@@ -8,7 +8,7 @@ export const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 export const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 export const TIN_RE = /^[A-Z0-9-]{6,20}$/;
 
-const check = {
+export const check = {
   email: (v) => (!v || EMAIL_RE.test(v.trim()) ? null : "Not a valid email address"),
   gst: (v) => (!v || GSTIN_RE.test(v.replace(/\s+/g, "").toUpperCase()) ? null : "15 characters, like 27AAPFU0939F1ZV"),
   pan: (v) => (!v || PAN_RE.test(v.replace(/\s+/g, "").toUpperCase()) ? null : "10 characters, like ABCDE1234F"),
